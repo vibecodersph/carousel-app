@@ -1,0 +1,125 @@
+{
+  "source_type": "article",
+  "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+  "article": {
+    "url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+    "canonical_url": "",
+    "title": "Xiaomi's new open source, agentic AI coding harness MiMo Code beats Claude Code at ultra-long, 200+ step tasks",
+    "description": "The persistent memory system addresses a real and widely felt pain point in agentic development workflows \u2014 one that competitors are also racing to solve.",
+    "site_name": "Venturebeat",
+    "author": "Carl Franzen",
+    "published_at": "2026-06-11T19:14-04:00",
+    "image_url": "https://images.ctfassets.net/jdtwqhzvc2n1/12q7BpuvmPejutBrIyn6sZ/404c467dfe2af6da6c3a0854eb32fc98/Gemini_Generated_Image_fg84xafg84xafg84.png?w=800&q=75",
+    "block_count": 51
+  },
+  "section_count": 19,
+  "selected_section_count": 4,
+  "slide_count": 5,
+  "rendered_slide_count": 5,
+  "first_page_only": false,
+  "account_name": "LLMAW",
+  "curation_backend": "gemini",
+  "min_score": 6,
+  "max_pages": 6,
+  "source_article_path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/source_article.json",
+  "title_context": {
+    "topic": "Xiaomi's MiMo Code Beats Claude Code in Tasks",
+    "provider": "gemini",
+    "image_provider": "openai",
+    "google_enabled": true,
+    "gemini_text_model": "gemini-3.5-flash",
+    "openai_image_model": "gpt-image-2",
+    "openai_image_size": "2048x1152",
+    "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'Xiaomi's MiMo Code Beats Claude Code in Tasks'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. Add a tasteful editorial portrait element of the CEO: Lei Jun of Xiaomi, Dario Amodei of Anthropic. Company context: Xiaomi, Anthropic. Do not show logos or brand marks.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
+    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/title_assets/openai-topic-f7fc666621.png"
+  },
+  "slides": [
+    {
+      "index": 1,
+      "type": "title",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_01.png",
+      "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks"
+    },
+    {
+      "index": 2,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_02.png",
+      "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+      "kicker": "OPEN SOURCE LAUNCH",
+      "headline": "Xiaomi Releases MiMo Code",
+      "body": "Xiaomi open-sourced MiMo Code, an MIT-licensed terminal-native AI coding assistant built on OpenCode. It features a custom memory architecture and bundles free access to its million-token MiMo-V2.5 model.",
+      "stat": "MIT License",
+      "source_heading": "",
+      "source_indices": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "score": 12,
+      "why": "Announces a major open-source release from a global tech giant with immediate developer availability."
+    },
+    {
+      "index": 3,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_03.png",
+      "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+      "kicker": "ARCHITECTURE",
+      "headline": "Solving Agentic Amnesia",
+      "body": "To prevent context degradation, MiMo Code uses SQLite FTS5 full-text search across four memory layers. An independent checkpoint-writer subagent continuously updates project state without interrupting the primary coding agent.",
+      "stat": "4-Layer Memory",
+      "source_heading": "The end of AI coding agents' amnesia?",
+      "source_indices": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "score": 9,
+      "why": "Explains the specific technical mechanism used to solve a major industry pain point."
+    },
+    {
+      "index": 4,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_04.png",
+      "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+      "kicker": "BENCHMARK",
+      "headline": "Outperforming Claude Code",
+      "body": "Paired with MiMo-V2.5-Pro, the harness scored 62% on SWE-bench Pro and 73% on Terminal Bench 2. In long-horizon tasks exceeding 200 steps, its win rate against Claude Code rose above 65%.",
+      "stat": "65%+ Win Rate",
+      "source_heading": "Impressive performance on software engineering (SWE) benchmarks",
+      "source_indices": [
+        14,
+        15,
+        16,
+        20,
+        21,
+        22
+      ],
+      "score": 21,
+      "why": "Provides concrete, quantified benchmark data comparing the tool directly to its main competitor."
+    },
+    {
+      "index": 5,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_05.png",
+      "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+      "kicker": "PRICING & SPECS",
+      "headline": "Disruptive Frontier Pricing",
+      "body": "The underlying MiMo-V2.5 model is a 310-billion parameter MoE design. Pricing starts at an aggressive $0.40 per million input tokens and $2.00 per million output tokens, significantly undercutting Western rivals.",
+      "stat": "$0.40 per 1M input",
+      "source_heading": "Aggressively affordable",
+      "source_indices": [
+        31,
+        32,
+        33,
+        36
+      ],
+      "score": 16,
+      "why": "Delivers hard technical specifications and highly competitive pricing metrics critical for enterprise decision-makers."
+    }
+  ]
+}

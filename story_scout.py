@@ -376,7 +376,108 @@ def find_candidate(queue: dict[str, Any], cid: str) -> dict[str, Any]:
     raise SystemExit(f"No candidate found with id {cid}")
 
 
-def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+def extract_status_url(value: str) -> str:
+    match = re.search(
+        r"https://(?:www\.)?(?:x|twitter)\.com/[^\s<>()]+/status/\d+",
+        value,
+    )
+    if not match:
+        return ""
+    return match.group(0).rstrip(".,;:)]}")
+
+
+def post_from_status_url(url: str, *, fallback_handle: str = "", fallback_text: str = "") -> dict[str, Any]:
+    match = re.search(r"https://(?:www\.)?(?:x|twitter)\.com/([^/]+)/status/(\d+)", url)
+    handle = normalize_handle(match.group(1)) if match else normalize_handle(fallback_handle)
+    tweet_id = match.group(2) if match else ""
+    return {
+        "id": tweet_id,
+        "text": fallback_text,
+        "author": "",
+        "handle": handle,
+        "date": "",
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "views": 0,
+        "has_video": False,
+        "url": url.replace("twitter.com", "x.com"),
+        "likes_fmt": "",
+        "retweets_fmt": "",
+        "replies_fmt": "",
+        "views_fmt": "",
+    }
+
+
+def recover_candidate_from_callback(
+    queue: dict[str, Any],
+    cid: str,
+    callback: dict[str, Any],
+) -> dict[str, Any] | None:
+    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    text = str(message.get("text") or message.get("caption") or "")
+    url = extract_status_url(text)
+    if not url:
+        return None
+
+    for candidate in queue.get("candidates", []):
+        post = candidate.get("post") if isinstance(candidate.get("post"), dict) else {}
+        if str(post.get("url") or "").replace("twitter.com", "x.com") == url.replace("twitter.com", "x.com"):
+            print(
+                f"[telegram] recovered missing callback id {cid} by matching URL to {candidate.get('id')}",
+                flush=True,
+            )
+            return candidate
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    score = 0
+    handle = ""
+    body_lines: list[str] = []
+    why = ""
+    for line in lines:
+        score_match = re.search(r"(\d+)\s+score\s+-\s+(@[A-Za-z0-9_]+)", line)
+        if score_match:
+            score = int(score_match.group(1))
+            handle = score_match.group(2)
+            continue
+        if line.startswith(("Carousel candidate", "Why:")):
+            if line.startswith("Why:"):
+                why = line.removeprefix("Why:").strip()
+            continue
+        if extract_status_url(line):
+            continue
+        body_lines.append(line)
+
+    post = post_from_status_url(
+        url,
+        fallback_handle=handle,
+        fallback_text=" ".join(body_lines).strip(),
+    )
+    if why:
+        post["why"] = why
+
+    now = utc_now()
+    candidate = {
+        "id": cid,
+        "status": "candidate",
+        "score": score,
+        "score_reasons": ["recovered from Telegram callback"],
+        "source_account": post.get("handle", ""),
+        "post": post,
+        "created_at": now,
+        "updated_at": now,
+        "recovered_from_telegram": True,
+        "telegram_message": {
+            "chat_id": (message.get("chat") or {}).get("id") if isinstance(message.get("chat"), dict) else None,
+            "message_id": message.get("message_id"),
+        },
+    }
+    queue.setdefault("candidates", []).append(candidate)
+    print(f"[telegram] recovered missing candidate {cid} from Telegram message URL {url}", flush=True)
+    return candidate
+
+
+def telegram_api(method: str, payload: dict[str, Any], *, timeout: int = 30) -> dict[str, Any]:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not configured")
@@ -390,7 +491,7 @@ def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -450,8 +551,28 @@ def notify_telegram(candidate: dict[str, Any]) -> bool:
     return True
 
 
-def answer_callback(callback_id: str, text: str) -> None:
-    telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+def is_expired_callback_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return (
+        "400" in message
+        and "query" in message
+        and (
+            "too old" in message
+            or "response timeout expired" in message
+            or "query id is invalid" in message
+        )
+    )
+
+
+def answer_callback(callback_id: str, text: str) -> bool:
+    try:
+        telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+    except SystemExit as exc:
+        if not is_expired_callback_error(exc):
+            raise
+        print("[telegram] callback acknowledgement expired; continuing")
+        return False
+    return True
 
 
 def build_candidate(
@@ -461,6 +582,17 @@ def build_candidate(
     max_thread_posts: int,
     cookies_from_browser: str | None,
     thread_source: str,
+    publish_instagram: bool,
+    instagram_dry_run: bool,
+    instagram_upload_r2: bool,
+    instagram_media_base_url: str | None,
+    instagram_caption: str | None,
+    instagram_caption_file: Path | None,
+    publish_buffer: bool,
+    buffer_mode: str,
+    buffer_dry_run: bool,
+    buffer_upload_r2: bool,
+    buffer_video_strategy: str,
 ) -> int:
     post = candidate.get("post") or {}
     url = str(post.get("url") or "")
@@ -494,6 +626,112 @@ def build_candidate(
     else:
         candidate["status"] = "failed"
         candidate["failure"] = f"build_x_carousel.py exited {result.returncode}"
+        return result.returncode
+
+    rc = 0
+    if publish_instagram:
+        publish_cmd = [
+            sys.executable,
+            str(ROOT / "instagram_publish.py"),
+            str(out_dir / "manifest.json"),
+        ]
+        if instagram_dry_run:
+            publish_cmd.append("--dry-run")
+        if instagram_upload_r2:
+            publish_cmd.append("--upload-r2")
+        if instagram_media_base_url:
+            publish_cmd.extend(["--media-base-url", instagram_media_base_url])
+        if instagram_caption is not None:
+            publish_cmd.extend(["--caption", instagram_caption])
+        if instagram_caption_file:
+            publish_cmd.extend(["--caption-file", str(instagram_caption_file)])
+
+        candidate["instagram_publish_started_at"] = utc_now()
+        candidate["instagram_publish_dry_run"] = instagram_dry_run
+        print(
+            f"[instagram] {'previewing' if instagram_dry_run else 'publishing'} "
+            f"{candidate['id']}"
+        )
+        publish_result = subprocess.run(publish_cmd, check=False)
+        candidate["instagram_publish_finished_at"] = utc_now()
+        candidate["instagram_publish_returncode"] = publish_result.returncode
+        candidate["instagram_publish_report_path"] = str(out_dir / "instagram_publish.json")
+        if publish_result.returncode == 0:
+            candidate["status"] = "publish_previewed" if instagram_dry_run else "published"
+        else:
+            candidate["status"] = "publish_failed"
+            candidate["failure"] = f"instagram_publish.py exited {publish_result.returncode}"
+        rc = publish_result.returncode
+
+    if publish_buffer:
+        rc = max(
+            rc,
+            publish_candidate_buffer(
+                candidate,
+                out_dir,
+                mode=buffer_mode,
+                dry_run=buffer_dry_run,
+                upload_r2=buffer_upload_r2,
+                video_strategy=buffer_video_strategy,
+                media_base_url=instagram_media_base_url,
+                caption=instagram_caption,
+                caption_file=instagram_caption_file,
+            ),
+        )
+    return rc
+
+
+def publish_candidate_buffer(
+    candidate: dict[str, Any],
+    out_dir: Path,
+    *,
+    mode: str,
+    dry_run: bool,
+    upload_r2: bool,
+    video_strategy: str,
+    media_base_url: str | None,
+    caption: str | None,
+    caption_file: Path | None,
+) -> int:
+    buffer_cmd = [
+        sys.executable,
+        str(ROOT / "buffer_publish.py"),
+        str(out_dir / "manifest.json"),
+        "--mode",
+        mode,
+        "--video-strategy",
+        video_strategy,
+    ]
+    if dry_run:
+        buffer_cmd.append("--dry-run")
+    if upload_r2:
+        buffer_cmd.append("--upload-r2")
+    if media_base_url:
+        buffer_cmd.extend(["--media-base-url", media_base_url])
+    if caption is not None:
+        buffer_cmd.extend(["--caption", caption])
+    if caption_file:
+        buffer_cmd.extend(["--caption-file", str(caption_file)])
+
+    candidate["buffer_publish_started_at"] = utc_now()
+    candidate["buffer_publish_mode"] = mode
+    candidate["buffer_publish_dry_run"] = dry_run
+    print(f"[buffer] {'previewing' if dry_run else f'creating {mode} post for'} {candidate['id']}")
+    result = subprocess.run(buffer_cmd, check=False)
+    candidate["buffer_publish_finished_at"] = utc_now()
+    candidate["buffer_publish_returncode"] = result.returncode
+    candidate["buffer_publish_report_path"] = str(out_dir / "buffer_publish.json")
+    if result.returncode != 0:
+        candidate["status"] = "publish_failed"
+        candidate["failure"] = f"buffer_publish.py exited {result.returncode}"
+    elif dry_run:
+        candidate["status"] = "buffer_previewed"
+    elif mode == "draft":
+        candidate["status"] = "buffer_drafted"
+    elif mode == "queue":
+        candidate["status"] = "buffer_queued"
+    else:
+        candidate["status"] = "published"
     return result.returncode
 
 
@@ -535,6 +773,26 @@ def list_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "builds_dir": args.builds_dir,
+        "max_thread_posts": args.max_thread_posts,
+        "cookies_from_browser": args.cookies_from_browser,
+        "thread_source": args.thread_source,
+        "publish_instagram": args.publish_instagram,
+        "instagram_dry_run": args.instagram_dry_run,
+        "instagram_upload_r2": args.instagram_upload_r2,
+        "instagram_media_base_url": args.instagram_media_base_url,
+        "instagram_caption": args.instagram_caption,
+        "instagram_caption_file": args.instagram_caption_file,
+        "publish_buffer": args.publish_buffer,
+        "buffer_mode": args.buffer_mode,
+        "buffer_dry_run": args.buffer_dry_run,
+        "buffer_upload_r2": args.buffer_upload_r2,
+        "buffer_video_strategy": args.buffer_video_strategy,
+    }
+
+
 def approve_command(args: argparse.Namespace) -> int:
     queue = load_queue(args.queue)
     candidate = find_candidate(queue, args.candidate_id)
@@ -543,13 +801,7 @@ def approve_command(args: argparse.Namespace) -> int:
     candidate["updated_at"] = utc_now()
     rc = 0
     if args.run:
-        rc = build_candidate(
-            candidate,
-            builds_dir=args.builds_dir,
-            max_thread_posts=args.max_thread_posts,
-            cookies_from_browser=args.cookies_from_browser,
-            thread_source=args.thread_source,
-        )
+        rc = build_candidate(candidate, **build_kwargs_from_args(args))
     save_queue(args.queue, queue)
     return rc
 
@@ -573,16 +825,7 @@ def run_approved_command(args: argparse.Namespace) -> int:
         return 0
     rc = 0
     for candidate in candidates:
-        rc = max(
-            rc,
-            build_candidate(
-                candidate,
-                builds_dir=args.builds_dir,
-                max_thread_posts=args.max_thread_posts,
-                cookies_from_browser=args.cookies_from_browser,
-                thread_source=args.thread_source,
-            ),
-        )
+        rc = max(rc, build_candidate(candidate, **build_kwargs_from_args(args)))
         save_queue(args.queue, queue)
     return rc
 
@@ -591,18 +834,32 @@ def load_telegram_state(path: Path) -> dict[str, Any]:
     return load_json_file(path, {"offset": 0})
 
 
+def reset_telegram_offset(path: Path) -> None:
+    write_json_file(path, {"offset": 0})
+    print(f"[telegram] reset update offset in {path}", flush=True)
+
+
 def process_telegram_updates(args: argparse.Namespace) -> int:
     queue = load_queue(args.queue)
     state = load_telegram_state(args.telegram_state)
+    if getattr(args, "reset_offset", False):
+        state["offset"] = 0
+        args.reset_offset = False
     payload = {
         "offset": int(state.get("offset") or 0),
         "timeout": args.timeout,
         "allowed_updates": ["callback_query"],
     }
-    result = telegram_api("getUpdates", payload)
+    print(
+        f"[telegram] polling offset={payload['offset']} timeout={args.timeout}s",
+        flush=True,
+    )
+    result = telegram_api("getUpdates", payload, timeout=max(30, args.timeout + 10))
     updates = result.get("result", [])
     processed = 0
+    ignored = 0
     rc = 0
+    print(f"[telegram] fetched {len(updates)} update(s)", flush=True)
     for update in updates:
         update_id = int(update.get("update_id") or 0)
         state["offset"] = max(int(state.get("offset") or 0), update_id + 1)
@@ -610,16 +867,38 @@ def process_telegram_updates(args: argparse.Namespace) -> int:
         data = str(callback.get("data") or "")
         callback_id = str(callback.get("id") or "")
         if ":" not in data:
+            ignored += 1
+            print(f"[telegram] ignored callback with unexpected data={data!r}", flush=True)
             continue
         action, cid = data.split(":", 1)
         try:
             candidate = find_candidate(queue, cid)
         except SystemExit:
-            if callback_id:
-                answer_callback(callback_id, "Candidate was not found")
-            continue
+            candidate = recover_candidate_from_callback(queue, cid, callback)
+            if not candidate:
+                ignored += 1
+                print(f"[telegram] ignored {action} for missing candidate {cid}", flush=True)
+                if callback_id:
+                    answer_callback(callback_id, "Candidate was not found")
+                continue
+        print(
+            f"[telegram] callback action={action} candidate={cid} status={candidate.get('status')}",
+            flush=True,
+        )
 
         if action == "reject":
+            if candidate.get("status") == "built":
+                ignored += 1
+                print(f"[telegram] ignored reject for already-built candidate {cid}", flush=True)
+                if callback_id:
+                    answer_callback(callback_id, "Already built; not rejected")
+                continue
+            if candidate.get("status") == "rejected":
+                ignored += 1
+                print(f"[telegram] ignored duplicate reject for {cid}", flush=True)
+                if callback_id:
+                    answer_callback(callback_id, "Already rejected")
+                continue
             candidate["status"] = "rejected"
             candidate["rejected_at"] = utc_now()
             candidate["updated_at"] = utc_now()
@@ -627,35 +906,40 @@ def process_telegram_updates(args: argparse.Namespace) -> int:
                 answer_callback(callback_id, "Rejected")
             processed += 1
         elif action == "approve_build":
+            if candidate.get("status") == "built":
+                ignored += 1
+                print(f"[telegram] ignored approve for already-built candidate {cid}", flush=True)
+                if callback_id:
+                    answer_callback(callback_id, "Already built")
+                continue
             candidate["status"] = "approved"
             candidate["approved_at"] = utc_now()
             candidate["updated_at"] = utc_now()
             if callback_id:
                 answer_callback(callback_id, "Approved; build starting")
             if args.run:
-                rc = max(
-                    rc,
-                    build_candidate(
-                        candidate,
-                        builds_dir=args.builds_dir,
-                        max_thread_posts=args.max_thread_posts,
-                        cookies_from_browser=args.cookies_from_browser,
-                        thread_source=args.thread_source,
-                    ),
-                )
+                rc = max(rc, build_candidate(candidate, **build_kwargs_from_args(args)))
             processed += 1
+        else:
+            ignored += 1
+            print(f"[telegram] ignored unknown callback action={action!r} candidate={cid}", flush=True)
     save_queue(args.queue, queue)
     write_json_file(args.telegram_state, state)
-    print(f"[telegram] processed {processed} callback(s)")
+    print(
+        f"[telegram] processed {processed} callback(s), ignored {ignored}; next offset={state.get('offset')}",
+        flush=True,
+    )
     return rc
 
 
 def telegram_poll_command(args: argparse.Namespace) -> int:
+    if args.reset_offset:
+        reset_telegram_offset(args.telegram_state)
     if not args.watch:
         return process_telegram_updates(args)
 
     rc = 0
-    print("[telegram] watching for approval callbacks")
+    print("[telegram] watching for approval callbacks", flush=True)
     while True:
         rc = max(rc, process_telegram_updates(args))
         time.sleep(args.interval)
@@ -674,6 +958,68 @@ def add_common_build_args(parser: argparse.ArgumentParser) -> None:
         choices=("auto", "xai", "playwright"),
         default=os.environ.get("X_THREAD_SOURCE", "auto"),
     )
+    parser.add_argument(
+        "--publish-instagram",
+        action="store_true",
+        help="After a successful build, run instagram_publish.py",
+    )
+    parser.add_argument(
+        "--instagram-dry-run",
+        action="store_true",
+        help="With --publish-instagram, validate and write an Instagram publish plan only",
+    )
+    parser.add_argument(
+        "--instagram-upload-r2",
+        action="store_true",
+        help="With --publish-instagram, upload rendered carousel media to Cloudflare R2 first",
+    )
+    parser.add_argument(
+        "--instagram-media-base-url",
+        default=os.environ.get("INSTAGRAM_MEDIA_BASE_URL") or os.environ.get("IG_MEDIA_BASE_URL"),
+        help="Public HTTPS base URL for rendered Instagram media files",
+    )
+    parser.add_argument(
+        "--instagram-caption",
+        help="Caption passed to instagram_publish.py",
+    )
+    parser.add_argument(
+        "--instagram-caption-file",
+        type=Path,
+        help="Caption file passed to instagram_publish.py",
+    )
+    parser.add_argument(
+        "--publish-buffer",
+        action="store_true",
+        help="After a successful build, run buffer_publish.py (creates a Buffer draft by default)",
+    )
+    parser.add_argument(
+        "--buffer-mode",
+        choices=("draft", "queue", "now"),
+        default="draft",
+        help="With --publish-buffer: draft for review in Buffer, queue to schedule, now to publish immediately",
+    )
+    parser.add_argument(
+        "--buffer-dry-run",
+        action="store_true",
+        help="With --publish-buffer, validate and write the Buffer payload only",
+    )
+    parser.add_argument(
+        "--buffer-no-upload-r2",
+        dest="buffer_upload_r2",
+        action="store_false",
+        help="With --publish-buffer, skip uploading slides to R2 before posting",
+    )
+    parser.set_defaults(buffer_upload_r2=True)
+    parser.add_argument(
+        "--buffer-video-strategy",
+        choices=("fail", "poster", "reel"),
+        default="fail",
+        help=(
+            "How buffer_publish.py handles video slides in carousels; Buffer cannot mix "
+            "video and images, so fail (default) aborts, poster uses stills, reel posts "
+            "the video alone"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -690,7 +1036,22 @@ def build_parser() -> argparse.ArgumentParser:
     scan.set_defaults(func=scan_command)
 
     list_parser = sub.add_parser("list", help="List queued candidates")
-    list_parser.add_argument("--status", choices=("candidate", "approved", "rejected", "built", "failed"))
+    list_parser.add_argument(
+        "--status",
+        choices=(
+            "candidate",
+            "approved",
+            "rejected",
+            "built",
+            "failed",
+            "publish_previewed",
+            "buffer_previewed",
+            "buffer_drafted",
+            "buffer_queued",
+            "published",
+            "publish_failed",
+        ),
+    )
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--json", action="store_true")
     list_parser.set_defaults(func=list_command)
@@ -715,6 +1076,11 @@ def build_parser() -> argparse.ArgumentParser:
     telegram.add_argument("--timeout", type=int, default=5)
     telegram.add_argument("--interval", type=int, default=10)
     telegram.add_argument("--watch", action="store_true")
+    telegram.add_argument(
+        "--reset-offset",
+        action="store_true",
+        help="Forget the saved Telegram update offset and replay pending callbacks",
+    )
     telegram.add_argument("--no-run", dest="run", action="store_false", help="Approve without building")
     telegram.set_defaults(func=telegram_poll_command, run=True)
     add_common_build_args(telegram)

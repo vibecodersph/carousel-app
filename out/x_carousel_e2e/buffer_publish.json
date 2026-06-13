@@ -1,0 +1,71 @@
+{
+  "manifest_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_e2e/manifest.json",
+  "mode": "draft",
+  "buffer_channel_id": "6a2bb00238b557934588fdd4",
+  "media": [
+    {
+      "index": 1,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_e2e/slide_01.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_01.png",
+      "slide_type": "title"
+    },
+    {
+      "index": 2,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_e2e/slide_02.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_02.png",
+      "slide_type": "post"
+    }
+  ],
+  "uploads": [
+    {
+      "key": "x_carousel_e2e/slide_01.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_e2e/slide_01.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_01.png",
+      "status": 200,
+      "bytes": 795209,
+      "content_type": "image/png"
+    },
+    {
+      "key": "x_carousel_e2e/slide_02.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_e2e/slide_02.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_02.png",
+      "status": 200,
+      "bytes": 434725,
+      "content_type": "image/png"
+    }
+  ],
+  "buffer_payload": {
+    "text": "OpenAI Expands Codex Plugins Beyond Individual Tools\n\nSource: https://x.com/OpenAI/status/2061887650391625870",
+    "channelId": "6a2bb00238b557934588fdd4",
+    "schedulingType": "automatic",
+    "mode": "addToQueue",
+    "saveToDraft": true,
+    "metadata": {
+      "instagram": {
+        "type": "carousel",
+        "shouldShareToFeed": true
+      }
+    },
+    "assets": [
+      {
+        "image": {
+          "url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_01.png"
+        }
+      },
+      {
+        "image": {
+          "url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/x_carousel_e2e/slide_02.png"
+        }
+      }
+    ]
+  },
+  "buffer_response": {
+    "data": {
+      "createPost": {
+        "message": "Invalid post: Instagram does not support the 'carousel' post type. Valid types are post, story, or reel."
+      }
+    }
+  }
+}

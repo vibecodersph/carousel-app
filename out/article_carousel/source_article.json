@@ -1,0 +1,558 @@
+{
+  "url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
+  "canonical_url": "",
+  "title": "Xiaomi's new open source, agentic AI coding harness MiMo Code beats Claude Code at ultra-long, 200+ step tasks",
+  "description": "The persistent memory system addresses a real and widely felt pain point in agentic development workflows \u2014 one that competitors are also racing to solve.",
+  "site_name": "Venturebeat",
+  "author": "Carl Franzen",
+  "published_at": "2026-06-11T19:14-04:00",
+  "image_url": "https://images.ctfassets.net/jdtwqhzvc2n1/12q7BpuvmPejutBrIyn6sZ/404c467dfe2af6da6c3a0854eb32fc98/Gemini_Generated_Image_fg84xafg84xafg84.png?w=800&q=75",
+  "block_count": 51,
+  "blocks": [
+    {
+      "index": 0,
+      "role": "p",
+      "text": "Xiaomi's MiMo AI team has open-sourced MiMo Code V0.1.0 , a terminal-native AI coding assistant that the Chinese electronics giant says outperforms Anthropic's Claude Code on key agentic coding benchmarks, especially on long-horizon, multi-step tasks (200+ steps) \u2014 at least, according to its own internal beta release and survey of 576 developers."
+    },
+    {
+      "index": 1,
+      "role": "p",
+      "text": "It's also bundling limited-time free access to MiMo-V2.5, its multimodal flagship model with a million-token context window, requiring no registration to get started."
+    },
+    {
+      "index": 2,
+      "role": "p",
+      "text": "The release was announced June 10, 2026 in a post on the social network X from the official @XiaomiMiMo account , which described the tool as \"more than an AI coding assistant in your terminal \u2014 it's the smartest coding partner you'll ever work with.\""
+    },
+    {
+      "index": 3,
+      "role": "p",
+      "text": "MiMo Code is available now on GitHub under an MIT license , and installs with a single terminal command ( curl -fsSL https://mimo.xiaomi.com/install | bash ) on macOS and Linux or via npm ( npm install -g @mimo-ai/cli ) on Windows."
+    },
+    {
+      "index": 4,
+      "role": "p",
+      "text": "The project is a fork of the open-source OpenCode agent, which Xiaomi has extended with its own memory architecture, workflow modes, and model harness."
+    },
+    {
+      "index": 5,
+      "role": "h2",
+      "text": "The end of AI coding agents' amnesia?"
+    },
+    {
+      "index": 6,
+      "role": "p",
+      "text": "As any avid vibe coder would surely attest, AI coding agents degrade over long working sessions: as the context window fills, earlier decisions, conventions, and task state get compacted away or lost entirely, forcing developers to re-explain their projects."
+    },
+    {
+      "index": 7,
+      "role": "p",
+      "text": "Xiaomi argues this approach is doomed at scale. \"What we need is not better compression, but an explicit storage-and-retrieval mechanism that decides what information should be written into persistent structures, and when it should be recalled,\" the MiMo team noted in their launch blog ."
+    },
+    {
+      "index": 8,
+      "role": "p",
+      "text": "MiMo Code attacks this with a cross-session memory system, powered under the hood by SQLite FTS5 full-text search, that spans four layers: project memory (a persistent MEMORY.md file), session checkpoints, scratch notes, and per-task progress logs."
+    },
+    {
+      "index": 9,
+      "role": "p",
+      "text": "The note-taking is key, here: Rather than forcing the primary coding agent to pause its work to take notes, the system deploys an independent \"checkpoint-writer\" subagent."
+    },
+    {
+      "index": 10,
+      "role": "p",
+      "text": "Think of it the primary coding agent as a construction contractor working to build a massive mansion alongside a dedicated architect, the checkpoint-writer subagent. While the main agent focuses on building out the physical structure, the subagent updates the blueprints in real time, noting decisions, issues, and the actual lay of the land as the construction project progresses."
+    },
+    {
+      "index": 11,
+      "role": "p",
+      "text": "When the context window approaches its limits \u2014 the contractor gets lost in the half-built mansion \u2014 it can consult the subagent and find its place again. In the case of MiMo Code, the system simply rebuilds the environment from structured checkpoints with the relevant context, ensuring no loss of operational momentum."
+    },
+    {
+      "index": 12,
+      "role": "p",
+      "text": "Two self-improvement mechanisms round out the system: a /dream command that periodically (roughly every seven days) reviews historical sessions, deduplicates them, and compresses them into long-term memory, and a \"distill\" function that mines past sessions for repeated workflows that can be automated, following a similar approach taken recently by OpenAI and Anthropic with their various models."
+    },
+    {
+      "index": 13,
+      "role": "h2",
+      "text": "Impressive performance on software engineering (SWE) benchmarks"
+    },
+    {
+      "index": 14,
+      "role": "p",
+      "text": "According to benchmark figures published in Xiaomi's technical blog post, MiMo Code paired with MiMo-V2.5-Pro outperformed Claude Code paired with Claude Sonnet 4.6 on all three evaluations tested:"
+    },
+    {
+      "index": 15,
+      "role": "p",
+      "text": "The harness itself accounts for a measurable share of the gain. Running the same MiMo-V2.5-Pro model in both harnesses, MiMo Code scored 62% on SWE-bench Pro versus 57% for Claude Code, and 73% on Terminal Bench 2 versus 68% \u2014 roughly five points each, attributable purely to the agent system rather than the model."
+    },
+    {
+      "index": 16,
+      "role": "p",
+      "text": "Xiaomi notably did not publish comparisons against OpenAI's Codex or Google's Gemini CLI \u2014 Claude Code is the sole named competitor throughout its materials, a telling choice of benchmark target."
+    },
+    {
+      "index": 17,
+      "role": "p",
+      "text": "Independent reference points suggest why. On the official Terminal-Bench 2.0 leaderboard maintained at tbench.ai, OpenAI's Codex CLI running GPT-5.5 scores 82.2% \u2014 roughly nine points above MiMo Code's self-reported 73% \u2014 and OpenAI's own GPT-5.5 announcement claims 82.7% on the same benchmark."
+    },
+    {
+      "index": 18,
+      "role": "p",
+      "text": "On SWE-Bench Pro, however, the picture flips: OpenAI reports GPT-5.5 at 58.6%, below MiMo Code + MiMo-V2.5-Pro's claimed 62%. (MiMo Code does not yet appear on either official leaderboard, and cross-comparing self-run numbers against leaderboard submissions carries the usual configuration caveats.)"
+    },
+    {
+      "index": 19,
+      "role": "p",
+      "text": "Perhaps more interesting than the offline benchmarks: Xiaomi says it ran a human double-blind A/B evaluation during its internal beta, covering 576 developers working in 474 real private repositories, producing 1,213 judged head-to-head pairs against Claude Code using the same target model."
+    },
+    {
+      "index": 20,
+      "role": "p",
+      "text": "Under 200 execution steps, the two systems split roughly 50/50 \u2014 but past 200 steps, MiMo Code's win rate rose above 65%, supporting the company's thesis that its memory and state-management architecture pays off specifically on long-horizon work."
+    },
+    {
+      "index": 21,
+      "role": "p",
+      "text": "Xiaomi itself concedes the standard benchmarks \"still measure one-shot problem-solving ability\" and don't capture the tool's multi-session design goals."
+    },
+    {
+      "index": 22,
+      "role": "p",
+      "text": "As always, these are vendor self-reported numbers that haven't been independently verified, and head-to-head harness comparisons are sensitive to configuration. But the claims are consistent with a broader industry pattern: scaffolding and harness engineering are becoming as important as raw model capability in agentic coding performance."
+    },
+    {
+      "index": 23,
+      "role": "h2",
+      "text": "Easy integration with existing developer systems and voice control"
+    },
+    {
+      "index": 24,
+      "role": "p",
+      "text": "From a user experience standpoint, MiMo Code is designed to live where developers already work. It operates directly in the terminal, reading and writing files, running commands, and managing Git."
+    },
+    {
+      "index": 25,
+      "role": "p",
+      "text": "Out of the box, the tool requires zero configuration, connecting automatically to \"MiMo Auto\"\u2014a free-for-a-limited-time channel powered by Xiaomi\u2019s multimodal MiMo V2.5 model, which boasts a massive million-token context window. For developers migrating from existing environments, the transition is frictionless: MiMo Code automatically imports MCP servers, custom skills, and API configurations from Claude Code."
+    },
+    {
+      "index": 26,
+      "role": "p",
+      "text": "Compose mode: Pressing Tab switches the agent into a specification-driven workflow in which the developer describes a high-level goal and the system autonomously executes the full development cycle \u2014 design, planning, coding, testing, and review \u2014 following what Xiaomi describes as a \"heavy planning upfront, stable verification later\" strategy."
+    },
+    {
+      "index": 27,
+      "role": "p",
+      "text": "Voice control: Built on Xiaomi's MiMo-ASR speech recognition with TenVAD voice activity detection, developers can dictate and modify instructions verbally and speak commands like \"send\" and \"execute\" for fully hands-free operation (available for logged-in users)."
+    },
+    {
+      "index": 28,
+      "role": "p",
+      "text": "According to Xiaomi, the gains from the agent harness itself are measurable. Running the same underlying MiMo model in both harnesses, the company says MiMo Code scored 62% on SWE-Bench Pro versus 57% for Claude Code, and 73% on Terminal Bench 2 versus Claude Code's 68% \u2014 roughly five percentage points better on each, attributable purely to the agent system rather than the model."
+    },
+    {
+      "index": 29,
+      "role": "p",
+      "text": "As always, these are vendor self-reported numbers that haven't been independently verified, and head-to-head harness comparisons are sensitive to configuration. But the claim is consistent with a broader industry pattern: scaffolding and harness engineering are becoming as important as raw model capability in agentic coding performance."
+    },
+    {
+      "index": 30,
+      "role": "h2",
+      "text": "Aggressively affordable"
+    },
+    {
+      "index": 31,
+      "role": "p",
+      "text": "The bigger lure for many developers may be what's bundled in."
+    },
+    {
+      "index": 32,
+      "role": "p",
+      "text": "MiMo Code ships with \"MiMo Auto,\" a zero-configuration channel offering free, limited-time access to MiMo-V2.5 \u2014 the natively multimodal model Xiaomi released in late April 2026, a sparse mixture-of-experts design with 310 billion total parameters (just 15 billion active per inference) and a 1 million token context window, which the company positions as matching Anthropic's Claude Sonnet 4.6 in multimodal agentic work."
+    },
+    {
+      "index": 33,
+      "role": "p",
+      "text": "As VentureBeat reported when the MiMo-V2.5 family launched in April, the models are MIT-licensed and among the most efficient and affordable available for agentic tasks."
+    },
+    {
+      "index": 34,
+      "role": "p",
+      "text": "The larger MiMo-V2.5-Pro \u2014 a 1.02-trillion-parameter mixture-of-experts model with 42 billion active parameters and a hybrid-attention architecture \u2014 led the open-source field on Xiaomi's ClawEval agentic benchmark with a 63.8% success rate while consuming only about 70,000 tokens per trajectory, roughly 40\u201360% fewer than Anthropic's Claude Opus 4.6, Google's Gemini 3.1 Pro, or OpenAI's GPT-5.4 needed for comparable results."
+    },
+    {
+      "index": 35,
+      "role": "p",
+      "text": "Notably, the V2.5-Pro's post-training was explicitly designed to instill \"harness awareness\" \u2014 training the model to manage its own memory and context within agent scaffolds like Claude Code or OpenCode \u2014 making a Xiaomi-built harness optimized around that capability a logical next step."
+    },
+    {
+      "index": 36,
+      "role": "p",
+      "text": "Pricing is similarly aggressive: MiMo-V2.5 starts at $0.40 per million input tokens and $2.00 per million output tokens, while V2.5-Pro runs $1.00/$3.00 per million (input/output) up to 256K context, doubling beyond that, with cache hits dropping input costs to as little as $0.20\u2013$0.40 per million, making it among the cheapest frontier models available globally."
+    },
+    {
+      "index": 37,
+      "role": "h1",
+      "text": "VentureBeat Frontier AI Model API Pricing Snapshot"
+    },
+    {
+      "index": 38,
+      "role": "p",
+      "text": "For developers who don't want Xiaomi's models at all, MiMo Code also supports third-party backends \u2014 including token plans from DeepSeek, Moonshot's Kimi, and Zhipu's GLM \u2014 along with any OpenAI-compatible API, mirroring the bring-your-own-model flexibility of its OpenCode parent."
+    },
+    {
+      "index": 39,
+      "role": "h2",
+      "text": "Terminal AI coding agent wars go global"
+    },
+    {
+      "index": 40,
+      "role": "p",
+      "text": "MiMo Code lands in an increasingly crowded field of terminal-based coding agents: Anthropic's Claude Code, OpenAI's Codex CLI, Google's Gemini CLI, and open-source players like OpenCode and Aider."
+    },
+    {
+      "index": 41,
+      "role": "p",
+      "text": "What's new is the entrant. Xiaomi \u2014 the world's third-largest smartphone maker, with a fast-growing EV business \u2014 has been methodically building its MiMo AI division since the release of the MiMo-7B reasoning model in April 2025, following with the MiMo-VL vision-language series, MiMo-V2-Flash, the 1-trillion-parameter MiMo-V2-Pro in March 2026, and the V2.5 flagship family in April."
+    },
+    {
+      "index": 42,
+      "role": "p",
+      "text": "The effort is led by Fuli Luo, a veteran of DeepSeek's disruptive R1 project, who has characterized Xiaomi's frontier push as a \"quiet ambush\" \u2014 and backed it with a 100-trillion free token grant for builders announced alongside the V2.5 launch."
+    },
+    {
+      "index": 43,
+      "role": "p",
+      "text": "The playbook is familiar from DeepSeek , Alibaba's Qwen , MiniMax , and Moonshot AI's Kimi series : release genuinely capable models and tooling under permissive licenses at a fraction of U.S. lab pricing, and convert the resulting developer mindshare into a durable ecosystem."
+    },
+    {
+      "index": 44,
+      "role": "p",
+      "text": "By pairing an open-source agent harness with a free frontier-class model, Xiaomi is effectively eliminating both the licensing and the usage cost of entry \u2014 at least for now."
+    },
+    {
+      "index": 45,
+      "role": "h2",
+      "text": "What it means for enterprises and technical decision-makers"
+    },
+    {
+      "index": 46,
+      "role": "p",
+      "text": "For engineering leaders, MiMo Code is a low-risk, potentially high-value evaluation candidate: MIT-style licensing permits modification and commercial integration, the OpenCode lineage means the architecture is inspectable, and the bring-your-own-model support means it can be pointed at an internally approved endpoint rather than Xiaomi's cloud."
+    },
+    {
+      "index": 47,
+      "role": "p",
+      "text": "The persistent memory system addresses a real and widely felt pain point in agentic development workflows \u2014 one that competitors are also racing to solve."
+    },
+    {
+      "index": 48,
+      "role": "p",
+      "text": "The countervailing considerations: the \"free for a limited time\" model access is by definition temporary and routes code context through Xiaomi's servers, which will be a non-starter for organizations with strict data-residency or IP policies; the benchmark edge over Claude Code is self-reported; and a V0.1.0 release number signals exactly what it suggests about maturity."
+    },
+    {
+      "index": 49,
+      "role": "p",
+      "text": "Teams subject to U.S. government procurement restrictions on Chinese technology vendors should also weigh that context before adopting."
+    },
+    {
+      "index": 50,
+      "role": "h2",
+      "text": "More"
+    }
+  ],
+  "candidate_sections": [
+    {
+      "index": 0,
+      "title": "",
+      "body": "Xiaomi's MiMo AI team has open-sourced MiMo Code V0.1.0 , a terminal-native AI coding assistant that the Chinese electronics giant says outperforms Anthropic's Claude Code on key agentic coding benchmarks, especially on long-horizon, multi-step tasks (200+ steps) \u2014 at least, according to its own internal beta release and survey of 576 developers. It's also bundling limited-time free access to MiMo-V2.5, its multimodal flagship model with a million-token context window, requiring no registration to get started. The release was announced June 10, 2026 in a post on the social network X from the official @XiaomiMiMo account , which described the tool as \"more than an AI coding assistant in your terminal \u2014 it's the smartest coding partner you'll ever work with.\"",
+      "score": 12,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "news",
+        "boilerplate"
+      ],
+      "block_indices": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "index": 1,
+      "title": "",
+      "body": "MiMo Code is available now on GitHub under an MIT license , and installs with a single terminal command ( curl -fsSL https://mimo.xiaomi.com/install | bash ) on macOS and Linux or via npm ( npm install -g @mimo-ai/cli ) on Windows. The project is a fork of the open-source OpenCode agent, which Xiaomi has extended with its own memory architecture, workflow modes, and model harness.",
+      "score": 7,
+      "reasons": [
+        "strong terms",
+        "topic terms",
+        "distribution",
+        "boilerplate"
+      ],
+      "block_indices": [
+        3,
+        4
+      ]
+    },
+    {
+      "index": 2,
+      "title": "The end of AI coding agents' amnesia?",
+      "body": "As any avid vibe coder would surely attest, AI coding agents degrade over long working sessions: as the context window fills, earlier decisions, conventions, and task state get compacted away or lost entirely, forcing developers to re-explain their projects. Xiaomi argues this approach is doomed at scale. \"What we need is not better compression, but an explicit storage-and-retrieval mechanism that decides what information should be written into persistent structures, and when it should be recalled,\" the MiMo team noted in their launch blog . MiMo Code attacks this with a cross-session memory system, powered under the hood by SQLite FTS5 full-text search, that spans four layers: project memory (a persistent MEMORY.md file), session checkpoints, scratch notes, and per-task progress logs.",
+      "score": 9,
+      "reasons": [
+        "topic terms",
+        "news"
+      ],
+      "block_indices": [
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "index": 3,
+      "title": "The end of AI coding agents' amnesia?",
+      "body": "The note-taking is key, here: Rather than forcing the primary coding agent to pause its work to take notes, the system deploys an independent \"checkpoint-writer\" subagent. Think of it the primary coding agent as a construction contractor working to build a massive mansion alongside a dedicated architect, the checkpoint-writer subagent. While the main agent focuses on building out the physical structure, the subagent updates the blueprints in real time, noting decisions, issues, and the actual lay of the land as the construction project progresses. When the context window approaches its limits \u2014 the contractor gets lost in the half-built mansion \u2014 it can consult the subagent and find its place again. In the case of MiMo Code, the system simply rebuilds the environment from structured checkpoints with the relevant context, ensuring no loss of operational momentum.",
+      "score": 6,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "index": 4,
+      "title": "The end of AI coding agents' amnesia?",
+      "body": "Two self-improvement mechanisms round out the system: a /dream command that periodically (roughly every seven days) reviews historical sessions, deduplicates them, and compresses them into long-term memory, and a \"distill\" function that mines past sessions for repeated workflows that can be automated, following a similar approach taken recently by OpenAI and Anthropic with their various models.",
+      "score": 6,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        12
+      ]
+    },
+    {
+      "index": 5,
+      "title": "Impressive performance on software engineering (SWE) benchmarks",
+      "body": "According to benchmark figures published in Xiaomi's technical blog post, MiMo Code paired with MiMo-V2.5-Pro outperformed Claude Code paired with Claude Sonnet 4.6 on all three evaluations tested: The harness itself accounts for a measurable share of the gain. Running the same MiMo-V2.5-Pro model in both harnesses, MiMo Code scored 62% on SWE-bench Pro versus 57% for Claude Code, and 73% on Terminal Bench 2 versus 68% \u2014 roughly five points each, attributable purely to the agent system rather than the model. Xiaomi notably did not publish comparisons against OpenAI's Codex or Google's Gemini CLI \u2014 Claude Code is the sole named competitor throughout its materials, a telling choice of benchmark target.",
+      "score": 21,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "comparison"
+      ],
+      "block_indices": [
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "index": 6,
+      "title": "Impressive performance on software engineering (SWE) benchmarks",
+      "body": "Independent reference points suggest why. On the official Terminal-Bench 2.0 leaderboard maintained at tbench.ai, OpenAI's Codex CLI running GPT-5.5 scores 82.2% \u2014 roughly nine points above MiMo Code's self-reported 73% \u2014 and OpenAI's own GPT-5.5 announcement claims 82.7% on the same benchmark. On SWE-Bench Pro, however, the picture flips: OpenAI reports GPT-5.5 at 58.6%, below MiMo Code + MiMo-V2.5-Pro's claimed 62%. (MiMo Code does not yet appear on either official leaderboard, and cross-comparing self-run numbers against leaderboard submissions carries the usual configuration caveats.) Perhaps more interesting than the offline benchmarks: Xiaomi says it ran a human double-blind A/B evaluation during its internal beta, covering 576 developers working in 474 real private repositories, producing 1,213 judged head-to-head pairs against Claude Code using the same target model.",
+      "score": 18,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        17,
+        18,
+        19
+      ]
+    },
+    {
+      "index": 7,
+      "title": "Impressive performance on software engineering (SWE) benchmarks",
+      "body": "Under 200 execution steps, the two systems split roughly 50/50 \u2014 but past 200 steps, MiMo Code's win rate rose above 65%, supporting the company's thesis that its memory and state-management architecture pays off specifically on long-horizon work. Xiaomi itself concedes the standard benchmarks \"still measure one-shot problem-solving ability\" and don't capture the tool's multi-session design goals. As always, these are vendor self-reported numbers that haven't been independently verified, and head-to-head harness comparisons are sensitive to configuration. But the claims are consistent with a broader industry pattern: scaffolding and harness engineering are becoming as important as raw model capability in agentic coding performance.",
+      "score": 16,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "index": 8,
+      "title": "Easy integration with existing developer systems and voice control",
+      "body": "From a user experience standpoint, MiMo Code is designed to live where developers already work. It operates directly in the terminal, reading and writing files, running commands, and managing Git. Out of the box, the tool requires zero configuration, connecting automatically to \"MiMo Auto\"\u2014a free-for-a-limited-time channel powered by Xiaomi\u2019s multimodal MiMo V2.5 model, which boasts a massive million-token context window. For developers migrating from existing environments, the transition is frictionless: MiMo Code automatically imports MCP servers, custom skills, and API configurations from Claude Code. Compose mode: Pressing Tab switches the agent into a specification-driven workflow in which the developer describes a high-level goal and the system autonomously executes the full development cycle \u2014 design, planning, coding, testing, and review \u2014 following what Xiaomi describes as a \"heavy planning upfront, stable verification later\" strategy.",
+      "score": 10,
+      "reasons": [
+        "numbers",
+        "topic terms"
+      ],
+      "block_indices": [
+        24,
+        25,
+        26
+      ]
+    },
+    {
+      "index": 9,
+      "title": "Easy integration with existing developer systems and voice control",
+      "body": "Voice control: Built on Xiaomi's MiMo-ASR speech recognition with TenVAD voice activity detection, developers can dictate and modify instructions verbally and speak commands like \"send\" and \"execute\" for fully hands-free operation (available for logged-in users). According to Xiaomi, the gains from the agent harness itself are measurable. Running the same underlying MiMo model in both harnesses, the company says MiMo Code scored 62% on SWE-Bench Pro versus 57% for Claude Code, and 73% on Terminal Bench 2 versus Claude Code's 68% \u2014 roughly five percentage points better on each, attributable purely to the agent system rather than the model.",
+      "score": 19,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "comparison"
+      ],
+      "block_indices": [
+        27,
+        28
+      ]
+    },
+    {
+      "index": 10,
+      "title": "Easy integration with existing developer systems and voice control",
+      "body": "As always, these are vendor self-reported numbers that haven't been independently verified, and head-to-head harness comparisons are sensitive to configuration. But the claim is consistent with a broader industry pattern: scaffolding and harness engineering are becoming as important as raw model capability in agentic coding performance.",
+      "score": 7,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        29
+      ]
+    },
+    {
+      "index": 11,
+      "title": "Aggressively affordable",
+      "body": "The bigger lure for many developers may be what's bundled in. MiMo Code ships with \"MiMo Auto,\" a zero-configuration channel offering free, limited-time access to MiMo-V2.5 \u2014 the natively multimodal model Xiaomi released in late April 2026, a sparse mixture-of-experts design with 310 billion total parameters (just 15 billion active per inference) and a 1 million token context window, which the company positions as matching Anthropic's Claude Sonnet 4.6 in multimodal agentic work. As VentureBeat reported when the MiMo-V2.5 family launched in April, the models are MIT-licensed and among the most efficient and affordable available for agentic tasks.",
+      "score": 16,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "news"
+      ],
+      "block_indices": [
+        31,
+        32,
+        33
+      ]
+    },
+    {
+      "index": 12,
+      "title": "Aggressively affordable",
+      "body": "The larger MiMo-V2.5-Pro \u2014 a 1.02-trillion-parameter mixture-of-experts model with 42 billion active parameters and a hybrid-attention architecture \u2014 led the open-source field on Xiaomi's ClawEval agentic benchmark with a 63.8% success rate while consuming only about 70,000 tokens per trajectory, roughly 40\u201360% fewer than Anthropic's Claude Opus 4.6, Google's Gemini 3.1 Pro, or OpenAI's GPT-5.4 needed for comparable results. Notably, the V2.5-Pro's post-training was explicitly designed to instill \"harness awareness\" \u2014 training the model to manage its own memory and context within agent scaffolds like Claude Code or OpenCode \u2014 making a Xiaomi-built harness optimized around that capability a logical next step.",
+      "score": 18,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "distribution"
+      ],
+      "block_indices": [
+        34,
+        35
+      ]
+    },
+    {
+      "index": 13,
+      "title": "Aggressively affordable",
+      "body": "Pricing is similarly aggressive: MiMo-V2.5 starts at $0.40 per million input tokens and $2.00 per million output tokens, while V2.5-Pro runs $1.00/$3.00 per million (input/output) up to 256K context, doubling beyond that, with cache hits dropping input costs to as little as $0.20\u2013$0.40 per million, making it among the cheapest frontier models available globally.",
+      "score": 12,
+      "reasons": [
+        "numbers",
+        "topic terms"
+      ],
+      "block_indices": [
+        36
+      ]
+    },
+    {
+      "index": 14,
+      "title": "VentureBeat Frontier AI Model API Pricing Snapshot",
+      "body": "For developers who don't want Xiaomi's models at all, MiMo Code also supports third-party backends \u2014 including token plans from DeepSeek, Moonshot's Kimi, and Zhipu's GLM \u2014 along with any OpenAI-compatible API, mirroring the bring-your-own-model flexibility of its OpenCode parent.",
+      "score": 7,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        38
+      ]
+    },
+    {
+      "index": 15,
+      "title": "Terminal AI coding agent wars go global",
+      "body": "MiMo Code lands in an increasingly crowded field of terminal-based coding agents: Anthropic's Claude Code, OpenAI's Codex CLI, Google's Gemini CLI, and open-source players like OpenCode and Aider. What's new is the entrant. Xiaomi \u2014 the world's third-largest smartphone maker, with a fast-growing EV business \u2014 has been methodically building its MiMo AI division since the release of the MiMo-7B reasoning model in April 2025, following with the MiMo-VL vision-language series, MiMo-V2-Flash, the 1-trillion-parameter MiMo-V2-Pro in March 2026, and the V2.5 flagship family in April. The effort is led by Fuli Luo, a veteran of DeepSeek's disruptive R1 project, who has characterized Xiaomi's frontier push as a \"quiet ambush\" \u2014 and backed it with a 100-trillion free token grant for builders announced alongside the V2.5 launch.",
+      "score": 18,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "news",
+        "distribution"
+      ],
+      "block_indices": [
+        40,
+        41,
+        42
+      ]
+    },
+    {
+      "index": 16,
+      "title": "Terminal AI coding agent wars go global",
+      "body": "The playbook is familiar from DeepSeek , Alibaba's Qwen , MiniMax , and Moonshot AI's Kimi series : release genuinely capable models and tooling under permissive licenses at a fraction of U.S. lab pricing, and convert the resulting developer mindshare into a durable ecosystem. By pairing an open-source agent harness with a free frontier-class model, Xiaomi is effectively eliminating both the licensing and the usage cost of entry \u2014 at least for now.",
+      "score": 15,
+      "reasons": [
+        "strong terms",
+        "topic terms",
+        "news",
+        "distribution"
+      ],
+      "block_indices": [
+        43,
+        44
+      ]
+    },
+    {
+      "index": 17,
+      "title": "What it means for enterprises and technical decision-makers",
+      "body": "For engineering leaders, MiMo Code is a low-risk, potentially high-value evaluation candidate: MIT-style licensing permits modification and commercial integration, the OpenCode lineage means the architecture is inspectable, and the bring-your-own-model support means it can be pointed at an internally approved endpoint rather than Xiaomi's cloud. The persistent memory system addresses a real and widely felt pain point in agentic development workflows \u2014 one that competitors are also racing to solve. The countervailing considerations: the \"free for a limited time\" model access is by definition temporary and routes code context through Xiaomi's servers, which will be a non-starter for organizations with strict data-residency or IP policies; the benchmark edge over Claude Code is self-reported; and a V0.1.0 release number signals exactly what it suggests about maturity.",
+      "score": 14,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "news"
+      ],
+      "block_indices": [
+        46,
+        47,
+        48
+      ]
+    },
+    {
+      "index": 18,
+      "title": "What it means for enterprises and technical decision-makers",
+      "body": "Teams subject to U.S. government procurement restrictions on Chinese technology vendors should also weigh that context before adopting.",
+      "score": 3,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        49
+      ]
+    }
+  ]
+}

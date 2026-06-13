@@ -1,0 +1,41 @@
+{
+  "source_url": "https://x.com/karpathy/status/261161354969358337",
+  "thread_source": "single-post",
+  "thread_post_count": 1,
+  "slide_count": 2,
+  "rendered_slide_count": 1,
+  "first_page_only": true,
+  "account_name": "LLMAW",
+  "title_context": {
+    "topic": "Turned 26 yesterday but I tell everyone I'm A-teen",
+    "provider": "local",
+    "image_provider": "source_profile",
+    "google_enabled": false,
+    "gemini_text_model": "",
+    "openai_image_model": "",
+    "openai_image_size": "",
+    "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'Turned 26 yesterday but I tell everyone I'm A-teen'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. The source post is by this person: Andrej Karpathy (@karpathy). Make their recognizable public likeness the main portrait element. If a reliable face is not known or their public profile is faceless, use their X profile photo/avatar style as the visual reference instead of inventing an unrelated face.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
+    "topic_entity": null,
+    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_person_test/title_assets/source-profile--karpathy-f2cb6ec4.jpg",
+    "companies": [],
+    "ceos": [],
+    "source_people": [
+      {
+        "name": "Andrej Karpathy",
+        "query": "Andrej Karpathy @karpathy",
+        "handle": "@karpathy",
+        "profile_image_url": "https://pbs.twimg.com/profile_images/1296667294148382721/9Pr6XrPB_400x400.jpg",
+        "provider": "source_post",
+        "profile_image_path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_person_test/title_assets/source-profile--karpathy-f2cb6ec4.jpg"
+      }
+    ]
+  },
+  "slides": [
+    {
+      "index": 1,
+      "type": "title",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/x_carousel_person_test/slide_01.png",
+      "source_url": "https://x.com/karpathy/status/261161354969358337"
+    }
+  ]
+}

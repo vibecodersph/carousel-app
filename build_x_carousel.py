@@ -43,6 +43,29 @@ ROOT = Path(__file__).resolve().parent
 FONTS = ROOT / "assets" / "archivo.css"
 DEFAULT_OUT = OUT / "x_carousel"
 DEFAULT_ACCOUNT_NAME = "LLMAW"
+PERSON_SOURCE_HANDLES = {
+    "sama",
+    "karpathy",
+    "bcherny",
+    "gdb",
+    "demishassabis",
+    "jeffdean",
+    "fchollet",
+    "ylecun",
+    "clementdelangue",
+    "aidangomez",
+    "simonw",
+    "emollick",
+    "amasad",
+    "rauchg",
+    "jeremyphoward",
+}
+ORGANIZATION_SOURCE_HANDLES = {
+    "openai",
+    "anthropicai",
+    "googledeepmind",
+    "mistralai",
+}
 
 X_COOKIE_DOMAINS = ("x.com", "twitter.com")
 GOOGLE_KG_ENDPOINT = "https://kgsearch.googleapis.com/v1/entities:search"
@@ -316,6 +339,48 @@ def download_image(url: object, out_dir: Path, stem: str) -> Path | None:
     return path
 
 
+def normalized_handle(value: object) -> str:
+    return re.sub(r"[^a-z0-9_]+", "", str(value or "").strip().lstrip("@").lower())
+
+
+def normalize_x_profile_image_url(url: object) -> str:
+    if not isinstance(url, str):
+        return ""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        return ""
+    if "twimg.com/profile_images/" in url:
+        url = re.sub(r"([_-])normal(\.[A-Za-z0-9]+)(?=$|\?)", r"\g<1>400x400\g<2>", url)
+        url = re.sub(r"([?&])name=normal\b", r"\1name=400x400", url)
+    return url
+
+
+def profile_image_url_from_metadata(metadata: dict[str, object] | None) -> str:
+    if not metadata:
+        return ""
+    for key in (
+        "uploader_thumbnail",
+        "uploader_avatar",
+        "channel_thumbnail",
+        "channel_avatar",
+        "creator_thumbnail",
+        "creator_avatar",
+        "thumbnail",
+    ):
+        url = normalize_x_profile_image_url(metadata.get(key))
+        if url and "twimg.com/profile_images/" in url:
+            return url
+    thumbnails = metadata.get("thumbnails")
+    if isinstance(thumbnails, list):
+        for item in thumbnails:
+            if not isinstance(item, dict):
+                continue
+            url = normalize_x_profile_image_url(item.get("url"))
+            if url and "twimg.com/profile_images/" in url:
+                return url
+    return ""
+
+
 def normalized_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
@@ -580,6 +645,7 @@ def post_from_metadata(url: str, metadata: dict[str, object] | None) -> dict[str
         "likes": likes,
         "reposts": reposts,
         "replies": replies,
+        "profile_image_url": profile_image_url_from_metadata(metadata),
     }
 
 
@@ -655,10 +721,25 @@ def fetch_embed_post(url: str) -> dict[str, str] | None:
             page.goto(embed_url, wait_until="networkidle")
             page.wait_for_timeout(1000)
             embed_text = page.locator("article").first.inner_text(timeout=10000)
+            profile_image_url = page.evaluate(
+                """() => {
+                    const article = document.querySelector('article');
+                    if (!article) return "";
+                    const images = Array.from(article.querySelectorAll('img'));
+                    const profile = images.find((img) => {
+                        const src = img.currentSrc || img.src || "";
+                        return src.includes("/profile_images/");
+                    });
+                    return profile ? (profile.currentSrc || profile.src || "") : "";
+                }"""
+            )
             browser.close()
     except Exception:
         return None
-    return post_from_embed_text(url, embed_text)
+    post = post_from_embed_text(url, embed_text)
+    if post and profile_image_url:
+        post["profile_image_url"] = normalize_x_profile_image_url(profile_image_url)
+    return post
 
 
 def article_to_post(article: dict[str, object]) -> dict[str, str] | None:
@@ -702,6 +783,7 @@ def article_to_post(article: dict[str, object]) -> dict[str, str] | None:
         "likes": "",
         "reposts": "",
         "replies": "",
+        "profile_image_url": normalize_x_profile_image_url(article.get("profile_image_url")),
     }
 
 
@@ -727,6 +809,7 @@ def post_from_xai(data: dict[str, object]) -> dict[str, str] | None:
         "likes": str(data.get("likes_fmt") or ""),
         "reposts": str(data.get("retweets_fmt") or ""),
         "replies": str(data.get("replies_fmt") or ""),
+        "profile_image_url": normalize_x_profile_image_url(data.get("profile_image_url")),
     }
 
 
@@ -771,12 +854,16 @@ def discover_thread_posts(url: str, max_posts: int, cookies_from_browser: str | 
         const handleLink = links.map((a) => a.textContent || "").find((text) => /^@/.test(text.trim())) || "";
         const author = Array.from(article.querySelectorAll('a[role="link"] span'))
           .map((el) => el.textContent || "").find((text) => text && !text.startsWith("@")) || "";
+        const profileImage = Array.from(article.querySelectorAll('img'))
+          .map((img) => img.currentSrc || img.src || "")
+          .find((src) => src.includes("/profile_images/")) || "";
         const rect = article.getBoundingClientRect();
         return {
             url: status,
             handle: handleLink.trim(),
             author: author.trim(),
             text: article.innerText || "",
+            profile_image_url: profileImage,
             y: Math.round(rect.top + window.scrollY),
             index,
         };
@@ -1098,12 +1185,61 @@ def ceos_from_companies(companies: list[dict[str, object]]) -> list[dict[str, ob
     return ceos
 
 
+def is_person_source_post(post: dict[str, str]) -> bool:
+    handle = normalized_handle(post.get("handle"))
+    if not handle or handle in ORGANIZATION_SOURCE_HANDLES:
+        return False
+    return handle in PERSON_SOURCE_HANDLES
+
+
+def source_person_from_post(post: dict[str, str]) -> dict[str, object] | None:
+    if not is_person_source_post(post):
+        return None
+    author = string_value(post.get("author"))
+    handle = normalized_handle(post.get("handle"))
+    name = author if author and author != "Source post" else f"@{handle}"
+    person: dict[str, object] = {
+        "name": name,
+        "handle": f"@{handle}",
+        "query": f"{name} @{handle}".strip(),
+        "provider": "source_post",
+    }
+    profile_image_url = normalize_x_profile_image_url(post.get("profile_image_url"))
+    if profile_image_url:
+        person["profile_image_url"] = profile_image_url
+    return person
+
+
+def download_source_profile_images(source_people: list[dict[str, object]], assets_dir: Path) -> None:
+    for person in source_people:
+        if person.get("profile_image_path"):
+            continue
+        profile_image_url = person.get("profile_image_url")
+        image_path = download_image(
+            profile_image_url,
+            assets_dir,
+            f"source-profile-{person.get('handle') or person.get('name') or 'person'}",
+        )
+        if image_path:
+            person["profile_image_path"] = image_path
+
+
 def default_title_image_prompt(
     topic: str,
     companies: list[dict[str, object]],
     ceos: list[dict[str, object]],
+    source_people: list[dict[str, object]],
 ) -> str:
     company_line = ", ".join(string_value(company.get("name")) for company in companies if company.get("name"))
+    source_bits = []
+    for person in source_people:
+        name = string_value(person.get("name"))
+        handle = string_value(person.get("handle"))
+        if name and handle:
+            source_bits.append(f"{name} ({handle})")
+        elif name or handle:
+            source_bits.append(name or handle)
+    source_line = ", ".join(source_bits)
     ceo_bits = []
     for ceo in ceos:
         ceo_name = string_value(ceo.get("name"))
@@ -1119,10 +1255,18 @@ def default_title_image_prompt(
         "Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold.",
         "The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI.",
     ]
+    if source_line:
+        parts.append(
+            "The source post is by this person: "
+            f"{source_line}. Make their recognizable public likeness the main portrait element. "
+            "If a reliable face is not known or their public profile is faceless, use their X profile photo/avatar style as the visual reference instead of inventing an unrelated face."
+        )
     if ceo_line:
         parts.append(
             f"Add a tasteful editorial portrait element of the CEO: {ceo_line}."
         )
+    if source_line and ceo_line:
+        parts.append("Prioritize the source author portrait over CEO or company context.")
     if company_line:
         parts.append(f"Company context: {company_line}. Do not show logos or brand marks.")
     return " ".join(parts)
@@ -1132,16 +1276,17 @@ def title_image_prompt(
     topic: str,
     companies: list[dict[str, object]],
     ceos: list[dict[str, object]],
+    source_people: list[dict[str, object]],
     analysis: dict[str, object] | None,
 ) -> str:
-    prompt = default_title_image_prompt(topic, companies, ceos)
+    prompt = default_title_image_prompt(topic, companies, ceos, source_people)
     return f"""
 {prompt}
 
 Format and style:
 - 16:9 horizontal composition, 2048x1152.
 - Make it feel like the output of generate_cover.py, not a corporate headshot.
-- Keep the CEO as a strong supporting visual element, not the entire concept.
+- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.
 - Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.
 - No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.
 - Do not place any graphic or symbol that resembles text.
@@ -1166,12 +1311,13 @@ def generate_openai_topic_image(
     topic: str,
     companies: list[dict[str, object]],
     ceos: list[dict[str, object]],
+    source_people: list[dict[str, object]],
     analysis: dict[str, object] | None,
     out_dir: Path,
 ) -> tuple[Path | None, str]:
     if not openai_api_key():
         return None, ""
-    prompt = title_image_prompt(topic, companies, ceos, analysis)
+    prompt = title_image_prompt(topic, companies, ceos, source_people, analysis)
     path = generated_openai_image_path(out_dir, topic, prompt)
     model = openai_title_image_model()
     size = openai_title_image_size()
@@ -1209,18 +1355,38 @@ def build_title_enrichment(
         if gemini_topic:
             topic = gemini_topic
 
+    source_person = source_person_from_post(posts[0])
+    source_people = [source_person] if source_person else []
     companies = normalize_gemini_companies(analysis, posts)
+    if source_people:
+        source_keys = {
+            normalized_key(string_value(person.get("name")))
+            for person in source_people
+            if person.get("name")
+        }
+        source_keys.update(
+            normalized_key(string_value(person.get("handle")).lstrip("@"))
+            for person in source_people
+            if person.get("handle")
+        )
+        companies = [
+            company
+            for company in companies
+            if normalized_key(string_value(company.get("name"))) not in source_keys
+        ]
     ceos = ceos_from_companies(companies)
+    download_source_profile_images(source_people, assets_dir)
     topic_image_path, generated_prompt = generate_openai_topic_image(
         topic,
         companies,
         ceos,
+        source_people,
         analysis,
         out_dir,
     )
     image_provider = "openai" if topic_image_path else ""
     if not generated_prompt:
-        generated_prompt = title_image_prompt(topic, companies, ceos, analysis)
+        generated_prompt = title_image_prompt(topic, companies, ceos, source_people, analysis)
     topic_entity = None
 
     if kg_api_key:
@@ -1268,6 +1434,39 @@ def build_title_enrichment(
             if image_path:
                 ceo["image_path"] = image_path
 
+        for person in source_people:
+            person_name = string_value(person.get("name"))
+            person_handle = string_value(person.get("handle"))
+            kg_entity = first_kg_entity(
+                f"{person_name} {person_handle}",
+                kg_api_key,
+                types=("Person",),
+                require_image=True,
+            )
+            if not kg_entity:
+                continue
+            for key in ("description", "source_url", "license", "image_url"):
+                if kg_entity.get(key):
+                    person[key] = kg_entity[key]
+            image_path = download_image(
+                person.get("image_url"),
+                assets_dir,
+                f"source-person-{person.get('name', 'person')}",
+            )
+            if image_path:
+                person["image_path"] = image_path
+
+        if not topic_image_path:
+            topic_image_path = next(
+                (
+                    person.get("image_path")
+                    for person in source_people
+                    if isinstance(person.get("image_path"), Path)
+                ),
+                None,
+            )
+            image_provider = "source_person" if topic_image_path else image_provider
+
         if not topic_image_path:
             topic_entity = find_topic_entity(topic, companies, kg_api_key)
             if topic_entity:
@@ -1277,6 +1476,26 @@ def build_title_enrichment(
                     f"topic-{topic_entity.get('name', 'topic')}",
                 )
                 image_provider = "knowledge_graph" if topic_image_path else image_provider
+    if not topic_image_path:
+        topic_image_path = next(
+            (
+                person.get("image_path")
+                for person in source_people
+                if isinstance(person.get("image_path"), Path)
+            ),
+            None,
+        )
+        image_provider = "source_person" if topic_image_path else image_provider
+    if not topic_image_path:
+        topic_image_path = next(
+            (
+                person.get("profile_image_path")
+                for person in source_people
+                if isinstance(person.get("profile_image_path"), Path)
+            ),
+            None,
+        )
+        image_provider = "source_profile" if topic_image_path else image_provider
     if not topic_image_path:
         topic_image_path = next(
             (
@@ -1302,6 +1521,7 @@ def build_title_enrichment(
         "topic": topic,
         "companies": companies,
         "ceos": ceos,
+        "source_people": source_people,
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
         "google_enabled": bool(api_key),
@@ -1586,6 +1806,8 @@ def manifest_entity(entity: dict[str, object]) -> dict[str, object]:
         "license",
         "company",
         "ceo_name",
+        "handle",
+        "profile_image_url",
         "provider",
     ):
         value = entity.get(key)
@@ -1594,6 +1816,9 @@ def manifest_entity(entity: dict[str, object]) -> dict[str, object]:
     image_path = entity.get("image_path")
     if isinstance(image_path, Path):
         item["image_path"] = str(image_path)
+    profile_image_path = entity.get("profile_image_path")
+    if isinstance(profile_image_path, Path):
+        item["profile_image_path"] = str(profile_image_path)
     return item
 
 
@@ -1620,6 +1845,11 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
             manifest_entity(ceo)
             for ceo in context.get("ceos", [])
             if isinstance(ceo, dict)
+        ],
+        "source_people": [
+            manifest_entity(person)
+            for person in context.get("source_people", [])
+            if isinstance(person, dict)
         ],
     }
 
@@ -1664,6 +1894,10 @@ def build_x_carousel(
         embed_post = fetch_embed_post(posts[0]["url"])
         if embed_post:
             posts[0] = {**posts[0], **embed_post}
+    if is_person_source_post(posts[0]) and not posts[0].get("profile_image_url"):
+        embed_post = fetch_embed_post(posts[0]["url"])
+        if embed_post and embed_post.get("profile_image_url"):
+            posts[0]["profile_image_url"] = embed_post["profile_image_url"]
 
     total = len(posts) + 1
     slides: list[dict[str, object]] = []

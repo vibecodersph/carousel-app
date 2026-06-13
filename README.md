@@ -111,16 +111,44 @@ uv run python story_scout.py approve x_abc123def0
 
 The build writes to `out/automation/builds/<candidate_id>/` and records the manifest path in `out/automation/candidates.json`.
 
+Preview the build-to-Instagram path after approval:
+
+```sh
+uv run python story_scout.py approve x_abc123def0 \
+  --publish-instagram \
+  --instagram-upload-r2 \
+  --instagram-dry-run
+```
+
+That uploads only the rendered carousel slides listed in `manifest.json`, then writes `instagram_publish.json` next to the manifest with the exact media URL mapping and Instagram API steps. For a real publish:
+
+```sh
+uv run python story_scout.py approve x_abc123def0 \
+  --publish-instagram \
+  --instagram-upload-r2 \
+  --instagram-media-base-url "https://cdn.example.com/llmaw/x_abc123def0"
+```
+
+Prefer Buffer over the direct Meta API? `--publish-buffer` uploads the rendered slides to R2 and creates a Buffer draft on the connected Instagram channel:
+
+```sh
+uv run python story_scout.py approve x_abc123def0 --publish-buffer
+```
+
+The draft waits in the Buffer dashboard for a final review before anything reaches Instagram. Use `--buffer-mode queue` to schedule into the Buffer queue instead, or `--buffer-mode now` to publish immediately. `--buffer-dry-run` writes the payload without calling Buffer, and a `buffer_publish.json` report lands next to the manifest either way. Requires `BUFFER_API_KEY` and `BUFFER_CHANNEL_ID` in `.env`.
+
+Buffer does not support mixed-media Instagram carousels ([their docs](https://support.buffer.com/article/657-scheduling-instagram-posts-and-reels)): their API silently keeps only the video plus the last image, which then publishes as a single reel. Builds that mix video and image slides therefore abort by default when published through Buffer. Choose explicitly with `--buffer-video-strategy`: `poster` swaps each video for its poster still (image-only carousel), `reel` publishes the first video alone as a reel. For true mixed-media carousels use the Meta Graph API path (`instagram_publish.py` / `--publish-instagram`), which supports them.
+
 Telegram approvals are optional. Configure a bot token and chat ID, then scan with notifications:
 
 ```sh
 export TELEGRAM_BOT_TOKEN=123456:...
 export TELEGRAM_CHAT_ID=123456789
 uv run python story_scout.py scan --config story_sources.json --notify
-uv run python story_scout.py telegram-poll --watch
+uv run python story_scout.py telegram-poll --watch --publish-buffer
 ```
 
-Telegram approval callbacks use the same build path as the CLI. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
+Telegram approval callbacks use the same build path as the CLI, so a poller started with `--publish-buffer` turns each Telegram approval into a built carousel plus a Buffer draft automatically. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
 
 ## Static PNG/PPTX build
 
@@ -163,6 +191,83 @@ For automation triggers that should still accept only the URL, set this once in 
 ```sh
 export X_COOKIES_FROM_BROWSER=chrome
 ```
+
+## One-URL Article Carousel
+
+Drop in a long-form article URL to turn only the highest-signal sections into
+LLMAW carousel pages:
+
+```sh
+uv run python build_article_carousel.py \
+  "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks"
+```
+
+The script writes to `out/article_carousel`:
+
+- `slide_01.png`: branded title/hook slide, using the same cover system as the X workflow
+- `slide_02.png` and onward: selected article signal pages
+- `manifest.json`: ordered slide list, source article metadata, curation backend, and selected section scores
+- `source_article.json`: extracted blocks and candidate section scores for editorial review
+
+By default, curation uses Gemini when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is
+available, and falls back to local scoring otherwise. Both paths filter for
+concrete facts such as benchmarks, releases, open-source details, technical
+claims, quantified comparisons, and strategic implications. Tune selection with
+`--max-pages`, `--min-score`, or force a backend with
+`--curation-backend gemini|local|auto`.
+
+## Instagram Publishing
+
+`instagram_publish.py` publishes any generated carousel manifest through the Instagram Graph API. Instagram requires a professional Instagram account, an access token with content publishing permissions, and media files that Instagram can fetch from public HTTPS URLs. Local files and `localhost` URLs cannot be published directly.
+
+Configure credentials:
+
+```sh
+export R2_ACCOUNT_ID=...
+export R2_ACCESS_KEY_ID=...
+export R2_SECRET_ACCESS_KEY=...
+export R2_BUCKET=llmaw-carousel-media
+export INSTAGRAM_USER_ID=178414...
+export INSTAGRAM_ACCESS_TOKEN=...
+export INSTAGRAM_GRAPH_DOMAIN=instagram
+export INSTAGRAM_MEDIA_BASE_URL="https://pub-010164abaff84929ae890815a7290ca0.r2.dev"
+```
+
+The simplest way to get Instagram credentials is from the Meta app dashboard, not Graph API Explorer:
+
+1. Open the app in Meta for Developers.
+2. Go to **Instagram > API setup with Instagram business login**.
+3. Click **Generate token** next to the Instagram professional account.
+4. Copy the access token into `INSTAGRAM_ACCESS_TOKEN`.
+5. Fetch the Instagram user ID:
+
+```sh
+curl "https://graph.instagram.com/v25.0/me?fields=user_id,username&access_token=$INSTAGRAM_ACCESS_TOKEN"
+```
+
+Use the returned `user_id` as `INSTAGRAM_USER_ID`. App Dashboard tokens are long-lived for about 60 days.
+
+Upload the rendered carousel slides to R2 and preview the publish plan without calling Instagram:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2 --dry-run
+```
+
+Publish for real after the same R2 upload step:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2
+```
+
+Use `--caption` or `--caption-file` to override the default caption. Use repeated `--media-url` flags for per-slide URLs when the files do not share one base URL:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json --dry-run \
+  --media-url 1=https://cdn.example.com/slide_01.png \
+  --media-url slide_02.png=https://cdn.example.com/slide_02.png
+```
+
+The publisher writes `instagram_publish.json` beside the manifest. In dry-run mode it contains the validated media list and planned API calls; after a real publish it also records the returned Instagram media IDs and permalink lookup result.
 
 ## Branded Video Slide
 
