@@ -27,7 +27,7 @@ Create a local `.env` with a Google AI Studio / Gemini API key for title imagery
 GOOGLE_API_KEY=your_google_ai_studio_key
 ```
 
-The X carousel workflow uses Gemini to detect the topic and identify involved companies and CEOs. It uses GPT Image 2.0 for the branded first-slide cover; Gemini is not used for image generation in this workflow. You can override the defaults when model names change:
+The X carousel workflow uses Gemini to detect the topic, write the first-slide cover copy, and identify involved companies and CEOs. The Instagram cover voice lives in `brand/VIBECODERS_IG_VOICE.md`; edit that doc to tune the Taglish/witty VibeCoders PH cover style without changing Python. GPT Image 2.0 is used for the branded first-slide artwork; Gemini is not used for image generation in this workflow. You can override the defaults when model names change:
 
 ```sh
 GEMINI_TEXT_MODEL=gemini-3.5-flash

@@ -41,6 +41,7 @@ from generate_cover import DEFAULT_OPENAI_IMAGE_MODEL, generate_openai, openai_a
 
 ROOT = Path(__file__).resolve().parent
 FONTS = ROOT / "assets" / "archivo.css"
+IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
 DEFAULT_ACCOUNT_NAME = "vibecodersph"
 PERSON_SOURCE_HANDLES = {
@@ -221,6 +222,21 @@ def compact_topic(text: str, limit: int = 95) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rsplit(" ", 1)[0].strip()
+
+
+def load_ig_voice_prompt() -> str:
+    try:
+        text = IG_VOICE_DOC.read_text()
+    except OSError:
+        return ""
+    section = re.search(
+        r"## Copy-Paste Prompt Block For Automation.*?```(?:text)?\s*(.*?)```",
+        text,
+        flags=re.S,
+    )
+    if section:
+        return section.group(1).strip()
+    return text[:6000].strip()
 
 
 def kg_search(
@@ -1027,16 +1043,85 @@ def clamp_words(text: str, limit: int) -> str:
     return " ".join(words[:limit])
 
 
+def split_title_for_two_tone(text: str) -> tuple[str, str]:
+    parts = text.split()
+    if not parts:
+        return "", ""
+    if len(parts) < 3:
+        return text, ""
+    accent_count = max(1, round(len(parts) * 0.36))
+    if len(parts) >= 7:
+        accent_count = max(2, accent_count)
+    accent_count = min(accent_count, 5, len(parts) - 1)
+    return " ".join(parts[:-accent_count]), " ".join(parts[-accent_count:])
+
+
 def title_from_post(post: dict[str, str]) -> tuple[str, str]:
     text = post.get("text", "")
     text = re.split(r"[.!?]\s+", text.strip())[0] or text
     words = clamp_words(text, 14)
     if not words:
         return "The Post", ""
-    parts = words.split()
-    if len(parts) >= 3:
-        return " ".join(parts[:-1]), parts[-1]
-    return words, ""
+    return split_title_for_two_tone(words)
+
+
+def with_bracketed_accent(headline: str, accent_word: str) -> str:
+    headline = headline.replace("\u2014", ",").strip()
+    if re.search(r"\[[^\[\]]+\]", headline):
+        return headline
+    accent_word = accent_word.strip().strip("[]")
+    if not headline or not accent_word:
+        return headline
+    pattern = re.compile(rf"(?<![\w'-])({re.escape(accent_word)})(?![\w'-])", re.I)
+    updated, count = pattern.subn(r"[\1]", headline, count=1)
+    return updated if count else headline
+
+
+def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
+    if not isinstance(analysis, dict):
+        return {}
+    raw = analysis.get("cover")
+    if not isinstance(raw, dict):
+        raw = analysis.get("cover_copy")
+    if not isinstance(raw, dict):
+        return {}
+    headline = string_value(raw.get("headline"))
+    if not headline:
+        return {}
+    cover = {
+        "kicker": string_value(raw.get("kicker") or raw.get("kicker_line")),
+        "headline": with_bracketed_accent(headline, string_value(raw.get("accent_word"))),
+        "swipe_line": string_value(raw.get("swipe_line") or raw.get("swipe")),
+    }
+    if "\u2014" in cover["headline"]:
+        cover["headline"] = cover["headline"].replace("\u2014", ",")
+    return {key: value for key, value in cover.items() if value}
+
+
+def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
+    headline = re.sub(r"\s+", " ", headline).strip()
+    match = re.search(r"\[([^\[\]]+)\]", headline)
+    if not match:
+        return html.escape(headline), headline, False
+    before = headline[: match.start()].replace("[", "").replace("]", "")
+    accent = match.group(1).strip()
+    after = headline[match.end() :].replace("[", "").replace("]", "")
+    plain = re.sub(r"\s+", " ", f"{before}{accent}{after}").strip()
+    markup = (
+        f"{html.escape(before)}"
+        f"<span class=\"accent\">{html.escape(accent)}</span>"
+        f"{html.escape(after)}"
+    )
+    return markup, plain, True
+
+
+def fallback_headline_markup(post: dict[str, str], title: str | None) -> tuple[str, str]:
+    headline, accent = split_title_for_two_tone(title) if title else title_from_post(post)
+    title_text = " ".join(part for part in (headline, accent) if part)
+    safe_headline = html.escape(headline)
+    safe_accent = html.escape(accent)
+    accent_markup = f' <span class="accent">{safe_accent}</span>' if safe_accent else ""
+    return f"{safe_headline}{accent_markup}", title_text
 
 
 def title_font_size(text: str) -> int:
@@ -1052,6 +1137,19 @@ def title_font_size(text: str) -> int:
 def asset_uri(path: object) -> str:
     if isinstance(path, Path) and path.exists():
         return path.resolve().as_uri()
+    return ""
+
+
+def source_profile_asset_uri(context: dict[str, object]) -> str:
+    source_people = context.get("source_people")
+    if not isinstance(source_people, list):
+        return ""
+    for person in source_people:
+        if not isinstance(person, dict):
+            continue
+        uri = asset_uri(person.get("profile_image_path"))
+        if uri:
+            return uri
     return ""
 
 
@@ -1077,23 +1175,43 @@ def gemini_title_analysis(
     if not api_key:
         return None
     model = gemini_text_model()
+    voice_prompt = load_ig_voice_prompt() or (
+        "Write witty Taglish-native Instagram cover lines for VibeCoders PH. "
+        "Exactly one accent word must be wrapped in [brackets]."
+    )
     prompt = f"""
 You prepare editorial carousel title-slide metadata from X/Twitter posts.
 Use Google Search grounding when available to identify companies and their current CEOs.
 Return JSON only with this exact shape:
 {{
   "topic": "short topic, 4 to 10 words",
+  "cover": {{
+    "kicker": "short section label or handle, 1 to 3 words",
+    "headline": "Taglish-native IG cover line with exactly one [accent] word",
+    "accent_word": "same accent word without brackets",
+    "swipe_line": "short Taglish swipe prompt"
+  }},
   "companies": [
     {{"name": "Company name", "ceo_name": "Current CEO name"}}
   ]
 }}
 
 Rules:
+- Apply the VibeCoders PH Instagram voice guide below when writing cover.kicker,
+  cover.headline, cover.accent_word, and cover.swipe_line.
+- The cover headline must not be a neutral summary of the post. It should be a
+  witty Taglish hook that earns the swipe while staying true to the post.
+- cover.headline must contain exactly one bracketed accent word, like [alam].
+- cover.accent_word must match the bracketed word without brackets.
 - Include at most 3 companies.
 - Include a CEO only when the company is clearly involved in the post or thread.
 - Prefer the current CEO over founders, product leaders, or former CEOs.
 - If no company is clearly involved, return an empty companies array.
 - Do not include markdown, comments, source citations, or extra keys.
+- Do not use em dashes.
+
+VibeCoders PH Instagram voice guide:
+{voice_prompt}
 
 Fallback topic: {fallback_topic}
 Posts JSON:
@@ -1102,7 +1220,7 @@ Posts JSON:
     base_payload: dict[str, object] = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": 0.35,
             "responseMimeType": "application/json",
         },
     }
@@ -1248,6 +1366,10 @@ def default_title_image_prompt(
             continue
         ceo_bits.append(f"{ceo_name} of {company_name}" if company_name else ceo_name)
     ceo_line = ", ".join(ceo_bits)
+    has_source_profile_image = any(
+        person.get("profile_image_path") or person.get("profile_image_url")
+        for person in source_people
+    )
     parts = [
         f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
         "Cream/off-white paper background (#F4F2EC).",
@@ -1256,17 +1378,27 @@ def default_title_image_prompt(
         "The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI.",
     ]
     if source_line:
-        parts.append(
-            "The source post is by this person: "
-            f"{source_line}. Make their recognizable public likeness the main portrait element. "
-            "If a reliable face is not known or their public profile is faceless, use their X profile photo/avatar style as the visual reference instead of inventing an unrelated face."
-        )
-    if ceo_line:
+        if has_source_profile_image:
+            parts.append(
+                "The source post is by this person: "
+                f"{source_line}. Do not generate or invent this person's face. "
+                "Their real X profile image will be composited separately on the title slide; create supporting abstract editorial art that leaves room for that avatar."
+            )
+        else:
+            parts.append(
+                "The source post is by this person: "
+                f"{source_line}. Do not invent a portrait or face for them; use symbolic, non-literal editorial imagery instead."
+            )
+    if ceo_line and not has_source_profile_image:
         parts.append(
             f"Add a tasteful editorial portrait element of the CEO: {ceo_line}."
         )
-    if source_line and ceo_line:
-        parts.append("Prioritize the source author portrait over CEO or company context.")
+    elif ceo_line:
+        parts.append(
+            f"Company leadership context: {ceo_line}. Represent this context symbolically; do not add any extra realistic human portraits."
+        )
+    if source_line and ceo_line and not has_source_profile_image:
+        parts.append("Keep any CEO portrait secondary to the source author context.")
     if company_line:
         parts.append(f"Company context: {company_line}. Do not show logos or brand marks.")
     return " ".join(parts)
@@ -1280,13 +1412,22 @@ def title_image_prompt(
     analysis: dict[str, object] | None,
 ) -> str:
     prompt = default_title_image_prompt(topic, companies, ceos, source_people)
+    has_source_profile_image = any(
+        person.get("profile_image_path") or person.get("profile_image_url")
+        for person in source_people
+    )
+    people_style = (
+        "- Do not include human faces, portraits, headshots, silhouettes, or figure studies in the generated artwork; the real X avatar will be composited separately."
+        if has_source_profile_image
+        else "- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots."
+    )
     return f"""
 {prompt}
 
 Format and style:
 - 16:9 horizontal composition, 2048x1152.
 - Make it feel like the output of generate_cover.py, not a corporate headshot.
-- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.
+{people_style}
 - Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.
 - No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.
 - Do not place any graphic or symbol that resembles text.
@@ -1354,6 +1495,7 @@ def build_title_enrichment(
         gemini_topic = compact_topic(string_value(analysis.get("topic")))
         if gemini_topic:
             topic = gemini_topic
+    cover_copy = normalize_cover_copy(analysis)
 
     source_person = source_person_from_post(posts[0])
     source_people = [source_person] if source_person else []
@@ -1524,6 +1666,8 @@ def build_title_enrichment(
         "source_people": source_people,
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
+        "cover_copy": cover_copy,
+        "brand_voice_doc": str(IG_VOICE_DOC.relative_to(ROOT)) if IG_VOICE_DOC.exists() else "",
         "google_enabled": bool(api_key),
         "provider": "gemini" if api_key else "local",
         "image_provider": image_provider,
@@ -1538,10 +1682,21 @@ def build_title_enrichment(
 def title_visual_markup(context: dict[str, object]) -> str:
     topic_image_uri = asset_uri(context.get("topic_image_path"))
     bg_style = f' style="background-image: url({topic_image_uri})"' if topic_image_uri else ""
+    source_profile_uri = source_profile_asset_uri(context)
+    avatar_markup = ""
+    visual_class = "visual-card"
+    if source_profile_uri:
+        visual_class += " has-source-avatar"
+        safe_profile_uri = html.escape(source_profile_uri, quote=True)
+        avatar_markup = f"""
+    <div class="source-avatar">
+      <img src="{safe_profile_uri}" alt="">
+    </div>"""
     return f"""
-  <div class="visual-card">
+  <div class="{visual_class}">
     <div class="visual-bg"{bg_style}></div>
     <div class="visual-fallback"></div>
+{avatar_markup}
   </div>
 """
 
@@ -1609,8 +1764,11 @@ body {{ margin: 0; background: #555; font-family: 'Archivo', sans-serif; }}
 """
 
 
-def dot_markup(active: int, count: int) -> str:
-    return '<span>swipe for more</span>' if active < count else ""
+def dot_markup(active: int, count: int, swipe_line: str = "") -> str:
+    if active >= count:
+        return ""
+    text = string_value(swipe_line) or "swipe for more"
+    return f"<span>{html.escape(text)}</span>"
 
 
 def render_title_slide(
@@ -1621,18 +1779,24 @@ def render_title_slide(
     title_context: dict[str, object],
     account_name: str,
 ) -> Path:
-    headline, accent = title_from_post(post)
+    cover_copy = title_context.get("cover_copy")
+    cover_copy = cover_copy if isinstance(cover_copy, dict) else {}
     if title:
-        bits = title.rsplit(" ", 1)
-        headline, accent = (bits[0], bits[1]) if len(bits) == 2 else (title, "")
-    title_text = " ".join(part for part in (headline, accent) if part)
+        headline_markup, title_text = fallback_headline_markup(post, title)
+    elif string_value(cover_copy.get("headline")):
+        headline_markup, title_text, has_accent = headline_markup_from_brackets(
+            string_value(cover_copy.get("headline"))
+        )
+        if not has_accent:
+            headline_markup, title_text = fallback_headline_markup(post, title)
+    else:
+        headline_markup, title_text = fallback_headline_markup(post, title)
     font_size = title_font_size(title_text)
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    safe_headline = html.escape(headline)
-    safe_accent = html.escape(accent)
-    safe_account_name = html.escape(account_name.strip() or DEFAULT_ACCOUNT_NAME)
-    accent_markup = f' <span class="accent">{safe_accent}</span>' if safe_accent else ""
+    kicker = string_value(cover_copy.get("kicker")) if not title else ""
+    safe_account_name = html.escape(kicker or account_name.strip() or DEFAULT_ACCOUNT_NAME)
+    swipe_line = string_value(cover_copy.get("swipe_line")) if not title else ""
     visual = title_visual_markup(title_context)
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -1664,6 +1828,37 @@ def render_title_slide(
   background:
     linear-gradient(180deg, rgba(244, 242, 236, 0) 42%, rgba(244, 242, 236, 0.24) 62%, var(--bg) 100%);
   pointer-events: none;
+}}
+.source-avatar {{
+  position: absolute;
+  z-index: 3;
+  right: 72px;
+  bottom: 86px;
+  width: 316px;
+  height: 316px;
+  border-radius: 50%;
+  padding: 10px;
+  background:
+    linear-gradient(135deg, rgba(192, 85, 46, 0.96), rgba(244, 242, 236, 0.86) 54%, rgba(22, 20, 15, 0.9));
+  box-shadow:
+    0 28px 70px rgba(22, 20, 15, 0.34),
+    0 0 0 2px rgba(244, 242, 236, 0.72);
+}}
+.source-avatar::before {{
+  content: '';
+  position: absolute;
+  inset: -20px;
+  border-radius: 50%;
+  border: 2px solid rgba(192, 85, 46, 0.34);
+}}
+.source-avatar img {{
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 8px solid rgba(244, 242, 236, 0.94);
 }}
 .visual-fallback {{
   z-index: 0;
@@ -1710,8 +1905,12 @@ def render_title_slide(
   font-weight: 850;
   letter-spacing: 0;
   line-height: 1.03;
+  color: var(--fg);
+  text-wrap: balance;
 }}
-.headline .accent {{ color: var(--primary); }}
+.headline .accent {{
+  color: var(--primary);
+}}
 .dots {{
   bottom: 116px;
 }}
@@ -1721,9 +1920,9 @@ def render_title_slide(
   {visual}
   <div class="title-cluster">
     <div class="account-rule"><span>{safe_account_name}</span></div>
-    <h1 class="headline">{safe_headline}{accent_markup}</h1>
+    <h1 class="headline">{headline_markup}</h1>
   </div>
-  <div class="dots">{dot_markup(1, count)}</div>
+  <div class="dots">{dot_markup(1, count, swipe_line)}</div>
 </div>
 </body></html>"""
     html_path.write_text(html_text)
@@ -1827,6 +2026,8 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
     topic_entity = context.get("topic_entity")
     return {
         "topic": context.get("topic", ""),
+        "cover_copy": context.get("cover_copy", {}),
+        "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
         "google_enabled": bool(context.get("google_enabled")),
