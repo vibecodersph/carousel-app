@@ -35,6 +35,8 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_TITLE_IMAGE_SIZE=2048x1152
 ```
 
+Gemini also writes a VibeCoders PH Instagram caption into `manifest.json` as `instagram_caption`. `instagram_publish.py` uses that generated caption by default, unless you pass `--caption` or `--caption-file`.
+
 To pin exact cover copy for a build, pass cover overrides. The visible brand line remains `vibecodersph`:
 
 ```sh
@@ -277,7 +279,7 @@ Publish for real after the same R2 upload step:
 uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2
 ```
 
-Use `--caption` or `--caption-file` to override the default caption. Use repeated `--media-url` flags for per-slide URLs when the files do not share one base URL:
+By default the publisher uses `instagram_caption` from the manifest when present, then falls back to topic plus source URL. Use `--caption` or `--caption-file` to override it. Use repeated `--media-url` flags for per-slide URLs when the files do not share one base URL:
 
 ```sh
 uv run python instagram_publish.py out/x_carousel/manifest.json --dry-run \

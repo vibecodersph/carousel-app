@@ -392,6 +392,12 @@ def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
     if args.caption is not None:
         return args.caption.strip()
     context = manifest.get("title_context") if isinstance(manifest.get("title_context"), dict) else {}
+    manifest_caption = str(manifest.get("instagram_caption") or "").strip()
+    if manifest_caption:
+        return manifest_caption
+    context_caption = str(context.get("instagram_caption") or "").strip()
+    if context_caption:
+        return context_caption
     topic = str(context.get("topic") or "").strip()
     source_url = str(manifest.get("source_url") or "").strip()
     parts = [topic] if topic else []
@@ -775,7 +781,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Public R2 base URL. Defaults to --media-base-url / INSTAGRAM_MEDIA_BASE_URL.",
     )
     parser.add_argument("--r2-timeout", type=int, default=120)
-    parser.add_argument("--caption", help="Instagram caption. Defaults to topic plus source URL.")
+    parser.add_argument(
+        "--caption",
+        help="Instagram caption. Defaults to manifest instagram_caption, then topic plus source URL.",
+    )
     parser.add_argument("--caption-file", type=Path, help="Read the Instagram caption from a text file")
     parser.add_argument(
         "--instagram-user-id",

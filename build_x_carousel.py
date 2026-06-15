@@ -1098,6 +1098,31 @@ def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
     return {key: value for key, value in cover.items() if value}
 
 
+def normalize_instagram_caption(
+    analysis: dict[str, object] | None,
+    *,
+    source_url: str,
+) -> str:
+    if not isinstance(analysis, dict):
+        return ""
+    raw_caption = analysis.get("instagram_caption")
+    caption = str(raw_caption or "").strip() if raw_caption is not None else ""
+    if not caption:
+        return ""
+    caption = caption.replace("\u2014", ",")
+    caption = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in caption.splitlines())
+    caption = re.sub(r"\n{3,}", "\n\n", caption).strip()
+    caption = re.sub(r"\s+(?=#[A-Za-z0-9_])", "\n\n", caption, count=1)
+    caption = re.sub(r"\s+Source:\s*", "\n\nSource: ", caption)
+    if source_url and "source:" not in caption.lower():
+        caption = f"{caption}\n\nSource: {source_url}"
+    if len(caption) > 1200:
+        caption = caption[:1200].rsplit(" ", 1)[0].strip()
+        if source_url and "source:" not in caption.lower():
+            caption = f"{caption}\n\nSource: {source_url}"
+    return caption
+
+
 def manual_cover_copy(
     *,
     kicker: str | None,
@@ -1207,6 +1232,7 @@ Return JSON only with this exact shape:
     "accent_word": "same accent word without brackets",
     "swipe_line": "short Taglish swipe prompt"
   }},
+  "instagram_caption": "short Taglish Instagram caption with one CTA, clean hashtags, and source attribution",
   "companies": [
     {{"name": "Company name", "ceo_name": "Current CEO name"}}
   ]
@@ -1219,6 +1245,16 @@ Rules:
   witty Taglish hook that earns the swipe while staying true to the post.
 - cover.headline must contain exactly one bracketed accent word, like [alam].
 - cover.accent_word must match the bracketed word without brackets.
+- instagram_caption should be 3 to 4 short blocks separated by blank lines:
+  1) one witty Taglish hook,
+  2) one useful true line about what the carousel teaches,
+  3) one CTA only,
+  4) clean hashtags and Source: {posts[0].get("url", "")}
+- Keep instagram_caption under 900 characters.
+- Avoid generic hype phrases like "completely change," "game-changing,"
+  "ultimate guide," "must-read," "let us know in the comments below," and
+  "stop scrolling."
+- instagram_caption must not use markdown bullets or em dashes.
 - Include at most 3 companies.
 - Include a CEO only when the company is clearly involved in the post or thread.
 - Prefer the current CEO over founders, product leaders, or former CEOs.
@@ -1515,6 +1551,10 @@ def build_title_enrichment(
         if gemini_topic:
             topic = gemini_topic
     cover_copy = normalize_cover_copy(analysis)
+    instagram_caption = normalize_instagram_caption(
+        analysis,
+        source_url=posts[0].get("url", ""),
+    )
     cover_override = manual_cover_copy(
         kicker=cover_kicker,
         headline=cover_headline,
@@ -1693,6 +1733,7 @@ def build_title_enrichment(
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
         "cover_copy": cover_copy,
+        "instagram_caption": instagram_caption,
         "brand_voice_doc": str(IG_VOICE_DOC.relative_to(ROOT)) if IG_VOICE_DOC.exists() else "",
         "google_enabled": bool(api_key),
         "provider": "gemini" if api_key else "local",
@@ -2052,6 +2093,7 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
     return {
         "topic": context.get("topic", ""),
         "cover_copy": context.get("cover_copy", {}),
+        "instagram_caption": context.get("instagram_caption", ""),
         "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
@@ -2210,6 +2252,7 @@ def build_x_carousel(
         "first_page_only": first_page_only,
         "account_name": account_name,
         "title_context": manifest_title_context(title_context),
+        "instagram_caption": title_context.get("instagram_caption", ""),
         "slides": slides,
     }
     manifest_path = out_dir / "manifest.json"

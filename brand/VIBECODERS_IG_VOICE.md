@@ -91,6 +91,24 @@ Avoid:
 - Code-switch naturally. If it sounds like English with Tagalog garnish,
   rewrite.
 
+## Caption Voice
+
+The carousel does the work. The caption should open the loop, add one more
+true/funny line, and give one clean action.
+
+- Open with a reason to swipe, in Taglish. No housekeeping.
+- One main idea. Witty first, useful right after.
+- Keep it short. Prefer 3 to 4 short blocks: hook, useful line, one CTA,
+  hashtags plus source.
+- One CTA only: save, send, comment, or DM keyword. No CTA stacking.
+- Hashtags should be clean and non-spammy: a few PH/community tags, a few AI
+  tags, one or two broad.
+- One emoji max, often zero.
+- End with source attribution when the post is based on a public source.
+- Avoid generic hype phrases like "completely change," "game-changing,"
+  "ultimate guide," "must-read," "let us know in the comments below," and
+  "stop scrolling."
+
 ## Hook Archetypes
 
 Problem recognition:
@@ -144,8 +162,11 @@ Hard rules:
   openers like "stop scrolling" or "we are excited to announce."
 - No slay/ate/bestie brand voice. One emoji max, usually zero. No ALL CAPS.
 
-Output: kicker line, headline with exactly one accent word in [brackets], and
-swipe line.
+For cover output: kicker line, headline with exactly one accent word in
+[brackets], and swipe line.
+
+For caption output: short Taglish Instagram caption with one main idea, one CTA,
+clean hashtags, and source attribution when provided.
 ```
 
 ## Pre-Post Cover Checklist
