@@ -21,7 +21,7 @@
   "curation_backend": "gemini",
   "min_score": 6,
   "max_pages": 6,
-  "source_article_path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/source_article.json",
+  "source_article_path": "source_article.json",
   "title_context": {
     "topic": "Xiaomi's MiMo Code Beats Claude Code in Tasks",
     "provider": "gemini",
@@ -31,19 +31,19 @@
     "openai_image_model": "gpt-image-2",
     "openai_image_size": "2048x1152",
     "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'Xiaomi's MiMo Code Beats Claude Code in Tasks'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. Add a tasteful editorial portrait element of the CEO: Lei Jun of Xiaomi, Dario Amodei of Anthropic. Company context: Xiaomi, Anthropic. Do not show logos or brand marks.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
-    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/title_assets/openai-topic-f7fc666621.png"
+    "topic_image_path": "title_assets/openai-topic-f7fc666621.png"
   },
   "slides": [
     {
       "index": 1,
       "type": "title",
-      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_01.png",
+      "path": "slide_01.png",
       "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks"
     },
     {
       "index": 2,
       "type": "article-section",
-      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_02.png",
+      "path": "slide_02.png",
       "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
       "kicker": "OPEN SOURCE LAUNCH",
       "headline": "Xiaomi Releases MiMo Code",
@@ -63,7 +63,7 @@
     {
       "index": 3,
       "type": "article-section",
-      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_03.png",
+      "path": "slide_03.png",
       "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
       "kicker": "ARCHITECTURE",
       "headline": "Solving Agentic Amnesia",
@@ -84,7 +84,7 @@
     {
       "index": 4,
       "type": "article-section",
-      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_04.png",
+      "path": "slide_04.png",
       "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
       "kicker": "BENCHMARK",
       "headline": "Outperforming Claude Code",
@@ -105,7 +105,7 @@
     {
       "index": 5,
       "type": "article-section",
-      "path": "/Users/aiagent/GitHub/carousel-app/out/article_carousel/slide_05.png",
+      "path": "slide_05.png",
       "source_url": "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks",
       "kicker": "PRICING & SPECS",
       "headline": "Disruptive Frontier Pricing",
