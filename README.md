@@ -35,6 +35,14 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_TITLE_IMAGE_SIZE=2048x1152
 ```
 
+To pin exact cover copy for a build, pass cover overrides. The visible brand line remains `vibecodersph`:
+
+```sh
+uv run python build_x_carousel.py "https://x.com/user/status/123" \
+  --cover-headline "Pati yung gumawa, [tinatamad] na mag-type." \
+  --cover-swipe-line "Silipin ang cheat sheet"
+```
+
 Generated title images are cached inside the generated output folder. Make sure you have the rights to use generated or downloaded imagery in your final carousel.
 
 ## AI Cover Art

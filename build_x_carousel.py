@@ -1098,6 +1098,22 @@ def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
     return {key: value for key, value in cover.items() if value}
 
 
+def manual_cover_copy(
+    *,
+    kicker: str | None,
+    headline: str | None,
+    swipe_line: str | None,
+) -> dict[str, str]:
+    cover: dict[str, str] = {}
+    if kicker:
+        cover["kicker"] = string_value(kicker)
+    if headline:
+        cover["headline"] = string_value(headline).replace("\u2014", ",")
+    if swipe_line:
+        cover["swipe_line"] = string_value(swipe_line)
+    return {key: value for key, value in cover.items() if value}
+
+
 def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
     headline = re.sub(r"\s+", " ", headline).strip()
     match = re.search(r"\[([^\[\]]+)\]", headline)
@@ -1479,6 +1495,9 @@ def build_title_enrichment(
     *,
     title: str | None,
     out_dir: Path,
+    cover_kicker: str | None = None,
+    cover_headline: str | None = None,
+    cover_swipe_line: str | None = None,
 ) -> dict[str, object]:
     api_key = gemini_api_key()
     kg_api_key = os.environ.get("GOOGLE_KG_API_KEY")
@@ -1496,6 +1515,13 @@ def build_title_enrichment(
         if gemini_topic:
             topic = gemini_topic
     cover_copy = normalize_cover_copy(analysis)
+    cover_override = manual_cover_copy(
+        kicker=cover_kicker,
+        headline=cover_headline,
+        swipe_line=cover_swipe_line,
+    )
+    if cover_override:
+        cover_copy = {**cover_copy, **cover_override}
 
     source_person = source_person_from_post(posts[0])
     source_people = [source_person] if source_person else []
@@ -1794,8 +1820,7 @@ def render_title_slide(
     font_size = title_font_size(title_text)
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    kicker = string_value(cover_copy.get("kicker")) if not title else ""
-    safe_account_name = html.escape(kicker or account_name.strip() or DEFAULT_ACCOUNT_NAME)
+    safe_account_name = html.escape(account_name.strip() or DEFAULT_ACCOUNT_NAME)
     swipe_line = string_value(cover_copy.get("swipe_line")) if not title else ""
     visual = title_visual_markup(title_context)
     html_text = f"""<!doctype html>
@@ -2061,6 +2086,9 @@ def build_x_carousel(
     out_dir: Path,
     max_thread_posts: int,
     title: str | None,
+    cover_kicker: str | None,
+    cover_headline: str | None,
+    cover_swipe_line: str | None,
     account_name: str,
     no_thread: bool,
     first_page_only: bool,
@@ -2103,7 +2131,14 @@ def build_x_carousel(
     total = len(posts) + 1
     slides: list[dict[str, object]] = []
     title_path = out_dir / "slide_01.png"
-    title_context = build_title_enrichment(posts, title=title, out_dir=out_dir)
+    title_context = build_title_enrichment(
+        posts,
+        title=title,
+        out_dir=out_dir,
+        cover_kicker=cover_kicker,
+        cover_headline=cover_headline,
+        cover_swipe_line=cover_swipe_line,
+    )
     render_title_slide(posts[0], title_path, total, title, title_context, account_name)
     slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": posts[0]["url"]})
 
@@ -2191,6 +2226,15 @@ def main() -> int:
     ap.add_argument("--max-thread-posts", type=int, default=8)
     ap.add_argument("--title", help="Override generated title slide text")
     ap.add_argument(
+        "--cover-kicker",
+        help="Override the generated cover kicker metadata; visible brand line remains account name",
+    )
+    ap.add_argument(
+        "--cover-headline",
+        help="Override the generated cover headline; wrap the accent word in [brackets]",
+    )
+    ap.add_argument("--cover-swipe-line", help="Override the generated cover swipe line")
+    ap.add_argument(
         "--account-name",
         default=os.environ.get("X_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
         help="Account or publisher name displayed in the title slide template",
@@ -2229,6 +2273,9 @@ def main() -> int:
         out_dir=args.out_dir,
         max_thread_posts=args.max_thread_posts,
         title=args.title,
+        cover_kicker=args.cover_kicker,
+        cover_headline=args.cover_headline,
+        cover_swipe_line=args.cover_swipe_line,
         account_name=args.account_name,
         no_thread=args.no_thread,
         first_page_only=args.first_page_only,
