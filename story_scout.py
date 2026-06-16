@@ -1375,7 +1375,15 @@ def fetch_article_items(config: dict[str, Any], *, limit: int) -> list[dict[str,
 
     for source in workforce_sources:
         keep_source_items(source, workforce_source_items(base_items, source))
-    return items[:limit]
+
+    def rank_key(item: dict[str, Any]) -> tuple[int, float, str]:
+        source = item.get("_source_config") if isinstance(item.get("_source_config"), dict) else {}
+        score, _ = score_article_item(item, source, config)
+        published = feed_item_datetime(item)
+        published_ts = published.timestamp() if published else 0.0
+        return (-score, -published_ts, str(item.get("url") or ""))
+
+    return sorted(items, key=rank_key)[:limit]
 
 
 def merge_candidates(
@@ -1441,6 +1449,8 @@ def merge_article_candidates(
             continue
         cid = article_candidate_id(str(article["url"]))
         previous = existing_by_id.get(cid, {})
+        if previous and int(previous.get("score") or 0) > score:
+            continue
         candidate = {
             **previous,
             "id": cid,
@@ -1534,6 +1544,17 @@ def extract_status_url(value: str) -> str:
     return match.group(0).rstrip(".,;:)]}")
 
 
+def extract_first_http_url(value: str) -> str:
+    match = re.search(r"https?://[^\s<>()]+", value)
+    if not match:
+        return ""
+    return match.group(0).rstrip(".,;:)]}")
+
+
+def normalize_candidate_url(value: str) -> str:
+    return value.strip().rstrip(".,;:)]}").replace("twitter.com", "x.com")
+
+
 def post_from_status_url(url: str, *, fallback_handle: str = "", fallback_text: str = "") -> dict[str, Any]:
     match = re.search(r"https://(?:www\.)?(?:x|twitter)\.com/([^/]+)/status/(\d+)", url)
     handle = normalize_handle(match.group(1)) if match else normalize_handle(fallback_handle)
@@ -1557,6 +1578,22 @@ def post_from_status_url(url: str, *, fallback_handle: str = "", fallback_text: 
     }
 
 
+def article_from_url(
+    url: str,
+    *,
+    fallback_source_name: str = "",
+    fallback_title: str = "",
+    fallback_summary: str = "",
+) -> dict[str, Any]:
+    return {
+        "url": url,
+        "title": fallback_title,
+        "summary": fallback_summary,
+        "source_name": fallback_source_name,
+        "published_at": "",
+    }
+
+
 def recover_candidate_from_callback(
     queue: dict[str, Any],
     cid: str,
@@ -1564,13 +1601,23 @@ def recover_candidate_from_callback(
 ) -> dict[str, Any] | None:
     message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
     text = str(message.get("text") or message.get("caption") or "")
-    url = extract_status_url(text)
+    is_article_callback = cid.startswith("article_") or re.search(r"\bARTICLE\b", text, re.I) is not None
+    url = extract_first_http_url(text) if is_article_callback else extract_status_url(text)
     if not url:
         return None
 
     for candidate in queue.get("candidates", []):
+        if is_article_callback:
+            article = candidate.get("article") if isinstance(candidate.get("article"), dict) else {}
+            if normalize_candidate_url(str(article.get("url") or "")) == normalize_candidate_url(url):
+                print(
+                    f"[telegram] recovered missing callback id {cid} by matching URL to {candidate.get('id')}",
+                    flush=True,
+                )
+                return candidate
+            continue
         post = candidate.get("post") if isinstance(candidate.get("post"), dict) else {}
-        if str(post.get("url") or "").replace("twitter.com", "x.com") == url.replace("twitter.com", "x.com"):
+        if normalize_candidate_url(str(post.get("url") or "")) == normalize_candidate_url(url):
             print(
                 f"[telegram] recovered missing callback id {cid} by matching URL to {candidate.get('id')}",
                 flush=True,
@@ -1580,8 +1627,56 @@ def recover_candidate_from_callback(
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     score = 0
     handle = ""
+    source_name = ""
     body_lines: list[str] = []
     why = ""
+
+    if is_article_callback:
+        for line in lines:
+            score_match = re.search(r"(\d+)\s+score\s+-\s+ARTICLE\s*(.*)", line, flags=re.I)
+            if score_match:
+                score = int(score_match.group(1))
+                source_name = score_match.group(2).strip()
+                continue
+            if line.startswith("Carousel candidate"):
+                continue
+            if line.startswith("Why:"):
+                why = line.removeprefix("Why:").strip()
+                continue
+            if normalize_candidate_url(extract_first_http_url(line)) == normalize_candidate_url(url):
+                continue
+            body_lines.append(line)
+        title = body_lines[0] if body_lines else ""
+        summary = " ".join(body_lines[1:]).strip()
+        article = article_from_url(
+            url,
+            fallback_source_name=source_name,
+            fallback_title=title,
+            fallback_summary=summary,
+        )
+        now = utc_now()
+        candidate = {
+            "id": cid,
+            "source_type": "article",
+            "status": "candidate",
+            "score": score,
+            "score_reasons": ["recovered from Telegram callback"],
+            "source_account": source_name,
+            "article": article,
+            "created_at": now,
+            "updated_at": now,
+            "recovered_from_telegram": True,
+            "telegram_message": {
+                "chat_id": (message.get("chat") or {}).get("id") if isinstance(message.get("chat"), dict) else None,
+                "message_id": message.get("message_id"),
+            },
+        }
+        if why:
+            candidate["score_reasons"].append(why)
+        queue.setdefault("candidates", []).append(candidate)
+        print(f"[telegram] recovered missing article candidate {cid} from Telegram message URL {url}", flush=True)
+        return candidate
+
     for line in lines:
         score_match = re.search(r"(\d+)\s+score\s+-\s+(@[A-Za-z0-9_]+)", line)
         if score_match:
@@ -1663,7 +1758,12 @@ def notify_telegram(candidate: dict[str, Any]) -> bool:
     if candidate_source_type(candidate) == "article":
         article = candidate.get("article") or {}
         headline = f"{candidate.get('score')} score - ARTICLE {article.get('source_name', '')}".strip()
-        body = compact_text(str(article.get("summary") or article.get("title") or ""), 700)
+        title = compact_text(str(article.get("title") or ""), 240)
+        summary = compact_text(str(article.get("summary") or ""), 700)
+        body_parts = [title] if title else []
+        if summary and summary.lower() != title.lower():
+            body_parts.append(summary)
+        body = "\n".join(body_parts)
         url = str(article.get("url") or "")
         why = reasons
     else:

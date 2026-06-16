@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -270,6 +271,62 @@ class ArticleSourceParserTests(unittest.TestCase):
         self.assertTrue(all(candidate["source_type"] == "article" for candidate in queued))
         self.assertTrue(any(candidate["article"]["source_name"] == "Workforce" for candidate in queued))
 
+    def test_article_global_limit_ranks_sources_before_truncating(self) -> None:
+        config = {
+            "article_lookback_hours": 100000,
+            "max_articles_per_source": 2,
+            "include_keywords": ["agent", "ai", "benchmark", "philippines"],
+            "exclude_keywords": [],
+            "article_sources": story_scout.normalize_article_sources(
+                [
+                    {
+                        "name": "Generic One",
+                        "feed_url": "https://example.com/one.xml",
+                        "base_score": 20,
+                    },
+                    {
+                        "name": "Generic Two",
+                        "feed_url": "https://example.com/two.xml",
+                        "base_score": 20,
+                    },
+                    {
+                        "name": "PH Source",
+                        "category": "Philippines",
+                        "feed_url": "https://example.com/ph.xml",
+                        "base_score": 20,
+                    },
+                ]
+            ),
+        }
+
+        feeds = {
+            "https://example.com/one.xml": """<rss><channel><item>
+                <title>General app update arrives today</title>
+                <link>https://example.com/general-one</link>
+                <description>Small product maintenance update.</description>
+                <pubDate>Tue, 16 Jun 2026 00:00:00 GMT</pubDate>
+            </item></channel></rss>""",
+            "https://example.com/two.xml": """<rss><channel><item>
+                <title>Company shares quarterly roadmap</title>
+                <link>https://example.com/general-two</link>
+                <description>Regular business roadmap summary.</description>
+                <pubDate>Tue, 16 Jun 2026 00:00:00 GMT</pubDate>
+            </item></channel></rss>""",
+            "https://example.com/ph.xml": """<rss><channel><item>
+                <title>Philippines AI benchmark launches 20x agent evaluation</title>
+                <link>https://example.com/ph-ai-benchmark</link>
+                <description>Local researchers publish an agent benchmark for AI systems.</description>
+                <pubDate>Tue, 16 Jun 2026 00:00:00 GMT</pubDate>
+            </item></channel></rss>""",
+        }
+
+        with patch("story_scout.fetch_url_text", side_effect=lambda url, **_: feeds[url]):
+            items = story_scout.fetch_article_items(config, limit=1)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source_name"], "PH Source")
+        self.assertEqual(items[0]["url"], "https://example.com/ph-ai-benchmark")
+
     def test_article_scoring_matches_whole_terms_not_substrings(self) -> None:
         config = {
             "include_keywords": ["ai", "app"],
@@ -291,6 +348,114 @@ class ArticleSourceParserTests(unittest.TestCase):
         self.assertIn("keywords: launch", reasons)
         self.assertNotIn("ai", " ".join(reasons))
         self.assertNotIn("app", " ".join(reasons))
+
+
+class TelegramArticleWorkflowTests(unittest.TestCase):
+    def test_article_notification_uses_article_callback_and_review_copy(self) -> None:
+        url = "https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/"
+        cid = story_scout.article_candidate_id(url)
+        candidate = {
+            "id": cid,
+            "source_type": "article",
+            "status": "candidate",
+            "score": 64,
+            "score_reasons": ["article source match", "keywords: benchmark, ai"],
+            "source_account": "NVIDIA Blog",
+            "article": {
+                "url": url,
+                "title": "NVIDIA Blackwell leads agentic AI benchmark",
+                "summary": "AgentPerf results show Blackwell runs more AI agents per megawatt.",
+                "source_name": "NVIDIA Blog",
+                "published_at": "2026-06-12T21:00:08+00:00",
+            },
+        }
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def fake_telegram(method: str, payload: dict[str, object], *, timeout: int = 30):
+            del timeout
+            calls.append((method, payload))
+            return {"ok": True, "result": {"chat": {"id": 123}, "message_id": 456}}
+
+        with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "123"}, clear=False), patch(
+            "story_scout.telegram_api",
+            side_effect=fake_telegram,
+        ):
+            self.assertTrue(story_scout.notify_telegram(candidate))
+
+        self.assertEqual(calls[0][0], "sendMessage")
+        payload = calls[0][1]
+        self.assertIn("64 score - ARTICLE NVIDIA Blog", str(payload["text"]))
+        self.assertIn("NVIDIA Blackwell leads agentic AI benchmark", str(payload["text"]))
+        self.assertIn("AgentPerf results show", str(payload["text"]))
+        keyboard = payload["reply_markup"]["inline_keyboard"]
+        self.assertEqual(keyboard[0][0]["callback_data"], f"approve_build:{cid}")
+        self.assertEqual(candidate["telegram_message"]["message_id"], 456)
+
+    def test_recovers_article_candidate_from_telegram_callback(self) -> None:
+        url = "https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/"
+        cid = story_scout.article_candidate_id(url)
+        queue = {"version": story_scout.QUEUE_VERSION, "candidates": []}
+        callback = {
+            "message": {
+                "text": "\n".join(
+                    [
+                        "Carousel candidate",
+                        "64 score - ARTICLE NVIDIA Blog",
+                        "NVIDIA Blackwell leads agentic AI benchmark",
+                        "AgentPerf results show Blackwell runs more AI agents per megawatt.",
+                        url,
+                        "Why: article source match; keywords: benchmark, ai",
+                    ]
+                ),
+                "chat": {"id": 123},
+                "message_id": 456,
+            }
+        }
+
+        candidate = story_scout.recover_candidate_from_callback(queue, cid, callback)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate["source_type"], "article")
+        self.assertEqual(candidate["article"]["url"], url)
+        self.assertEqual(candidate["article"]["source_name"], "NVIDIA Blog")
+        self.assertEqual(candidate["article"]["title"], "NVIDIA Blackwell leads agentic AI benchmark")
+        self.assertIn("AgentPerf results", candidate["article"]["summary"])
+        self.assertEqual(candidate["score"], 64)
+        self.assertTrue(candidate["recovered_from_telegram"])
+        self.assertEqual(queue["candidates"][0]["id"], cid)
+
+    def test_recovers_existing_article_candidate_by_url(self) -> None:
+        url = "https://example.com/ai-agent-benchmark"
+        existing = {
+            "id": story_scout.article_candidate_id(url),
+            "source_type": "article",
+            "status": "candidate",
+            "article": {"url": url, "title": "AI agent benchmark", "source_name": "Example"},
+        }
+        queue = {"version": story_scout.QUEUE_VERSION, "candidates": [existing]}
+        callback = {
+            "message": {
+                "text": "\n".join(
+                    [
+                        "Carousel candidate",
+                        "51 score - ARTICLE Example",
+                        "AI agent benchmark",
+                        url,
+                        "Why: keywords: agent",
+                    ]
+                )
+            }
+        }
+
+        recovered = story_scout.recover_candidate_from_callback(
+            queue,
+            "article_missing_from_callback_state",
+            callback,
+        )
+
+        self.assertIs(recovered, existing)
+        self.assertEqual(len(queue["candidates"]), 1)
 
 
 class ArticleCarouselQualityTests(unittest.TestCase):

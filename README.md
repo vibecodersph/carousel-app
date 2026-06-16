@@ -150,7 +150,9 @@ The draft waits in the Buffer dashboard for a final review before anything reach
 
 Buffer does not support mixed-media Instagram carousels ([their docs](https://support.buffer.com/article/657-scheduling-instagram-posts-and-reels)): their API silently keeps only the video plus the last image, which then publishes as a single reel. Builds that mix video and image slides therefore abort by default when published through Buffer. Choose explicitly with `--buffer-video-strategy`: `poster` swaps each video for its poster still (image-only carousel), `reel` publishes the first video alone as a reel. For true mixed-media carousels use the Meta Graph API path (`instagram_publish.py` / `--publish-instagram`), which supports them.
 
-Telegram approvals are optional. Configure a bot token and chat ID, then scan with notifications:
+Telegram approvals are optional. Configure a bot token and chat ID, then scan
+with notifications. A scan now sends both high-scoring X posts from `accounts`
+and high-scoring stories from `article_sources` to the same approval chat:
 
 ```sh
 export TELEGRAM_BOT_TOKEN=123456:...
@@ -159,7 +161,13 @@ uv run python story_scout.py scan --config story_sources.json --notify
 uv run python story_scout.py telegram-poll --watch --publish-buffer
 ```
 
-Telegram approval callbacks use the same build path as the CLI, so a poller started with `--publish-buffer` turns each Telegram approval into a built carousel plus a Buffer draft automatically. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
+Telegram approval callbacks use the same build path as the CLI. X candidates
+(`x_*`) dispatch to `build_x_carousel.py`; article candidates (`article_*`)
+dispatch to `build_article_carousel.py` with the article tuning flags from the
+poller command, such as `--article-max-pages`, `--article-min-score-build`, and
+`--article-curation-backend`. A poller started with `--publish-buffer` turns
+each approved X post or article into a built carousel plus a Buffer draft
+automatically. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
 
 ## Static PNG/PPTX build
 
