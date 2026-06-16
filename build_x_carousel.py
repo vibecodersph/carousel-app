@@ -1752,6 +1752,11 @@ def title_visual_markup(context: dict[str, object]) -> str:
     source_profile_uri = source_profile_asset_uri(context)
     avatar_markup = ""
     visual_class = "visual-card"
+    if str(context.get("image_provider") or "") == "article_og_image":
+        # Raw article OG images are usually literal stock photos whose palette
+        # clashes with the cream/terracotta brand. Duotone them so the fallback
+        # cover still reads as a vibecodersph editorial card.
+        visual_class += " is-og-fallback"
     if source_profile_uri:
         visual_class += " has-source-avatar"
         safe_profile_uri = html.escape(source_profile_uri, quote=True)
@@ -1885,6 +1890,16 @@ def render_title_slide(
   background-position: center;
   background-size: cover;
   filter: saturate(0.96) contrast(1.02);
+}}
+.visual-card.is-og-fallback .visual-bg {{
+  filter: grayscale(1) contrast(1.06) brightness(1.04);
+}}
+.visual-card.is-og-fallback .visual-bg::after {{
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(152deg, rgba(192, 85, 46, 0.66) 0%, rgba(22, 20, 15, 0.82) 100%);
+  mix-blend-mode: multiply;
 }}
 .visual-card::after {{
   content: '';

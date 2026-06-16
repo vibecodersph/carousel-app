@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -94,6 +95,73 @@ ARTICLE_STRONG_TERMS = {
     "score",
     "swe-bench",
 }
+# Formats that dilute an AI/dev feed: roundups, listicles, deals, sponsored posts.
+# Articles have no engagement metadata, so we lean on content-format judgment the
+# way score_post() leans on likes/replies.
+LOW_SIGNAL_ARTICLE_PATTERNS = [
+    r"\btop \d+\b",
+    r"\b\d+ best\b",
+    r"\bbest \w+ (?:tools|apps|gadgets|phones|laptops|deals)\b",
+    r"\bround[\s-]?up\b",
+    r"\bweekly (?:recap|digest|roundup|wrap)\b",
+    r"\bsponsored\b",
+    r"\badvertorial\b",
+    r"\b(?:deal|deals|discount|coupon|promo code)\b",
+    r"\bgiveaway\b",
+    r"\bhoroscope\b",
+]
+# A named frontier-model family followed by a version number is a concrete launch
+# signal for the builder audience (e.g. "GPT-5", "Claude 4", "Qwen3", "Gemini 2.5").
+MODEL_RELEASE_PATTERN = (
+    r"\b(?:gpt|claude|gemini|llama|qwen|mistral|grok|deepseek|phi|command|nova|"
+    r"o\d|gemma|kimi|glm)[\s-]?\d"
+)
+ARTICLE_SOURCE_TYPES = {
+    "rss",
+    "atom",
+    "feed",
+    "sitemap",
+    "json_api",
+    "huggingface_models",
+    "x_search",
+    "workforce",
+}
+WORKFORCE_TERMS = {
+    "automation",
+    "bpo",
+    "career",
+    "careers",
+    "contractor",
+    "developers",
+    "employment",
+    "engineer",
+    "engineers",
+    "freelance",
+    "future of work",
+    "hiring",
+    "job",
+    "jobs",
+    "labor",
+    "labour",
+    "layoff",
+    "layoffs",
+    "productivity",
+    "recruiting",
+    "reskill",
+    "reskilling",
+    "skills",
+    "talent",
+    "upskill",
+    "upskilling",
+    "work",
+    "worker",
+    "workers",
+    "workforce",
+}
+DEFAULT_HUGGINGFACE_MODELS_API = (
+    "https://huggingface.co/api/models"
+    "?author={org}&sort=lastModified&direction=-1&limit={limit}"
+)
 
 
 def utc_now() -> str:
@@ -188,29 +256,123 @@ def normalize_article_sources(value: Any) -> list[dict[str, Any]]:
             source = dict(raw)
         else:
             continue
+
+        feed_urls = normalize_string_list(source.get("feed_urls"))
         feed_url = str(source.get("feed_url") or "").strip()
-        urls = [
-            str(url).strip()
-            for url in source.get("urls", [])
-            if str(url).strip()
-        ] if isinstance(source.get("urls", []), list) else []
-        if not feed_url and not urls:
+        if feed_url and feed_url not in feed_urls:
+            feed_urls.insert(0, feed_url)
+        urls = normalize_string_list(source.get("urls"))
+        sitemap_url = str(source.get("sitemap_url") or "").strip()
+        json_url = str(source.get("json_url") or "").strip()
+        api_url = str(source.get("api_url") or "").strip()
+        huggingface_org = str(source.get("huggingface_org") or "").strip()
+        x_search_query = str(source.get("x_search_query") or source.get("query") or "").strip()
+        source_type = infer_article_source_type(source, feed_urls)
+
+        if (
+            source_type not in {"workforce", "x_search"}
+            and not feed_urls
+            and not sitemap_url
+            and not json_url
+            and not api_url
+            and not huggingface_org
+            and not urls
+        ):
             continue
-        source["feed_url"] = feed_url
+        if source_type == "x_search" and not x_search_query:
+            continue
+
+        source["source_type"] = source_type
+        source["feed_urls"] = feed_urls
+        source["feed_url"] = feed_urls[0] if feed_urls else feed_url
         source["urls"] = urls
-        source["name"] = str(source.get("name") or feed_url or "Article source").strip()
-        source["include_keywords"] = [
-            str(item).lower()
-            for item in source.get("include_keywords", [])
-            if str(item).strip()
-        ]
-        source["exclude_keywords"] = [
-            str(item).lower()
-            for item in source.get("exclude_keywords", [])
-            if str(item).strip()
-        ]
+        source["sitemap_url"] = sitemap_url
+        source["json_url"] = json_url
+        source["api_url"] = api_url
+        source["huggingface_org"] = huggingface_org
+        source["x_search_query"] = x_search_query
+        source["name"] = str(
+            source.get("name")
+            or feed_url
+            or sitemap_url
+            or json_url
+            or api_url
+            or huggingface_org
+            or "Article source"
+        ).strip()
+        source["include_keywords"] = normalize_keyword_list(source.get("include_keywords"))
+        source["exclude_keywords"] = normalize_keyword_list(source.get("exclude_keywords"))
+        source["include_paths"] = normalize_path_filters(source.get("include_paths"))
+        source["exclude_paths"] = normalize_path_filters(source.get("exclude_paths"))
+        if source_type == "workforce":
+            workforce_keywords = source.get("workforce_keywords") or sorted(WORKFORCE_TERMS)
+        else:
+            workforce_keywords = source.get("workforce_keywords")
+        source["workforce_keywords"] = normalize_keyword_list(workforce_keywords)
         sources.append(source)
     return sources
+
+
+def normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
+def normalize_keyword_list(value: Any) -> list[str]:
+    return [item.lower() for item in normalize_string_list(value)]
+
+
+def normalize_path_filters(value: Any) -> list[str]:
+    filters: list[str] = []
+    for item in normalize_string_list(value):
+        filters.append(item.lower())
+    return filters
+
+
+def infer_article_source_type(source: dict[str, Any], feed_urls: list[str]) -> str:
+    raw_type = str(source.get("source_type") or source.get("type") or "").strip().lower()
+    raw_type = raw_type.replace("-", "_")
+    aliases = {
+        "rss_feed": "rss",
+        "rss/atom": "rss",
+        "atom_feed": "atom",
+        "json": "json_api",
+        "api": "json_api",
+        "hf_models": "huggingface_models",
+        "huggingface": "huggingface_models",
+        "x": "x_search",
+        "grok": "x_search",
+        "derived_workforce": "workforce",
+    }
+    source_type = aliases.get(raw_type, raw_type)
+    if source_type in ARTICLE_SOURCE_TYPES:
+        return source_type
+    if source.get("sitemap_url"):
+        return "sitemap"
+    if source.get("json_url"):
+        return "json_api"
+    if source.get("huggingface_org") or source.get("api_url"):
+        return "huggingface_models"
+    if source.get("x_search_query") or source.get("query"):
+        return "x_search"
+    if source.get("workforce_keywords") or source.get("derived_from") == "article_sources":
+        return "workforce"
+    if feed_urls:
+        return "rss"
+    return "rss"
 
 
 def load_queue(path: Path) -> dict[str, Any]:
@@ -285,15 +447,13 @@ def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[
     if reply_score:
         reasons.append(f"{replies:,} replies")
 
-    matched_keywords = [
-        keyword for keyword in config.get("include_keywords", []) if keyword in text
-    ][:5]
+    matched_keywords = matched_terms(text, config.get("include_keywords", []), limit=5)
     if matched_keywords:
         keyword_score = min(18, 4 * len(matched_keywords))
         score += keyword_score
         reasons.append("keywords: " + ", ".join(matched_keywords))
 
-    excluded = [keyword for keyword in config.get("exclude_keywords", []) if keyword in text]
+    excluded = matched_terms(text, config.get("exclude_keywords", []))
     if excluded:
         score -= 25
         reasons.append("excluded keyword: " + ", ".join(excluded[:3]))
@@ -440,6 +600,32 @@ def compact_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def text_has_term(text: str, term: str) -> bool:
+    term = str(term or "").strip().lower()
+    if not term:
+        return False
+    escaped = re.escape(term)
+    escaped = re.sub(r"\\\s+", r"\\s+", escaped)
+    return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", text, re.I) is not None
+
+
+def matched_terms(text: str, terms: Any, *, limit: int | None = None) -> list[str]:
+    if not isinstance(terms, (list, set, tuple)):
+        return []
+    hits: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        clean_term = str(term).strip().lower()
+        if not clean_term or clean_term in seen:
+            continue
+        if text_has_term(text, clean_term):
+            seen.add(clean_term)
+            hits.append(clean_term)
+            if limit is not None and len(hits) >= limit:
+                break
+    return hits
+
+
 def parse_feed_datetime(value: str) -> datetime | None:
     value = compact_whitespace(value)
     if not value:
@@ -465,7 +651,7 @@ def fetch_url_text(url: str, *, timeout: int = 25, max_bytes: int = ARTICLE_FEED
         url,
         headers={
             "User-Agent": SCOUT_USER_AGENT,
-            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.8, */*;q=0.5",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, application/json, text/xml, text/html;q=0.8, */*;q=0.5",
         },
     )
     try:
@@ -529,13 +715,444 @@ def parse_feed_entries(feed_xml: str, source: dict[str, Any]) -> list[dict[str, 
     return entries
 
 
+def source_primary_url(source: dict[str, Any]) -> str:
+    return (
+        str(source.get("feed_url") or "")
+        or str(source.get("sitemap_url") or "")
+        or str(source.get("json_url") or "")
+        or str(source.get("api_url") or "")
+    )
+
+
+def url_matches_source_paths(url: str, source: dict[str, Any]) -> bool:
+    include_paths = source.get("include_paths") or []
+    exclude_paths = source.get("exclude_paths") or []
+    if not include_paths and not exclude_paths:
+        return True
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.lower()
+    full = urllib.parse.urlunparse(("", "", parsed.path, "", parsed.query, "")).lower()
+    if include_paths and not any(path_filter in path or path_filter in full for path_filter in include_paths):
+        return False
+    if exclude_paths and any(path_filter in path or path_filter in full for path_filter in exclude_paths):
+        return False
+    return True
+
+
+def smart_title_word(word: str) -> str:
+    lowered = word.lower()
+    acronyms = {
+        "ai",
+        "api",
+        "asti",
+        "dost",
+        "gma",
+        "gpu",
+        "gpt",
+        "hf",
+        "ieee",
+        "llm",
+        "mit",
+        "nasa",
+        "nvidia",
+        "ph",
+        "philsa",
+        "qwen",
+        "rss",
+        "swe",
+        "vl",
+    }
+    if lowered in acronyms:
+        return lowered.upper()
+    if re.fullmatch(r"[a-z]+\d+(?:\.\d+)?", lowered):
+        letters = re.match(r"[a-z]+", lowered)
+        if letters and letters.group(0) in acronyms:
+            return letters.group(0).upper() + lowered[len(letters.group(0)) :]
+    return word[:1].upper() + word[1:]
+
+
+def title_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = urllib.parse.unquote(parsed.path or "")
+    slug = next((part for part in reversed(path.split("/")) if part), "")
+    if not slug:
+        return parsed.netloc.removeprefix("www.") or url
+    slug = re.sub(r"\.(?:html?|php|aspx?)$", "", slug, flags=re.I)
+    slug = re.sub(r"^\d{4}[-_/]\d{2}[-_/]\d{2}[-_/]?", "", slug)
+    words = [word for word in re.split(r"[-_\s]+", slug) if word]
+    if not words:
+        return parsed.netloc.removeprefix("www.") or url
+    return compact_whitespace(" ".join(smart_title_word(word) for word in words))
+
+
+def parse_sitemap_entries(sitemap_xml: str, source: dict[str, Any]) -> list[dict[str, Any]]:
+    if not sitemap_xml.strip():
+        return []
+    try:
+        root = ET.fromstring(sitemap_xml)
+    except ET.ParseError as exc:
+        print(f"[article] could not parse sitemap {source.get('sitemap_url')}: {exc}", file=sys.stderr)
+        return []
+
+    source_name = str(source.get("name") or "Article source")
+    sitemap_url = str(source.get("sitemap_url") or source.get("feed_url") or "")
+    entries: list[dict[str, Any]] = []
+    for element in list(root):
+        kind = xml_local_name(element.tag)
+        if kind == "sitemap":
+            loc = find_child_text(element, "loc")
+            if loc.startswith(("http://", "https://")):
+                entries.append({"_sitemap_url": loc})
+            continue
+        if kind != "url":
+            continue
+        loc = find_child_text(element, "loc")
+        if not loc.startswith(("http://", "https://")):
+            continue
+        if not url_matches_source_paths(loc, source):
+            continue
+        lastmod = find_child_text(element, "lastmod")
+        title = title_from_url(loc)
+        entries.append(
+            {
+                "url": re.sub(r"#.*$", "", loc),
+                "title": title,
+                "summary": f"{title} from {source_name}",
+                "source_name": source_name,
+                "feed_url": sitemap_url,
+                "published_at": compact_whitespace(lastmod),
+            }
+        )
+    return entries
+
+
+def fetch_sitemap_entries(source: dict[str, Any], *, max_sitemaps: int = 12) -> list[dict[str, Any]]:
+    root_url = str(source.get("sitemap_url") or source.get("feed_url") or "").strip()
+    if not root_url:
+        return []
+    pending = [root_url]
+    seen_sitemaps: set[str] = set()
+    entries: list[dict[str, Any]] = []
+    while pending and len(seen_sitemaps) < max_sitemaps:
+        sitemap_url = pending.pop(0)
+        if sitemap_url in seen_sitemaps:
+            continue
+        seen_sitemaps.add(sitemap_url)
+        scan_source = {**source, "sitemap_url": sitemap_url}
+        parsed = parse_sitemap_entries(fetch_url_text(sitemap_url), scan_source)
+        for item in parsed:
+            nested_url = str(item.get("_sitemap_url") or "")
+            if nested_url:
+                pending.append(nested_url)
+                continue
+            entries.append(item)
+    return entries
+
+
+def json_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float)):
+        return compact_whitespace(str(value))
+    if isinstance(value, list):
+        parts = [json_text_value(item) for item in value]
+        return compact_whitespace(" ".join(part for part in parts if part))
+    if isinstance(value, dict):
+        for key in (
+            "text",
+            "title",
+            "name",
+            "headline",
+            "description",
+            "summary",
+            "abstract",
+        ):
+            text = json_text_value(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def json_first_text(item: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, str]:
+    lowered = {str(key).lower(): key for key in item.keys()}
+    for key in keys:
+        raw_key = lowered.get(key.lower())
+        if raw_key is None:
+            continue
+        text = json_text_value(item.get(raw_key))
+        if text:
+            return text, raw_key
+    return "", ""
+
+
+def iter_json_dicts(value: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        items.append(value)
+        for child in value.values():
+            items.extend(iter_json_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            items.extend(iter_json_dicts(child))
+    return items
+
+
+def format_item_url(template: str, raw_value: str, raw_key: str) -> str:
+    if not template:
+        return ""
+    slug = raw_value.strip().strip("/")
+    replacements = {
+        "slug": urllib.parse.quote(slug),
+        "id": urllib.parse.quote(slug),
+        "path": urllib.parse.quote(slug),
+        "value": urllib.parse.quote(slug),
+    }
+    if raw_key:
+        replacements[raw_key] = urllib.parse.quote(slug)
+    try:
+        return template.format(**replacements)
+    except KeyError:
+        return ""
+
+
+def json_object_to_article_item(item: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | None:
+    title, _ = json_first_text(
+        item,
+        (
+            "title",
+            "headline",
+            "name",
+            "articleTitle",
+            "paperTitle",
+            "modelName",
+            "modelId",
+        ),
+    )
+    url_value, url_key = json_first_text(
+        item,
+        ("url", "link", "href", "permalink", "path", "slug"),
+    )
+    if not url_value:
+        url_value, url_key = json_first_text(item, ("id",))
+    if not title or not url_value:
+        return None
+
+    item_url = ""
+    if url_value.startswith(("http://", "https://")):
+        item_url = url_value
+    elif (
+        str(source.get("item_url_template") or "")
+        and url_key.lower() in {"slug", "id"}
+        and not url_value.startswith("/")
+    ):
+        item_url = format_item_url(str(source.get("item_url_template") or ""), url_value, url_key)
+    if not item_url:
+        base_url = str(source.get("site_url") or source.get("json_url") or "")
+        item_url = urllib.parse.urljoin(base_url, url_value)
+    if not item_url.startswith(("http://", "https://")):
+        return None
+    if not url_matches_source_paths(item_url, source):
+        return None
+
+    summary, _ = json_first_text(
+        item,
+        (
+            "summary",
+            "description",
+            "abstract",
+            "excerpt",
+            "intro",
+            "content",
+            "body",
+        ),
+    )
+    published, _ = json_first_text(
+        item,
+        (
+            "published_at",
+            "publishedAt",
+            "publishTime",
+            "releaseDate",
+            "date",
+            "createdAt",
+            "updatedAt",
+            "lastModified",
+        ),
+    )
+    return {
+        "url": re.sub(r"#.*$", "", item_url),
+        "title": compact_whitespace(title),
+        "summary": strip_html(summary),
+        "source_name": str(source.get("name") or "Article source"),
+        "feed_url": str(source.get("json_url") or source.get("api_url") or ""),
+        "published_at": compact_whitespace(published),
+    }
+
+
+def parse_json_api_entries(json_text: str, source: dict[str, Any]) -> list[dict[str, Any]]:
+    if not json_text.strip():
+        return []
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        print(f"[article] could not parse JSON source {source.get('json_url')}: {exc}", file=sys.stderr)
+        return []
+
+    entries: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for obj in iter_json_dicts(data):
+        item = json_object_to_article_item(obj, source)
+        if not item:
+            continue
+        url = str(item.get("url") or "")
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        entries.append(item)
+    return entries
+
+
+def huggingface_models_api_url(source: dict[str, Any], *, limit: int) -> str:
+    api_url = str(source.get("api_url") or "").strip()
+    if api_url:
+        return api_url
+    org = str(source.get("huggingface_org") or "").strip()
+    if not org:
+        return ""
+    return DEFAULT_HUGGINGFACE_MODELS_API.format(
+        org=urllib.parse.quote(org),
+        limit=max(1, limit),
+    )
+
+
+def parse_huggingface_model_entries(json_text: str, source: dict[str, Any]) -> list[dict[str, Any]]:
+    if not json_text.strip():
+        return []
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        print(f"[article] could not parse Hugging Face source {source.get('api_url')}: {exc}", file=sys.stderr)
+        return []
+    if isinstance(data, dict):
+        raw_items = data.get("models") or data.get("items") or data.get("data") or []
+    else:
+        raw_items = data
+    if not isinstance(raw_items, list):
+        return []
+
+    entries: list[dict[str, Any]] = []
+    source_name = str(source.get("name") or "Hugging Face models")
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        model_id = str(raw.get("modelId") or raw.get("id") or "").strip()
+        if not model_id or "/" not in model_id:
+            continue
+        tags = raw.get("tags") if isinstance(raw.get("tags"), list) else []
+        tag_text = ", ".join(str(tag) for tag in tags[:8] if str(tag).strip())
+        downloads = parse_count(raw.get("downloads"))
+        likes = parse_count(raw.get("likes"))
+        summary_bits = [
+            f"{model_id} model listing",
+            str(raw.get("pipeline_tag") or raw.get("library_name") or "").strip(),
+            f"{downloads:,} downloads" if downloads else "",
+            f"{likes:,} likes" if likes else "",
+            tag_text,
+        ]
+        entries.append(
+            {
+                "url": f"https://huggingface.co/{model_id}",
+                "title": model_id,
+                "summary": compact_whitespace(". ".join(bit for bit in summary_bits if bit)),
+                "source_name": source_name,
+                "feed_url": huggingface_models_api_url(source, limit=1),
+                "published_at": compact_whitespace(
+                    str(raw.get("lastModified") or raw.get("createdAt") or raw.get("updatedAt") or "")
+                ),
+            }
+        )
+    return entries
+
+
+def fetch_huggingface_model_entries(source: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    api_url = huggingface_models_api_url(source, limit=limit)
+    if not api_url:
+        return []
+    print(f"[article] scanning {source.get('name')}: {api_url}")
+    return parse_huggingface_model_entries(fetch_url_text(api_url), {**source, "api_url": api_url})
+
+
+def build_article_x_search_prompt(source: dict[str, Any], config: dict[str, Any], limit: int) -> str:
+    include = ", ".join(source.get("include_keywords") or config.get("include_keywords") or [])
+    exclude = ", ".join(source.get("exclude_keywords") or config.get("exclude_keywords") or [])
+    query = str(source.get("x_search_query") or source.get("query") or "trending AI technology news")
+    lookback = int(source.get("lookback_hours") or config.get("article_lookback_hours") or 72)
+    return f"""
+You are finding source links for a daily AI/tech Instagram carousel.
+
+Search X/Grok for: {query}
+
+Return up to {limit} recent, article-like source links from the last {lookback} hours.
+Prefer links with concrete AI product launches, model releases, benchmarks, research,
+developer tooling, Philippine tech/business impact, or workforce impact.
+Prefer these themes when relevant: {include or "AI, technology, model releases"}.
+Avoid: {exclude or "low-signal promotions"}.
+
+Return ONLY a raw JSON array. No markdown. Each object must have:
+"title": "article or source title",
+"summary": "one sentence explaining the signal",
+"source_name": "publisher or account",
+"published_at": "ISO date or readable date if available",
+"url": "https://..."
+""".strip()
+
+
+def fetch_x_search_article_items(
+    source: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    token = resolve_xai_token(required=False)
+    if not token:
+        print(f"[article] x_search unavailable for {source.get('name')}: no xAI token", file=sys.stderr)
+        return []
+    prompt = build_article_x_search_prompt(source, config, limit)
+    try:
+        text = xai_responses_text(prompt, token, timeout=120)
+        data = extract_json_value(text, "[", "]")
+    except SystemExit as exc:
+        print(f"[article] x_search failed for {source.get('name')}: {exc}", file=sys.stderr)
+        return []
+    if not isinstance(data, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for raw in data:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        entries.append(
+            {
+                "url": re.sub(r"#.*$", "", url),
+                "title": compact_whitespace(str(raw.get("title") or title_from_url(url))),
+                "summary": strip_html(str(raw.get("summary") or "")),
+                "source_name": compact_whitespace(str(raw.get("source_name") or source.get("name") or "X Trending")),
+                "feed_url": str(source.get("x_search_query") or ""),
+                "published_at": compact_whitespace(str(raw.get("published_at") or "")),
+            }
+        )
+    return entries
+
+
 def article_keyword_lists(
     source: dict[str, Any],
     config: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     include = list(config.get("include_keywords") or [])
     include.extend(source.get("include_keywords") or [])
-    exclude = list(config.get("exclude_keywords") or [])
+    exclude = [] if source.get("ignore_global_exclude") else list(config.get("exclude_keywords") or [])
     exclude.extend(source.get("exclude_keywords") or [])
     return dedupe_lower(include), dedupe_lower(exclude)
 
@@ -558,24 +1175,32 @@ def score_article_item(
     config: dict[str, Any],
 ) -> tuple[int, list[str]]:
     reasons: list[str] = []
+    title_text = str(item.get("title", "")).lower()
     text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
     include_keywords, exclude_keywords = article_keyword_lists(source, config)
 
     score = int(source.get("base_score") or 20)
-    matched = [keyword for keyword in include_keywords if keyword in text][:6]
+    matched = matched_terms(text, include_keywords, limit=6)
     if matched:
         score += min(30, 5 * len(matched))
         reasons.append("keywords: " + ", ".join(matched))
 
-    signal_hits = [term for term in ARTICLE_SIGNAL_TERMS if term in text]
+    signal_hits = matched_terms(text, ARTICLE_SIGNAL_TERMS)
     if signal_hits:
         score += min(18, 2 * len(signal_hits))
         reasons.append("signal terms")
 
-    strong_hits = [term for term in ARTICLE_STRONG_TERMS if term in text]
+    strong_hits = matched_terms(text, ARTICLE_STRONG_TERMS)
     if strong_hits:
         score += min(18, 3 * len(strong_hits))
         reasons.append("strong terms")
+
+    # A hard signal in the headline outweighs the same word buried in the summary,
+    # so reward strong terms that land in the title itself.
+    title_strong = matched_terms(title_text, ARTICLE_STRONG_TERMS, limit=3)
+    if title_strong:
+        score += min(9, 3 * len(title_strong))
+        reasons.append("strong signal in title")
 
     if re.search(r"\b\d+(?:\.\d+)?\s?(?:%(?!\w)|x\b|k\b|m\b|b\b|tokens?\b|parameters?\b|steps?\b|tasks?\b|calls?\b)", text, re.I):
         score += 10
@@ -585,7 +1210,15 @@ def score_article_item(
         score += 8
         reasons.append("comparison")
 
-    excluded = [keyword for keyword in exclude_keywords if keyword in text]
+    if re.search(MODEL_RELEASE_PATTERN, text, re.I):
+        score += 6
+        reasons.append("named model release")
+
+    if any(re.search(pattern, text, re.I) for pattern in LOW_SIGNAL_ARTICLE_PATTERNS):
+        score -= 12
+        reasons.append("low-signal format")
+
+    excluded = matched_terms(text, exclude_keywords)
     if excluded:
         score -= 35
         reasons.append("excluded keyword: " + ", ".join(excluded[:3]))
@@ -616,31 +1249,95 @@ def normalize_article_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def direct_url_article_items(source: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    feed_url = source_primary_url(source)
+    for url in source.get("urls") or []:
+        items.append(
+            {
+                "url": url,
+                "title": title_from_url(url),
+                "summary": "",
+                "source_name": source.get("name") or "Article source",
+                "feed_url": feed_url,
+                "published_at": "",
+            }
+        )
+    return items
+
+
+def fetch_article_source_items(
+    source: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    source_type = str(source.get("source_type") or "rss")
+    source_items: list[dict[str, Any]] = []
+
+    if source_type in {"rss", "atom", "feed"}:
+        for feed_url in source.get("feed_urls") or [source.get("feed_url")]:
+            feed_url = str(feed_url or "").strip()
+            if not feed_url:
+                continue
+            print(f"[article] scanning {source.get('name')}: {feed_url}")
+            feed_source = {**source, "feed_url": feed_url}
+            source_items.extend(parse_feed_entries(fetch_url_text(feed_url), feed_source))
+    elif source_type == "sitemap":
+        print(f"[article] scanning {source.get('name')}: {source.get('sitemap_url')}")
+        source_items.extend(fetch_sitemap_entries(source))
+    elif source_type == "json_api":
+        json_url = str(source.get("json_url") or "").strip()
+        if json_url:
+            print(f"[article] scanning {source.get('name')}: {json_url}")
+            source_items.extend(parse_json_api_entries(fetch_url_text(json_url), source))
+    elif source_type == "huggingface_models":
+        source_items.extend(fetch_huggingface_model_entries(source, limit=limit))
+    elif source_type == "x_search":
+        source_items.extend(fetch_x_search_article_items(source, config, limit=limit))
+
+    source_items.extend(direct_url_article_items(source))
+    return source_items
+
+
+def article_matches_keywords(item: dict[str, Any], keywords: list[str]) -> bool:
+    text = f"{item.get('title', '')} {item.get('summary', '')} {item.get('url', '')}".lower()
+    return bool(matched_terms(text, keywords))
+
+
+def workforce_source_items(
+    base_items: list[dict[str, Any]],
+    source: dict[str, Any],
+) -> list[dict[str, Any]]:
+    keywords = source.get("workforce_keywords") or sorted(WORKFORCE_TERMS)
+    items: list[dict[str, Any]] = []
+    for item in base_items:
+        if not article_matches_keywords(item, keywords):
+            continue
+        items.append(
+            {
+                **item,
+                "source_name": source.get("name") or "Workforce",
+                "feed_url": str(item.get("feed_url") or ""),
+            }
+        )
+    return items
+
+
 def fetch_article_items(config: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
     sources = config.get("article_sources") or []
     if not sources:
         return []
 
     items: list[dict[str, Any]] = []
+    base_items: list[dict[str, Any]] = []
+    workforce_sources: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     now = datetime.now(timezone.utc)
-    for source in sources:
-        source_items: list[dict[str, Any]] = []
-        feed_url = str(source.get("feed_url") or "")
-        if feed_url:
-            print(f"[article] scanning {source.get('name')}: {feed_url}")
-            source_items.extend(parse_feed_entries(fetch_url_text(feed_url), source))
-        for url in source.get("urls") or []:
-            source_items.append(
-                {
-                    "url": url,
-                    "title": url,
-                    "summary": "",
-                    "source_name": source.get("name") or "Article source",
-                    "feed_url": feed_url,
-                    "published_at": "",
-                }
-            )
+
+    def keep_source_items(source: dict[str, Any], source_items: list[dict[str, Any]]) -> None:
+        nonlocal items, base_items
+        source_type = str(source.get("source_type") or "rss")
 
         lookback_hours = int(source.get("lookback_hours") or config.get("article_lookback_hours") or 72)
         cutoff = now - timedelta(hours=lookback_hours)
@@ -649,19 +1346,35 @@ def fetch_article_items(config: dict[str, Any], *, limit: int) -> list[dict[str,
         for raw_item in source_items:
             item = normalize_article_item(raw_item)
             url = item["url"]
-            if not url or url in seen_urls:
+            if not url:
+                continue
+            if url in seen_urls and source_type != "workforce":
                 continue
             published = feed_item_datetime(item)
             if published and published < cutoff:
                 continue
-            seen_urls.add(url)
+            if source_type != "workforce":
+                seen_urls.add(url)
             item["_source_config"] = source
             items.append(item)
+            if source_type != "workforce":
+                base_items.append(item)
             kept_for_source += 1
             if kept_for_source >= per_source_limit:
                 break
-            if len(items) >= limit:
-                return items
+
+    for source in sources:
+        source_type = str(source.get("source_type") or "rss")
+        if source_type == "workforce":
+            workforce_sources.append(source)
+            continue
+        keep_source_items(
+            source,
+            fetch_article_source_items(source, config, limit=limit),
+        )
+
+    for source in workforce_sources:
+        keep_source_items(source, workforce_source_items(base_items, source))
     return items[:limit]
 
 

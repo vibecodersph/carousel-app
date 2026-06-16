@@ -93,6 +93,9 @@ BOILERPLATE_PATTERNS = [
     r"\bread more\b",
     r"\brecommended for you\b",
     r"\bregister now\b",
+    r"\bclick to share\b",
+    r"\bopens in new window\b",
+    r"\bshare on (?:facebook|x|twitter|linkedin|reddit|tumblr|pinterest|telegram|whatsapp)\b",
     r"\bshare this\b",
     r"\bsign in\b",
     r"\bsign up\b",
@@ -340,7 +343,9 @@ def is_boilerplate(text: str) -> bool:
     lowered = text.lower()
     if any(re.search(pattern, lowered) for pattern in BOILERPLATE_PATTERNS):
         return True
-    if lowered in {"x", "facebook", "linkedin", "copy link", "email", "print"}:
+    if lowered in {"share", "x", "facebook", "linkedin", "copy link", "email", "print"}:
+        return True
+    if lowered.count("share on ") >= 2:
         return True
     if len(text) < 3:
         return True
@@ -360,6 +365,20 @@ def is_useful_block(text: str, role: str) -> bool:
 
 def count_words(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'._+-]*", text))
+
+
+def term_in_text(text: str, term: str) -> bool:
+    """Whole-word/term match, so 'score' does not match 'underscored' and 'ai'
+    does not match 'training'. Mirrors story_scout.text_has_term."""
+    term = term.strip().lower()
+    if not term:
+        return False
+    escaped = re.sub(r"\\\s+", r"\\s+", re.escape(term))
+    return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", text, re.I) is not None
+
+
+def matched_signal_terms(text: str, terms: set[str]) -> list[str]:
+    return [term for term in terms if term_in_text(text, term)]
 
 
 def first_meta(meta: dict[str, str], *keys: str) -> str:
@@ -588,11 +607,12 @@ def split_sentences(text: str) -> list[str]:
     return sentences or [normalize_space(text)]
 
 
-def clamp_words(text: str, limit: int) -> str:
+def clamp_words(text: str, limit: int, *, ellipsis: bool = True) -> str:
     words = re.findall(r"\S+", text)
     if len(words) <= limit:
         return text
-    return " ".join(words[:limit]).rstrip(" ,;:") + "..."
+    clipped = " ".join(words[:limit]).rstrip(" ,;:")
+    return f"{clipped}..." if ellipsis else clipped
 
 
 def sentence_word_count(text: str) -> int:
@@ -641,7 +661,7 @@ def compact_headline(text: str, limit: int = 9) -> str:
     text = normalize_space(text)
     text = re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.I)
     text = re.sub(r"[:.;,]\s*$", "", text)
-    text = clamp_words(text, limit)
+    text = clamp_words(text, limit, ellipsis=False)
     if text and text[:1].islower():
         text = text[:1].upper() + text[1:]
     return text
@@ -669,12 +689,12 @@ def section_signal_score(title: str, body: str) -> tuple[int, list[str]]:
         score += min(5, 2 + len(number_matches))
         reasons.append("numbers")
 
-    strong_hits = [term for term in STRONG_SIGNAL_TERMS if term in text]
+    strong_hits = matched_signal_terms(text, STRONG_SIGNAL_TERMS)
     if strong_hits:
         score += min(6, 2 * len(strong_hits))
         reasons.append("strong terms")
 
-    signal_hits = [term for term in SIGNAL_TERMS if term in text]
+    signal_hits = matched_signal_terms(text, SIGNAL_TERMS)
     if signal_hits:
         score += min(5, len(signal_hits))
         reasons.append("topic terms")
@@ -697,7 +717,7 @@ def section_signal_score(title: str, body: str) -> tuple[int, list[str]]:
     if re.search(r"\b(?:said|told|according to)\b", text) and not number_matches and len(signal_hits) < 2:
         score -= 1
 
-    if is_boilerplate(body) or is_boilerplate(title):
+    if is_boilerplate(body) or (title.strip() and is_boilerplate(title)):
         score -= 8
         reasons.append("boilerplate")
 
@@ -730,7 +750,10 @@ def build_candidate_sections(article: Article) -> list[CandidateSection]:
         pending_heading = current_heading
 
     for block in article.blocks:
-        if block.role in {"h1", "h2", "h3"}:
+        if block.role == "h1":
+            continue
+
+        if block.role in {"h2", "h3"}:
             flush()
             current_heading = block.text
             pending_heading = current_heading
@@ -742,6 +765,10 @@ def build_candidate_sections(article: Article) -> list[CandidateSection]:
             flush()
             pending_heading = current_heading
         pending.append(block)
+
+        if not current_heading and block.role in {"p", "li"}:
+            flush()
+            continue
 
         if block.role == "blockquote" or count_words(" ".join(item.text for item in pending)) >= 90:
             flush()
@@ -773,17 +800,28 @@ def stat_from_text(text: str) -> str:
     return ""
 
 
+def normalize_stat_chip(value: object) -> str:
+    """Keep a stat chip only when it carries a real quantity. Vague phrases like
+    'Low impact' or 'Digital expansion' add noise and tend to echo the headline,
+    so a chip without a digit is dropped."""
+    text = string_value(value)[:28]
+    if not text or not re.search(r"\d", text):
+        return ""
+    return text
+
+
 def kicker_for_text(text: str) -> str:
     lowered = text.lower()
-    if "benchmark" in lowered or "score" in lowered or "swe" in lowered:
+    has = lambda *terms: any(term_in_text(lowered, term) for term in terms)
+    if has("benchmark", "benchmarks", "score", "scores", "swe-bench", "swe", "leaderboard"):
         return "BENCHMARK"
-    if "open-source" in lowered or "open source" in lowered or "github" in lowered:
+    if has("open-source", "open source", "github", "weights", "apache"):
         return "OPEN SOURCE"
-    if "agent" in lowered or "coding" in lowered or "harness" in lowered:
+    if has("agent", "agentic", "coding", "harness"):
         return "AGENTIC CODING"
-    if "license" in lowered or "pricing" in lowered or "cost" in lowered:
+    if has("license", "pricing", "price", "cost", "funding", "revenue"):
         return "DISTRIBUTION"
-    if re.search(r"\b(?:launch|released|announced|new)\b", lowered):
+    if has("launch", "launched", "released", "release", "announced", "new"):
         return "THE NEWS"
     return "THE SIGNAL"
 
@@ -795,14 +833,54 @@ def sentence_score(sentence: str) -> int:
     return score
 
 
+# Verbs that typically separate a sentence's subject from its predicate. Splitting
+# here lets a single-sentence section render a distinct headline (subject) and body
+# (predicate) instead of repeating the same words in both.
+PRIMARY_VERB_TOKENS = {
+    "has", "have", "had", "is", "are", "was", "were", "will", "would",
+    "can", "could", "announced", "launched", "released", "unveiled",
+    "introduced", "reported", "said", "plans", "aims", "expects", "developed",
+    "raised", "involved", "highlighted", "comes", "became", "becomes",
+    "shows", "showed", "found", "claims", "claimed", "warns", "warned",
+}
+
+
+def subject_predicate_split(sentence: str) -> tuple[str, str]:
+    """Split a declarative sentence into (subject, predicate) at its primary verb.
+    Only returns a split when the subject is contentful enough to stand alone as a
+    headline (>= 3 words) so short-subject sentences keep a punchier lead."""
+    words = sentence.split()
+    for index, word in enumerate(words):
+        token = word.strip(",.;:\"'()").lower()
+        if 2 <= index <= 12 and token in PRIMARY_VERB_TOKENS:
+            subject = " ".join(words[:index]).strip()
+            predicate = " ".join(words[index:]).strip()
+            if count_words(subject) >= 3 and count_words(predicate) >= 4:
+                return subject, predicate
+    return "", ""
+
+
 def local_page_from_candidate(candidate: CandidateSection) -> CarouselPage:
     sentences = split_sentences(candidate.body)
     ranked = sorted(enumerate(sentences), key=lambda item: sentence_score(item[1]), reverse=True)
     fitting_ranked = [item for item in ranked if count_words(item[1]) <= 42]
     selection_pool = fitting_ranked or ranked
+
+    heading = candidate.title
+    has_heading = bool(
+        heading
+        and count_words(heading) >= 2
+        and normalized_text_key(heading) != normalized_text_key(candidate.body[:80])
+    )
+    # With no usable heading, reserve the strongest sentence for the headline so the
+    # body can draw from *other* sentences and avoid duplicating it.
+    headline_sentence_index = selection_pool[0][0] if (not has_heading and selection_pool) else None
+
     chosen_indices: list[int] = []
     chosen_word_count = 0
-    for index, sentence in selection_pool[:4]:
+    for index, sentence in selection_pool[:5]:
+        if index == headline_sentence_index and len(sentences) > 1:
+            continue
         sentence_words = count_words(sentence)
         if chosen_indices and chosen_word_count + sentence_words > 42:
             continue
@@ -819,10 +897,21 @@ def local_page_from_candidate(candidate: CandidateSection) -> CarouselPage:
     if sentence_word_count(body) > 42:
         body = shorten_sentence(body, 42)
     body = clamp_words(body, 42)
-    title = candidate.title
-    if not title or count_words(title) < 2 or normalized_text_key(title) == normalized_text_key(body[:80]):
-        title = sentences[chosen_indices[0]] if chosen_indices else candidate.body
-    headline = compact_headline(title, 8)
+
+    if has_heading:
+        headline = compact_headline(heading, 9)
+    elif headline_sentence_index is not None and headline_sentence_index not in chosen_indices:
+        # Body uses different sentences, so a compact form of the lead is distinct.
+        headline = compact_headline(sentences[headline_sentence_index], 9)
+    else:
+        lead = sentences[headline_sentence_index] if headline_sentence_index is not None else candidate.body
+        subject, predicate = subject_predicate_split(lead)
+        if subject and predicate:
+            headline = compact_headline(subject, 9)
+            body = finish_sentence(clamp_words(predicate, 42))
+        else:
+            headline = compact_headline(lead, 8)
+
     text_for_kicker = f"{headline} {body}"
     return CarouselPage(
         index=candidate.index,
@@ -879,10 +968,10 @@ def gemini_curate_pages(
 
     model = gemini_text_model()
     prompt = f"""
-You are an editorial producer turning one article into an Instagram carousel.
-Choose only the highest-signal article sections: concrete technical facts,
-benchmarks, launches, open-source details, adoption signals, pricing,
-strategic stakes, or credible quantified claims.
+You are an editorial producer turning one article into an Instagram carousel for a
+Filipino AI builder audience. Choose only the highest-signal sections: concrete
+technical facts, benchmarks, launches, open-source details, adoption signals,
+pricing, model releases, strategic stakes, or credible quantified claims.
 
 Return JSON only with this exact shape:
 {{
@@ -890,17 +979,21 @@ Return JSON only with this exact shape:
     {{
       "source_indices": [0],
       "kicker": "BENCHMARK",
-      "headline": "short headline, 3 to 8 words",
-      "body": "paraphrased slide copy, 18 to 38 words",
-      "stat": "optional number chip, max 22 chars",
-      "why": "short reason this is high signal"
+      "headline": "Qwen3-Coder tops SWE-Bench",
+      "body": "The open-weights model scores 71% on SWE-Bench Verified, beating the prior open-source baseline on real GitHub pull-request tasks.",
+      "stat": "71%",
+      "why": "concrete benchmark result"
     }}
   ]
 }}
 
 Rules:
-- Pick 2 to {max_pages} pages.
-- Do not copy long article wording. Paraphrase tightly.
+- Pick {max_pages} pages when the article has that many distinct high-signal points; return fewer only when the rest would be filler. Use at least 2.
+- Order pages to tell a coherent story: what happened, then the evidence or numbers, then why it matters.
+- headline: 3 to 8 words, specific and concrete, lead with the subject or number, no ending period, no quotation marks.
+- body: 18 to 38 words, tightly paraphrased in active voice. Never copy long article wording.
+- stat: one quantity with its unit when the section has a real number (e.g. "72%", "32K tokens", "$2B", "10x", "SWE-Bench 71"). If the section has no genuine number, use an empty string. Never put a phrase, label, or non-numeric word here.
+- kicker: a 1 to 3 word ALL-CAPS section label that frames the slide (e.g. THE NEWS, BENCHMARK, OPEN SOURCE, THE NUMBERS, WHY IT MATTERS, THE STAKES, UNDER THE HOOD, ADOPTION).
 - Each page must stand on a specific fact, benchmark, technical detail, or implication.
 - Skip intro fluff, event promos, newsletter language, author bio, generic quotes, and background unless it changes the story.
 - No markdown, citations, extra keys, hashtags, emojis, or quotation marks around the body.
@@ -967,7 +1060,7 @@ Candidate sections:
                 kicker=string_value(raw_page.get("kicker"))[:24].upper() or kicker_for_text(body),
                 headline=compact_headline(headline, 9),
                 body=body,
-                stat=string_value(raw_page.get("stat"))[:28],
+                stat=normalize_stat_chip(raw_page.get("stat")),
                 source_heading=source_heading,
                 source_indices=source_indices,
                 score=source_score,
@@ -994,10 +1087,24 @@ def curate_pages(
             max_pages=max_pages,
             min_score=min_score,
         )
+        if not pages:
+            # Gemini curation failures are usually transient (timeout, rate limit,
+            # one malformed JSON response). A silent drop to local scoring yields
+            # verbatim, lower-quality slides, so retry once before giving up.
+            print("[article] Gemini curation returned no pages; retrying once")
+            pages = gemini_curate_pages(
+                article,
+                candidates,
+                max_pages=max_pages,
+                min_score=min_score,
+            )
         if pages:
             return pages, "gemini"
-        if backend == "gemini":
-            print("[article] Gemini curation unavailable or empty; using local scoring fallback")
+        print(
+            "[article] WARNING: Gemini curation unavailable after retry; falling back to "
+            "LOCAL scoring. Slides will use verbatim article copy and may read lower "
+            "quality. Re-run to retry Gemini, or pass --curation-backend gemini to require it."
+        )
     pages = local_curate_pages(candidates, max_pages=max_pages, min_score=min_score)
     return pages, "local"
 
@@ -1356,6 +1463,7 @@ def build_article_carousel(
         "min_score": min_score,
         "max_pages": max_pages,
         "source_article_path": str(article_report_path),
+        "instagram_caption": title_context.get("instagram_caption", ""),
         "title_context": manifest_title_context(title_context),
         "slides": slides,
     }

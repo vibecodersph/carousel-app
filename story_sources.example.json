@@ -39,53 +39,328 @@
   ],
   "article_sources": [
     {
-      "name": "OpenAI News",
-      "feed_url": "https://openai.com/news/rss.xml",
-      "base_score": 30,
-      "include_keywords": ["agent", "codex", "model", "research", "safety", "benchmark"]
+      "name": "TechCrunch AI",
+      "category": "International AI/Tech",
+      "feed_url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "base_score": 22,
+      "include_keywords": ["ai", "agent", "funding", "launch", "model", "policy", "startup"]
     },
     {
-      "name": "Google AI Blog",
-      "feed_url": "https://blog.google/technology/ai/rss/",
-      "base_score": 25,
-      "include_keywords": ["gemini", "deepmind", "research", "model", "agent", "benchmark"]
+      "name": "The Verge AI",
+      "category": "International AI/Tech",
+      "feed_url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+      "base_score": 21,
+      "include_keywords": ["ai", "app", "agent", "google", "meta", "model", "openai", "policy"]
     },
     {
-      "name": "Hugging Face Blog",
-      "feed_url": "https://huggingface.co/blog/feed.xml",
-      "base_score": 25,
-      "include_keywords": ["open source", "model", "dataset", "benchmark", "inference", "agents"]
+      "name": "Ars Technica Technology Lab",
+      "category": "International AI/Tech",
+      "feed_url": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+      "base_score": 22,
+      "include_keywords": ["ai", "chip", "llm", "model", "research", "security", "technical"]
+    },
+    {
+      "name": "MIT Technology Review",
+      "category": "International AI/Tech",
+      "feed_url": "https://www.technologyreview.com/feed/",
+      "base_score": 24,
+      "include_keywords": ["ai", "automation", "chip", "model", "policy", "research", "workforce"]
+    },
+    {
+      "name": "VentureBeat AI",
+      "category": "International AI/Tech",
+      "feed_url": "https://venturebeat.com/category/ai/feed/",
+      "base_score": 22,
+      "include_keywords": ["agent", "ai", "benchmark", "enterprise", "model", "open source", "startup"]
     },
     {
       "name": "The Decoder",
+      "category": "International AI/Tech",
       "feed_url": "https://the-decoder.com/feed/",
-      "base_score": 24,
-      "include_keywords": ["model", "benchmark", "open source", "agent", "research"]
+      "base_score": 25,
+      "include_keywords": ["agent", "ai", "benchmark", "model", "open source", "research"]
     },
     {
-      "name": "TechCrunch AI",
-      "feed_url": "https://techcrunch.com/category/artificial-intelligence/feed/",
-      "base_score": 18,
-      "include_keywords": ["launch", "model", "agent", "funding", "policy"],
-      "exclude_keywords": ["app update", "lawsuit recap"]
+      "name": "IEEE Spectrum AI",
+      "category": "International AI/Tech",
+      "feed_url": "https://spectrum.ieee.org/rss/artificial-intelligence/fulltext",
+      "base_score": 23,
+      "include_keywords": ["ai", "chip", "engineering", "model", "robot", "research", "technical"]
+    },
+    {
+      "name": "OpenAI News",
+      "category": "First-party lab feeds",
+      "feed_url": "https://openai.com/news/rss.xml",
+      "base_score": 34,
+      "include_keywords": ["agent", "api", "codex", "gpt", "model", "openai", "research", "safety"]
+    },
+    {
+      "name": "Google DeepMind Blog",
+      "category": "First-party lab feeds",
+      "feed_url": "https://deepmind.google/blog/rss.xml",
+      "base_score": 32,
+      "include_keywords": ["agent", "benchmark", "deepmind", "gemini", "model", "research", "safety"]
+    },
+    {
+      "name": "Hugging Face Blog",
+      "category": "First-party lab feeds",
+      "feed_url": "https://huggingface.co/blog/feed.xml",
+      "base_score": 30,
+      "include_keywords": ["agents", "benchmark", "dataset", "hugging face", "inference", "model", "open source"]
+    },
+    {
+      "name": "Qwen Blog",
+      "category": "First-party lab feeds",
+      "feed_url": "https://qwenlm.github.io/blog/index.xml",
+      "base_score": 31,
+      "include_keywords": ["agent", "benchmark", "coder", "model", "open source", "qwen", "research"]
+    },
+    {
+      "name": "NVIDIA Developer AI",
+      "category": "First-party lab feeds",
+      "feed_url": "https://developer.nvidia.com/blog/tag/generative-ai/feed/",
+      "base_score": 27,
+      "include_keywords": ["agent", "ai", "cuda", "developer", "gpu", "inference", "nvidia"]
+    },
+    {
+      "name": "NVIDIA Blog",
+      "category": "First-party lab feeds",
+      "feed_url": "https://blogs.nvidia.com/feed/",
+      "base_score": 24,
+      "include_keywords": ["ai", "chip", "gpu", "inference", "nvidia", "robotics"]
+    },
+    {
+      "name": "Together AI Blog",
+      "category": "First-party lab feeds",
+      "feed_url": "https://www.together.ai/blog/rss.xml",
+      "base_score": 28,
+      "include_keywords": ["agent", "inference", "model", "open source", "research", "together"]
+    },
+    {
+      "name": "Anthropic",
+      "category": "First-party lab feeds",
+      "source_type": "sitemap",
+      "sitemap_url": "https://www.anthropic.com/sitemap.xml",
+      "include_paths": ["/news/", "/research/", "/engineering/"],
+      "base_score": 38,
+      "include_keywords": ["agent", "anthropic", "claude", "engineering", "model", "research", "safety"]
+    },
+    {
+      "name": "Mistral AI",
+      "category": "First-party lab feeds",
+      "source_type": "sitemap",
+      "sitemap_url": "https://mistral.ai/sitemap.xml",
+      "include_paths": ["/news/"],
+      "base_score": 36,
+      "include_keywords": ["agent", "le chat", "mistral", "model", "open source", "research"]
+    },
+    {
+      "name": "Qwen Research",
+      "category": "First-party lab feeds",
+      "source_type": "json_api",
+      "json_url": "https://qwen.ai/api/page_config?code=research.research-list",
+      "site_url": "https://qwen.ai",
+      "item_url_template": "https://qwen.ai/research/{slug}",
+      "base_score": 34,
+      "include_keywords": ["agent", "benchmark", "model", "open source", "qwen", "research"]
+    },
+    {
+      "name": "Qwen Hugging Face Models",
+      "category": "First-party lab feeds",
+      "source_type": "huggingface_models",
+      "huggingface_org": "Qwen",
+      "base_score": 30,
+      "max_items": 4,
+      "include_keywords": ["benchmark", "coder", "instruct", "model", "open source", "parameters", "qwen", "vl"]
+    },
+    {
+      "name": "GitHub AI & ML",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://github.blog/ai-and-ml/feed/",
+      "base_score": 27,
+      "include_keywords": ["agent", "ai", "copilot", "developer", "github", "model", "open source"]
+    },
+    {
+      "name": "GitHub Changelog",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://github.blog/changelog/feed/",
+      "base_score": 23,
+      "include_keywords": ["ai", "api", "codespaces", "copilot", "developer", "github", "models"]
     },
     {
       "name": "Simon Willison",
+      "category": "Builder/operator feeds",
       "feed_url": "https://simonwillison.net/atom/everything/",
-      "base_score": 28,
-      "include_keywords": ["llm", "agent", "prompt injection", "open source", "model", "security"]
+      "base_score": 29,
+      "include_keywords": ["agent", "llm", "model", "open source", "prompt injection", "security", "tools"]
     },
     {
-      "name": "Latent Space",
-      "feed_url": "https://www.latent.space/feed",
+      "name": "LangChain Blog",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://blog.langchain.com/rss.xml",
+      "base_score": 25,
+      "include_keywords": ["agent", "langchain", "llm", "model", "rag", "tool"]
+    },
+    {
+      "name": "Cloudflare AI",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://blog.cloudflare.com/tag/ai/rss/",
       "base_score": 24,
-      "include_keywords": ["agent", "model", "research", "eval", "inference", "open source"]
+      "include_keywords": ["agent", "ai", "cloudflare", "developer", "inference", "workers"]
     },
     {
-      "name": "Interconnects",
-      "feed_url": "https://www.interconnects.ai/feed",
-      "base_score": 26,
-      "include_keywords": ["open models", "post-training", "reasoning", "eval", "policy", "research"]
+      "name": "Supabase Blog",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://supabase.com/feed.xml",
+      "base_score": 21,
+      "include_keywords": ["ai", "database", "developer", "postgres", "supabase", "vector"]
+    },
+    {
+      "name": "Replicate Blog",
+      "category": "Builder/operator feeds",
+      "feed_url": "https://replicate.com/blog/rss",
+      "base_score": 23,
+      "include_keywords": ["ai", "developer", "image", "inference", "model", "open source", "replicate"]
+    },
+    {
+      "name": "Rappler Tech",
+      "category": "Philippines",
+      "feed_url": "https://www.rappler.com/technology/feed/",
+      "base_score": 19,
+      "include_keywords": ["ai", "cybersecurity", "digital", "philippines", "startup", "technology"]
+    },
+    {
+      "name": "Rappler Business",
+      "category": "Philippines",
+      "feed_url": "https://www.rappler.com/business/feed/",
+      "base_score": 18,
+      "include_keywords": ["ai", "business", "digital", "economy", "philippines", "startup", "workforce"]
+    },
+    {
+      "name": "Philstar Business",
+      "category": "Philippines",
+      "feed_url": "https://www.philstar.com/rss/business",
+      "base_score": 17,
+      "include_keywords": ["ai", "business", "digital", "fintech", "philippines", "startup"]
+    },
+    {
+      "name": "GMA SciTech",
+      "category": "Philippines",
+      "feed_url": "https://data.gmanetwork.com/gno/rss/scitech/feed.xml",
+      "base_score": 17,
+      "include_keywords": ["ai", "digital", "science", "space", "technology"]
+    },
+    {
+      "name": "GMA Tech",
+      "category": "Philippines",
+      "feed_url": "https://data.gmanetwork.com/gno/rss/scitech/technology/feed.xml",
+      "base_score": 17,
+      "include_keywords": ["ai", "app", "cybersecurity", "digital", "technology"]
+    },
+    {
+      "name": "BusinessWorld",
+      "category": "Philippines",
+      "feed_url": "https://www.bworldonline.com/feed/",
+      "base_score": 17,
+      "include_keywords": ["ai", "business", "digital", "economy", "fintech", "philippines", "workforce"]
+    },
+    {
+      "name": "BusinessMirror",
+      "category": "Philippines",
+      "feed_url": "https://businessmirror.com.ph/feed/",
+      "base_score": 17,
+      "include_keywords": ["ai", "business", "digital", "economy", "philippines", "technology", "workforce"]
+    },
+    {
+      "name": "Newsbytes.ph",
+      "category": "Philippines",
+      "feed_url": "https://newsbytes.ph/feed/",
+      "base_score": 19,
+      "include_keywords": ["ai", "cybersecurity", "digital", "government", "philippines", "startup", "technology"]
+    },
+    {
+      "name": "Back End News",
+      "category": "Philippines",
+      "feed_url": "https://backendnews.net/feed/",
+      "base_score": 19,
+      "include_keywords": ["ai", "cloud", "cybersecurity", "enterprise", "philippines", "technology"]
+    },
+    {
+      "name": "YugaTech",
+      "category": "Philippines",
+      "feed_url": "https://www.yugatech.com/feed/",
+      "base_score": 17,
+      "include_keywords": ["ai", "app", "gadget", "philippines", "startup", "technology"]
+    },
+    {
+      "name": "BitPinas",
+      "category": "Philippines",
+      "feed_url": "https://bitpinas.com/feed/",
+      "base_score": 17,
+      "include_keywords": ["ai", "blockchain", "crypto", "digital", "fintech", "philippines"]
+    },
+    {
+      "name": "Fintech News Philippines",
+      "category": "Philippines",
+      "feed_url": "https://fintechnews.ph/feed/",
+      "base_score": 17,
+      "include_keywords": ["ai", "banking", "digital", "fintech", "philippines", "startup"]
+    },
+    {
+      "name": "DOST-ASTI",
+      "category": "Philippines",
+      "feed_url": "https://asti.dost.gov.ph/feed/",
+      "base_score": 19,
+      "include_keywords": ["ai", "asti", "dost", "government", "philippines", "research", "technology"]
+    },
+    {
+      "name": "PhilSA",
+      "category": "Philippines",
+      "feed_url": "https://philsa.gov.ph/feed/",
+      "base_score": 18,
+      "include_keywords": ["ai", "data", "philippines", "satellite", "space", "technology"]
+    },
+    {
+      "name": "Inquirer Technology",
+      "category": "Philippines",
+      "feed_url": "https://technology.inquirer.net/feed",
+      "base_score": 17,
+      "include_keywords": ["ai", "cybersecurity", "digital", "philippines", "startup", "technology"]
+    },
+    {
+      "name": "X Trending AI",
+      "category": "X Trending",
+      "source_type": "x_search",
+      "slot": 3,
+      "x_search_query": "trending AI, developer tools, model releases, and Philippine tech stories with source links",
+      "base_score": 24,
+      "max_items": 3,
+      "include_keywords": ["agent", "ai", "benchmark", "launch", "model", "open source", "philippines", "research"]
+    },
+    {
+      "name": "Workforce AI Jobs Stories",
+      "category": "Workforce",
+      "source_type": "workforce",
+      "slot": 5,
+      "base_score": 30,
+      "max_items": 3,
+      "ignore_global_exclude": true,
+      "include_keywords": ["ai", "automation", "jobs", "skills", "talent", "upskilling", "workforce"],
+      "workforce_keywords": [
+        "automation",
+        "career",
+        "employment",
+        "hiring",
+        "job",
+        "jobs",
+        "layoff",
+        "layoffs",
+        "reskilling",
+        "skills",
+        "talent",
+        "upskilling",
+        "workforce"
+      ]
     }
   ]
 }
