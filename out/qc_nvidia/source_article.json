@@ -1,0 +1,296 @@
+{
+  "url": "https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/",
+  "canonical_url": "https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/",
+  "title": "NVIDIA Blackwell Leads on First Agentic AI Infrastructure Benchmark",
+  "description": "New AgentPerf results from Artificial Analysis show how accelerated computing systems handle real-world agentic workloads, with NVIDIA GB300 NVL72 running up to 20x more agents per megawatt than NVIDIA Hopper.",
+  "site_name": "NVIDIA Blog",
+  "author": "Shruti Koparkar",
+  "published_at": "2026-06-12T21:00:08+00:00",
+  "image_url": "https://blogs.nvidia.com/wp-content/uploads/2026/06/dgx-social-gb300-2048x2048-1-1.jpg",
+  "block_count": 26,
+  "blocks": [
+    {
+      "index": 0,
+      "role": "p",
+      "text": "AgentPerf from Artificial Analysis, the industry\u2019s first agentic AI benchmark, gives developers, enterprises and infrastructure providers a clear way to compare systems for agentic AI. In the first round of published results, the NVIDIA Blackwell Ultra NVL72 platform delivers leading performance across the agentic AI workloads tested, running 20x more agents per megawatt than NVIDIA Hopper."
+    },
+    {
+      "index": 1,
+      "role": "p",
+      "text": "Agentic AI is a fundamentally different workload than conversational AI. A single chat completion is a sprint: one large language model (LLM) call, one response. An agent functions more like a relay: It breaks a goal into many steps and keeps going until the task is done."
+    },
+    {
+      "index": 2,
+      "role": "p",
+      "text": "That results in dozens to hundreds of LLM calls chained together, each passing growing context to the next, with tool calls like code compile and execution, database search and web browsing at every handoff. The complexity isn\u2019t additive; it\u2019s multiplicative."
+    },
+    {
+      "index": 3,
+      "role": "p",
+      "text": "The distinction matters enormously for performance measurement. Existing AI inference benchmarks measure one LLM call: how fast an LLM responds to a single request and how many simultaneous requests a system can handle. They weren\u2019t designed for agentic workloads, where chained LLM calls, tool call delays and growing context stress accelerated computing systems in fundamentally different ways than a single LLM call ever could."
+    },
+    {
+      "index": 4,
+      "role": "p",
+      "text": "For companies building and deploying agents at scale, it\u2019s important to understand how responsive agents are, how many can be deployed simultaneously and how much useful work AI infrastructure can deliver for every dollar and watt invested."
+    },
+    {
+      "index": 5,
+      "role": "h2",
+      "text": "NVIDIA GB300 NVL72 Runs 20x More Agents per Megawatt"
+    },
+    {
+      "index": 6,
+      "role": "p",
+      "text": "In this first round, AgentPerf measures agentic performance with DeepSeek V4 Pro , a large mixture-of-experts (MoE) model that represents the class of frontier models powering today\u2019s most capable agents. On this workload, NVIDIA GB300 NVL72 delivers the highest performance in the benchmark, running up to 20x more agents per megawatt than the NVIDIA HGX H200 system."
+    },
+    {
+      "index": 7,
+      "role": "p",
+      "text": "The performance advantage comes from extreme codesign across the full stack. GB300 NVL72 connects 72 GPUs into a single rack-scale system, enabling large MoE models like DeepSeek V4 Pro to distribute model execution efficiently at scale."
+    },
+    {
+      "index": 8,
+      "role": "p",
+      "text": "CUDA kernels accelerate this further by overlapping communication and compute, so the cost of coordinating across experts is absorbed rather than added to latency."
+    },
+    {
+      "index": 9,
+      "role": "p",
+      "text": "NVIDIA TensorRT LLM sustains efficiency as concurrent agent sessions scale. For example, it separates the processing of inputs from the generation of outputs so each can be optimized independently."
+    },
+    {
+      "index": 10,
+      "role": "p",
+      "text": "These results are grounded in a benchmark methodology built from the ground up to reflect how agentic AI actually works in production."
+    },
+    {
+      "index": 11,
+      "role": "h2",
+      "text": "Artificial Analysis AgentPerf: Built on Real-World Agentic Workloads"
+    },
+    {
+      "index": 12,
+      "role": "p",
+      "text": "AgentPerf is built based on real coding agent trajectories: an agent receives a task, reads files, writes and edits code, executes commands and iterates based on the results \u2014 all drawn from real public code repositories across 12+ programming languages. The long sequence lengths, tool call patterns and delays are all representative of real-world coding workflows."
+    },
+    {
+      "index": 13,
+      "role": "p",
+      "text": "AgentPerf then measures how many of these agentic tasks a platform can support simultaneously while meeting defined performance thresholds for responsiveness and output token rate. Tool calls are not executed but simulated using representative CPU processing time, so differences in results reflect accelerated computing performance only."
+    },
+    {
+      "index": 14,
+      "role": "p",
+      "text": "The results translate directly into infrastructure decisions: how many concurrent agentic tasks can be run per accelerator and per megawatt of power. For enterprises deploying AI agents at scale, those numbers determine how much productive work a given infrastructure investment can actually deliver."
+    },
+    {
+      "index": 15,
+      "role": "h2",
+      "text": "NVIDIA Ecosystem Partners Harness Blackwell\u2019s Leading Performance"
+    },
+    {
+      "index": 16,
+      "role": "p",
+      "text": "Leading inference providers including Baseten, DeepInfra and Together AI are already serving agentic workloads on frontier models such as DeepSeek V4 Pro on NVIDIA Blackwell and powering production agentic applications today."
+    },
+    {
+      "index": 17,
+      "role": "p",
+      "text": "Together AI powers real-time inference for Cursor , an AI-powered agentic coding platform, on NVIDIA Blackwell. Cursor\u2019s agents debug issues, generate features and execute refactors while developers continue working."
+    },
+    {
+      "index": 18,
+      "role": "p",
+      "text": "DeepInfra powers Pam.ai , an AI workforce platform for car dealerships, which deploys agents to book service appointments, handle calls and run outbound sales campaigns, entirely on NVIDIA Blackwell."
+    },
+    {
+      "index": 19,
+      "role": "p",
+      "text": "As NVIDIA and the open source ecosystem continue to optimize inference software, performance and efficiency on agentic workloads will only improve. The NVIDIA Vera Rubin architecture is now in full production, bringing the next generation of infrastructure capacity to meet the growing demands of agentic AI at scale."
+    },
+    {
+      "index": 20,
+      "role": "p",
+      "text": "Dive deeper into AgentPerf\u2019s methodology and NVIDIA\u2019s full-stack optimizations for agentic AI in this technical blog ."
+    },
+    {
+      "index": 21,
+      "role": "h3",
+      "text": "Related News"
+    },
+    {
+      "index": 22,
+      "role": "h3",
+      "text": "NVIDIA and LG Group Build an AI Factory to Advance Physical AI, Mobility and AI Infrastructure"
+    },
+    {
+      "index": 23,
+      "role": "h3",
+      "text": "NVIDIA and Doosan Group Collaborate to Advance Physical AI and AI Factory Infrastructure"
+    },
+    {
+      "index": 24,
+      "role": "h3",
+      "text": "Seoul Purpose: How NVIDIA and South Korea Are Building the Future of AI"
+    },
+    {
+      "index": 25,
+      "role": "h3",
+      "text": "Share on Mastodon"
+    }
+  ],
+  "candidate_sections": [
+    {
+      "index": 0,
+      "title": "",
+      "body": "AgentPerf from Artificial Analysis, the industry\u2019s first agentic AI benchmark, gives developers, enterprises and infrastructure providers a clear way to compare systems for agentic AI. In the first round of published results, the NVIDIA Blackwell Ultra NVL72 platform delivers leading performance across the agentic AI workloads tested, running 20x more agents per megawatt than NVIDIA Hopper.",
+      "score": 10,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        0
+      ]
+    },
+    {
+      "index": 1,
+      "title": "",
+      "body": "Agentic AI is a fundamentally different workload than conversational AI. A single chat completion is a sprint: one large language model (LLM) call, one response. An agent functions more like a relay: It breaks a goal into many steps and keeps going until the task is done.",
+      "score": 6,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        1
+      ]
+    },
+    {
+      "index": 2,
+      "title": "",
+      "body": "That results in dozens to hundreds of LLM calls chained together, each passing growing context to the next, with tool calls like code compile and execution, database search and web browsing at every handoff. The complexity isn\u2019t additive; it\u2019s multiplicative.",
+      "score": 6,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        2
+      ]
+    },
+    {
+      "index": 3,
+      "title": "",
+      "body": "The distinction matters enormously for performance measurement. Existing AI inference benchmarks measure one LLM call: how fast an LLM responds to a single request and how many simultaneous requests a system can handle. They weren\u2019t designed for agentic workloads, where chained LLM calls, tool call delays and growing context stress accelerated computing systems in fundamentally different ways than a single LLM call ever could.",
+      "score": 9,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        3
+      ]
+    },
+    {
+      "index": 4,
+      "title": "",
+      "body": "For companies building and deploying agents at scale, it\u2019s important to understand how responsive agents are, how many can be deployed simultaneously and how much useful work AI infrastructure can deliver for every dollar and watt invested.",
+      "score": 3,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        4
+      ]
+    },
+    {
+      "index": 5,
+      "title": "NVIDIA GB300 NVL72 Runs 20x More Agents per Megawatt",
+      "body": "In this first round, AgentPerf measures agentic performance with DeepSeek V4 Pro , a large mixture-of-experts (MoE) model that represents the class of frontier models powering today\u2019s most capable agents. On this workload, NVIDIA GB300 NVL72 delivers the highest performance in the benchmark, running up to 20x more agents per megawatt than the NVIDIA HGX H200 system. The performance advantage comes from extreme codesign across the full stack. GB300 NVL72 connects 72 GPUs into a single rack-scale system, enabling large MoE models like DeepSeek V4 Pro to distribute model execution efficiently at scale.",
+      "score": 12,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        6,
+        7
+      ]
+    },
+    {
+      "index": 6,
+      "title": "NVIDIA GB300 NVL72 Runs 20x More Agents per Megawatt",
+      "body": "CUDA kernels accelerate this further by overlapping communication and compute, so the cost of coordinating across experts is absorbed rather than added to latency. NVIDIA TensorRT LLM sustains efficiency as concurrent agent sessions scale. For example, it separates the processing of inputs from the generation of outputs so each can be optimized independently. These results are grounded in a benchmark methodology built from the ground up to reflect how agentic AI actually works in production.",
+      "score": 12,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        8,
+        9,
+        10
+      ]
+    },
+    {
+      "index": 7,
+      "title": "Artificial Analysis AgentPerf: Built on Real-World Agentic Workloads",
+      "body": "AgentPerf is built based on real coding agent trajectories: an agent receives a task, reads files, writes and edits code, executes commands and iterates based on the results \u2014 all drawn from real public code repositories across 12+ programming languages. The long sequence lengths, tool call patterns and delays are all representative of real-world coding workflows. AgentPerf then measures how many of these agentic tasks a platform can support simultaneously while meeting defined performance thresholds for responsiveness and output token rate. Tool calls are not executed but simulated using representative CPU processing time, so differences in results reflect accelerated computing performance only.",
+      "score": 12,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        12,
+        13
+      ]
+    },
+    {
+      "index": 8,
+      "title": "Artificial Analysis AgentPerf: Built on Real-World Agentic Workloads",
+      "body": "The results translate directly into infrastructure decisions: how many concurrent agentic tasks can be run per accelerator and per megawatt of power. For enterprises deploying AI agents at scale, those numbers determine how much productive work a given infrastructure investment can actually deliver.",
+      "score": 5,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        14
+      ]
+    },
+    {
+      "index": 9,
+      "title": "NVIDIA Ecosystem Partners Harness Blackwell\u2019s Leading Performance",
+      "body": "Leading inference providers including Baseten, DeepInfra and Together AI are already serving agentic workloads on frontier models such as DeepSeek V4 Pro on NVIDIA Blackwell and powering production agentic applications today. Together AI powers real-time inference for Cursor , an AI-powered agentic coding platform, on NVIDIA Blackwell. Cursor\u2019s agents debug issues, generate features and execute refactors while developers continue working. DeepInfra powers Pam.ai , an AI workforce platform for car dealerships, which deploys agents to book service appointments, handle calls and run outbound sales campaigns, entirely on NVIDIA Blackwell. As NVIDIA and the open source ecosystem continue to optimize inference software, performance and efficiency on agentic workloads will only improve. The NVIDIA Vera Rubin architecture is now in full production, bringing the next generation of infrastructure capacity to meet the growing demands of agentic AI at scale.",
+      "score": 11,
+      "reasons": [
+        "strong terms",
+        "topic terms",
+        "distribution"
+      ],
+      "block_indices": [
+        16,
+        17,
+        18,
+        19
+      ]
+    },
+    {
+      "index": 10,
+      "title": "NVIDIA Ecosystem Partners Harness Blackwell\u2019s Leading Performance",
+      "body": "Dive deeper into AgentPerf\u2019s methodology and NVIDIA\u2019s full-stack optimizations for agentic AI in this technical blog .",
+      "score": 5,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        20
+      ]
+    }
+  ]
+}

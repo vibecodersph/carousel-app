@@ -1,0 +1,125 @@
+{
+  "source_type": "article",
+  "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+  "article": {
+    "url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+    "canonical_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+    "title": "AI-driven disinformation raises concerns amid PH\u2019s growing digital economy",
+    "description": "The increasing use of artificial intelligence (AI) in online propaganda campaigns has underscored the need for stronger digital literacy and cybersecurity measures in the Philippines as the country accelerates its digital transformation.",
+    "site_name": "Newsbytes.PH",
+    "author": "Rissa Silvestre",
+    "published_at": "2026-06-13T05:27:06+00:00",
+    "image_url": "https://newsbytes.ph/wp-content/uploads/2026/03/AI-Data-Center.jpeg",
+    "block_count": 28
+  },
+  "section_count": 12,
+  "selected_section_count": 5,
+  "slide_count": 6,
+  "rendered_slide_count": 6,
+  "first_page_only": false,
+  "account_name": "vibecodersph",
+  "curation_backend": "local",
+  "min_score": 4,
+  "max_pages": 5,
+  "source_article_path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/source_article.json",
+  "instagram_caption": "As the PH digital economy grows, hindi lang tech stack natin ang nag-a-upgrade. Pati ang mga online propaganda at fake news, may AI upgrade na rin.\n\nAlamin kung paano binabago ng AI ang disinformation sa bansa at kung bakit mas kailangan natin ng matinding digital literacy at cybersecurity ngayon.\n\nI-share mo 'to sa barkada mo para sabay-sabay tayong maging ligtas online.\n\n#CybersecurityPH #DigitalLiteracy #AIGovernance #TechPH #VibeCoders\n\nSource: https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+  "title_context": {
+    "topic": "AI disinformation in the PH digital economy",
+    "provider": "gemini",
+    "image_provider": "openai",
+    "google_enabled": true,
+    "gemini_text_model": "gemini-3.5-flash",
+    "openai_image_model": "gpt-image-2",
+    "openai_image_size": "2048x1152",
+    "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'AI disinformation in the PH digital economy'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. Company context: Rissa Silvestre. Do not show logos or brand marks.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
+    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/title_assets/openai-topic-1b49a964ef.png"
+  },
+  "slides": [
+    {
+      "index": 1,
+      "type": "title",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_01.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/"
+    },
+    {
+      "index": 2,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_02.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+      "kicker": "BENCHMARK",
+      "headline": "Increasing use of artificial intelligence (AI) in online...",
+      "body": "The increasing use of artificial intelligence (AI) in online propaganda campaigns has underscored the need for stronger digital literacy and cybersecurity measures in the Philippines as the country accelerates its digital transformation.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        1
+      ],
+      "score": 6,
+      "why": "strong terms, topic terms"
+    },
+    {
+      "index": 3,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_03.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+      "kicker": "THE SIGNAL",
+      "headline": "This developed after OpenAI reported that Chinese-linked actors...",
+      "body": "This developed after OpenAI reported that Chinese-linked actors had allegedly used its ChatGPT platform to generate content aimed at influencing public opinion on issues such as tariffs, data centers, and artificial intelligence policies in the United States.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        2
+      ],
+      "score": 4,
+      "why": "topic terms"
+    },
+    {
+      "index": 4,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_04.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+      "kicker": "THE SIGNAL",
+      "headline": "According to OpenAI, the campaigns, conducted between late...",
+      "body": "According to OpenAI, the campaigns, conducted between late 2025 and early 2026, involved the creation of slogans, cartoons, social media posts, and online comments intended to shape discussions on trade and technology policies.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        3
+      ],
+      "score": 7,
+      "why": "numbers, topic terms"
+    },
+    {
+      "index": 5,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_05.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+      "kicker": "THE NEWS",
+      "headline": "Issue comes as the country expands its digital...",
+      "body": "The issue comes as the country expands its digital infrastructure through new data centers, cloud computing facilities, and AI-enabled services to support the growing digital economy.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        8
+      ],
+      "score": 4,
+      "why": "topic terms, news"
+    },
+    {
+      "index": 6,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/ph_brand_voice_ai_disinfo/slide_06.png",
+      "source_url": "https://newsbytes.ph/2026/06/13/ai-driven-disinformation-raises-concerns-amid-phs-growing-digital-economy/",
+      "kicker": "THE SIGNAL",
+      "headline": "OpenAI report also highlighted how AI technologies themselves...",
+      "body": "The OpenAI report also highlighted how AI technologies themselves can become tools in geopolitical information operations, reflecting broader concerns over the use of emerging technologies in global competition",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        12
+      ],
+      "score": 6,
+      "why": "topic terms"
+    }
+  ]
+}

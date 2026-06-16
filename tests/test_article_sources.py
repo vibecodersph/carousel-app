@@ -489,6 +489,123 @@ class ArticleNewsPickScoringTests(unittest.TestCase):
         self.assertNotIn("named model release", reasons)
 
 
+class ArticleCoverVoiceTests(unittest.TestCase):
+    def test_brand_voice_cover_copy_is_preferred_over_article_title(self) -> None:
+        ctx = {"cover_copy": {"headline": "Kahit AI, marunong na ring mag-[budol] sa atin."}}
+        # No --title override and a brand headline -> None, so render uses cover copy.
+        self.assertIsNone(
+            build_article_carousel.cover_title_override(None, "AI disinformation rises in PH", ctx)
+        )
+
+    def test_explicit_title_override_wins(self) -> None:
+        ctx = {"cover_copy": {"headline": "Kahit AI, mag-[budol] na rin."}}
+        self.assertEqual(
+            build_article_carousel.cover_title_override("My Manual Title", "Article Title", ctx),
+            "My Manual Title",
+        )
+
+    def test_falls_back_to_article_title_without_brand_headline(self) -> None:
+        # Enrichment off / no cover copy -> keep the article title for the cover.
+        self.assertEqual(
+            build_article_carousel.cover_title_override(None, "Article Title", {}),
+            "Article Title",
+        )
+        self.assertEqual(
+            build_article_carousel.cover_title_override(None, "Article Title", {"cover_copy": {}}),
+            "Article Title",
+        )
+
+    def test_brand_headline_renders_single_two_tone_accent(self) -> None:
+        import build_x_carousel
+
+        markup, plain, has_accent = build_x_carousel.headline_markup_from_brackets(
+            "Kahit AI, marunong na ring mag-[budol] sa digital economy natin."
+        )
+        self.assertTrue(has_accent)
+        self.assertEqual(markup.count('class="accent"'), 1)
+        self.assertIn("budol", plain)
+        self.assertNotIn("[", plain)
+
+    def test_cover_copy_repairs_missing_or_phrase_accent(self) -> None:
+        import build_x_carousel
+
+        repaired = build_x_carousel.normalize_cover_copy(
+            {
+                "cover": {
+                    "headline": "Kahit AI, marunong na ring mag-budol sa atin.",
+                    "accent_word": "budol",
+                }
+            }
+        )
+        self.assertEqual(
+            repaired["headline"],
+            "Kahit AI, marunong na ring mag-[budol] sa atin.",
+        )
+
+        phrase = build_x_carousel.normalize_cover_copy(
+            {"cover": {"headline": "May [AI slop] na naman sa feed mo."}}
+        )
+        markup, plain, has_accent = build_x_carousel.headline_markup_from_brackets(
+            phrase["headline"]
+        )
+        self.assertTrue(has_accent)
+        self.assertEqual(markup.count('class="accent"'), 1)
+        self.assertIn('<span class="accent">slop</span>', markup)
+        self.assertNotIn("[", plain)
+
+    def test_article_title_analysis_uses_article_prompt_context(self) -> None:
+        import build_x_carousel
+
+        prompts: list[str] = []
+
+        def fake_generate(model, api_key, payload, *, api_version, timeout):
+            del model, api_key, api_version, timeout
+            prompts.append(payload["contents"][0]["parts"][0]["text"])
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "topic": "AI disinformation PH",
+                                            "cover": {
+                                                "kicker": "THE SIGNAL",
+                                                "headline": "AI propaganda, naka-[upgrade] na rin.",
+                                                "accent_word": "upgrade",
+                                                "swipe_line": "paano? swipe",
+                                            },
+                                            "instagram_caption": "Hook\n\nSource: https://example.com/story",
+                                            "companies": [],
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+        with patch.object(
+            build_x_carousel, "gemini_generate_content", side_effect=fake_generate
+        ), patch.object(
+            build_x_carousel, "gemini_text_model", return_value="test-model"
+        ), patch.object(
+            build_x_carousel, "load_ig_voice_prompt", return_value="voice"
+        ):
+            analysis = build_x_carousel.gemini_title_analysis(
+                [{"author": "News", "handle": "", "text": "AI story", "url": "https://example.com/story"}],
+                "AI story",
+                "test-key",
+                source_type="article",
+            )
+
+        self.assertEqual(analysis["topic"], "AI disinformation PH")
+        self.assertIn("from an article source", prompts[0])
+        self.assertIn("Source article JSON", prompts[0])
+
+
 class ArticleCoverFallbackTests(unittest.TestCase):
     def test_og_image_fallback_cover_gets_brand_duotone_class(self) -> None:
         import build_x_carousel

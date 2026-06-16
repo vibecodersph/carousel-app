@@ -1,0 +1,339 @@
+{
+  "url": "https://huggingface.co/blog/allenai/olmo-eval",
+  "canonical_url": "https://huggingface.co/blog/allenai/olmo-eval",
+  "title": "olmo-eval: An evaluation workbench for the model development loop",
+  "description": "A Blog post by Ai2 on Hugging Face",
+  "site_name": "huggingface.co",
+  "author": "",
+  "published_at": "",
+  "image_url": "https://cdn-uploads.huggingface.co/production/uploads/638e39b249de7ae552d977b5/gacAOFYwPkpxu7cC4eeey.png",
+  "block_count": 28,
+  "blocks": [
+    {
+      "index": 0,
+      "role": "h1",
+      "text": "olmo-eval: An evaluation workbench for the model development loop"
+    },
+    {
+      "index": 1,
+      "role": "p",
+      "text": "While you're building an LLM, you evaluate it over and over across many interventions. Every adjustment to its data, architecture, or hyperparameters \u2014 and every step up in scale \u2014 sends you back through the same loop: adding or reconfiguring benchmarks, re-running them on each new model checkpoint, noting the results, and checking whether something that helped in a small experiment still holds up on the full training run."
+    },
+    {
+      "index": 2,
+      "role": "p",
+      "text": "Most evaluation tools aren't designed for this\u2014they\u2019re either built to run established benchmarks across finished models or run a model through multi-step, tool-using problems in a sandbox. They don\u2019t keep up with a model that's constantly changing, nor do they reflect how a model might behave under specific real-world conditions."
+    },
+    {
+      "index": 3,
+      "role": "p",
+      "text": "Our last project to address this evaluation challenge was OLMES , the Open Language Model Evaluation Standard. Introduced in 2024, it was meant to make LLM benchmark scores easier to compare across releases. The same models were being scored on the same benchmarks in different ways \u2014 aspects like prompt formatting and task formulation often varied from paper to paper \u2014 so claims about which models performed best often weren't reproducible. OLMES pinned benchmarking choices down in an open, documented standard, and it became the basis for evaluating our open models from Olmo to Tulu."
+    },
+    {
+      "index": 4,
+      "role": "p",
+      "text": "But a model's final score is only part of the evaluation process\u2014which is why we're releasing olmo-eval , a new workbench that builds on OLMES and extends it across the rest of LLM development. Compared to OLMES, olmo-eval cuts down the work of implementing new evaluations, offers more flexibility in defining where and how they run, and makes it easier to compose individual components into larger workflows. Agentic and multi-turn evaluation is supported as a first-class use case, and stronger analysis tools help you judge whether an intervention actually improved on the baseline or the difference amounts to noise."
+    },
+    {
+      "index": 5,
+      "role": "h2",
+      "text": "How olmo-eval differs from existing tools"
+    },
+    {
+      "index": 6,
+      "role": "p",
+      "text": "Is a 2.4pp change in performance enough to make a call?"
+    },
+    {
+      "index": 7,
+      "role": "p",
+      "text": "olmo-eval overlaps in some ways with Harbor, an open framework for evaluating AI agents inside containerized, sandboxed environments. But the two tools differ in their scope. Harbor is aimed mainly at running and publishing agent benchmarks; olmo-eval was built for the everyday work of developing a model\u2014adding and configuring benchmarks, running them across checkpoints, and analyzing the results prompt by prompt instead of as a single overall score."
+    },
+    {
+      "index": 8,
+      "role": "p",
+      "text": "Harbor runs everything the same way\u2014inside sealed, reproducible containers. Because containers can be resource-intensive, olmo-eval lets you choose how each benchmark runs instead. A benchmark that just needs a model to answer questions can run directly, which is faster and cheaper; a benchmark that needs a locked-down environment \u2014 say, one that runs code the model wrote \u2014 gets an isolated container setup. The lightweight path is the default, and olmo-eval only opts for the heavy setup when a benchmark actually requires it."
+    },
+    {
+      "index": 9,
+      "role": "p",
+      "text": "Harbor's process for adding a benchmark is built for evals you plan to publish and share publicly, with the extra verification steps that entails. olmo-eval is built for moving quickly while you develop, and how you add a benchmark depends on what the benchmark needs: a short definition for a basic eval, with options to let a model use tools as it works through a benchmark, or \u2014 for a benchmark that already has its own code and procedure \u2014 a thin wrapper so olmo-eval can run it as is and report the results alongside other benchmark scores in the same format."
+    },
+    {
+      "index": 10,
+      "role": "p",
+      "text": "Both Harbor and olmo-eval keep benchmarks separate from the runtime policy (how the model is run to produce its answers) so you can change one without rewriting the other, but olmo-eval is designed for greater modularity. In olmo-eval, the model being evaluated, the tools it can use, the containerized environment, and any helper models \u2013 like an LLM-as-a-judge \u2013 are all swappable components. You can reuse a tool across many harnesses, or plug a grading model into one benchmark without perturbing the others, and adjust small settings (e.g., the exact wording of the prompt) without extensive effort."
+    },
+    {
+      "index": 11,
+      "role": "p",
+      "text": "Harbor reports an overall score for each model. olmo-eval reports those scores too, each with a standard error and a minimum detectable effect (the smallest difference that can be reliably distinguished from noise). But the more useful view lines the same questions up across two model checkpoints and compares them one by one, with all else held fixed. This helps you to see whether a tiny change in an overall average might indicate a real improvement or simply noise."
+    },
+    {
+      "index": 12,
+      "role": "h2",
+      "text": "An integrated evaluation stack"
+    },
+    {
+      "index": 13,
+      "role": "p",
+      "text": "olmo-eval is composed of four components that are useful on their own but designed to work together to tighten the experimental LLM development loop:"
+    },
+    {
+      "index": 14,
+      "role": "p",
+      "text": "A task/suite/harness abstraction that decouples benchmark logic from runtime policy. A task is how you define a benchmark in olmo-eval\u2014what's being evaluated. A suite groups tasks into a set you run together, and a harness controls how each task is run. This separation lets the same task run as a standard baseline or with tools and scaffolding, without changing what it measures."
+    },
+    {
+      "index": 15,
+      "role": "p",
+      "text": "A sandbox and capability-routing layer, including an asynchronous sandbox planner. This supports evaluations where a model's response depends on the actions it takes using tools, like writing and running code or browsing the web. The point is to evaluate the model's real tool use: when a benchmark calls for tools, olmo-eval runs those tools and feeds the results back to the model."
+    },
+    {
+      "index": 16,
+      "role": "p",
+      "text": "A normalized experiment schema that records every run, its configuration, and the results in the same structured format. This makes it possible to group related experiments, compare checkpoints over time, and avoid the inconsistencies that often accumulate in long-running model development workflows."
+    },
+    {
+      "index": 17,
+      "role": "p",
+      "text": "A results viewer for pairwise model comparison: lining two models or checkpoints up question by question surfaces small but real performance changes that an overall average can hide."
+    },
+    {
+      "index": 18,
+      "role": "p",
+      "text": "In most model evaluation setups, adding a benchmark is a sizeable integration project. In olmo-eval, all that\u2019s needed is a task\u2014tasks define the benchmark dataset, how evaluation requests are built, and how model answers are scored (all code in Python):"
+    },
+    {
+      "index": 19,
+      "role": "p",
+      "text": "Variants express changes in evaluation policy without duplicating the benchmark:"
+    },
+    {
+      "index": 20,
+      "role": "p",
+      "text": "And because runtime policy lives in the harness rather than the task definition, the same benchmark can be easily rerun under different execution rather than relying on whether a generated point track merely looks plausible."
+    },
+    {
+      "index": 21,
+      "role": "h2",
+      "text": "Reproducible evaluation made open"
+    },
+    {
+      "index": 22,
+      "role": "p",
+      "text": "Use olmo-eval when evaluation is part of ongoing model development rather than a one-off run\u2014when you need to run the same benchmarks repeatedly across checkpoints under reproducible conditions and compare interventions at both the aggregate and per-question level."
+    },
+    {
+      "index": 23,
+      "role": "p",
+      "text": "If your recurring question is \u201cHow does this checkpoint differ from the last one, and where exactly did it improve or regress?\u201d, that\u2019s the workflow olmo-eval is built for."
+    },
+    {
+      "index": 24,
+      "role": "p",
+      "text": "Reproducible evaluation should keep pace with how models are built\u2014not only how they're scored once they're finished. olmo-eval carries the OLMES standard into active model development, and we're releasing it openly so the community can build on it."
+    },
+    {
+      "index": 25,
+      "role": "h2",
+      "text": "OlmoEarth v1.1: A more efficient family of Earth observation models"
+    },
+    {
+      "index": 26,
+      "role": "h2",
+      "text": "EMO: Pretraining mixture of experts for emergent modularity"
+    },
+    {
+      "index": 27,
+      "role": "h3",
+      "text": "Community"
+    }
+  ],
+  "candidate_sections": [
+    {
+      "index": 0,
+      "title": "",
+      "body": "While you're building an LLM, you evaluate it over and over across many interventions. Every adjustment to its data, architecture, or hyperparameters \u2014 and every step up in scale \u2014 sends you back through the same loop: adding or reconfiguring benchmarks, re-running them on each new model checkpoint, noting the results, and checking whether something that helped in a small experiment still holds up on the full training run.",
+      "score": 10,
+      "reasons": [
+        "strong terms",
+        "topic terms",
+        "news"
+      ],
+      "block_indices": [
+        1
+      ]
+    },
+    {
+      "index": 1,
+      "title": "",
+      "body": "Most evaluation tools aren't designed for this\u2014they\u2019re either built to run established benchmarks across finished models or run a model through multi-step, tool-using problems in a sandbox. They don\u2019t keep up with a model that's constantly changing, nor do they reflect how a model might behave under specific real-world conditions.",
+      "score": 8,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        2
+      ]
+    },
+    {
+      "index": 2,
+      "title": "",
+      "body": "Our last project to address this evaluation challenge was OLMES , the Open Language Model Evaluation Standard. Introduced in 2024, it was meant to make LLM benchmark scores easier to compare across releases. The same models were being scored on the same benchmarks in different ways \u2014 aspects like prompt formatting and task formulation often varied from paper to paper \u2014 so claims about which models performed best often weren't reproducible. OLMES pinned benchmarking choices down in an open, documented standard, and it became the basis for evaluating our open models from Olmo to Tulu.",
+      "score": 20,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms",
+        "news",
+        "distribution"
+      ],
+      "block_indices": [
+        3
+      ]
+    },
+    {
+      "index": 3,
+      "title": "",
+      "body": "But a model's final score is only part of the evaluation process\u2014which is why we're releasing olmo-eval , a new workbench that builds on OLMES and extends it across the rest of LLM development. Compared to OLMES, olmo-eval cuts down the work of implementing new evaluations, offers more flexibility in defining where and how they run, and makes it easier to compose individual components into larger workflows. Agentic and multi-turn evaluation is supported as a first-class use case, and stronger analysis tools help you judge whether an intervention actually improved on the baseline or the difference amounts to noise.",
+      "score": 13,
+      "reasons": [
+        "strong terms",
+        "topic terms",
+        "comparison",
+        "news"
+      ],
+      "block_indices": [
+        4
+      ]
+    },
+    {
+      "index": 4,
+      "title": "How olmo-eval differs from existing tools",
+      "body": "Is a 2.4pp change in performance enough to make a call? olmo-eval overlaps in some ways with Harbor, an open framework for evaluating AI agents inside containerized, sandboxed environments. But the two tools differ in their scope. Harbor is aimed mainly at running and publishing agent benchmarks; olmo-eval was built for the everyday work of developing a model\u2014adding and configuring benchmarks, running them across checkpoints, and analyzing the results prompt by prompt instead of as a single overall score.",
+      "score": 14,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        6,
+        7
+      ]
+    },
+    {
+      "index": 5,
+      "title": "How olmo-eval differs from existing tools",
+      "body": "Harbor runs everything the same way\u2014inside sealed, reproducible containers. Because containers can be resource-intensive, olmo-eval lets you choose how each benchmark runs instead. A benchmark that just needs a model to answer questions can run directly, which is faster and cheaper; a benchmark that needs a locked-down environment \u2014 say, one that runs code the model wrote \u2014 gets an isolated container setup. The lightweight path is the default, and olmo-eval only opts for the heavy setup when a benchmark actually requires it.",
+      "score": 6,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        8
+      ]
+    },
+    {
+      "index": 6,
+      "title": "How olmo-eval differs from existing tools",
+      "body": "Harbor's process for adding a benchmark is built for evals you plan to publish and share publicly, with the extra verification steps that entails. olmo-eval is built for moving quickly while you develop, and how you add a benchmark depends on what the benchmark needs: a short definition for a basic eval, with options to let a model use tools as it works through a benchmark, or \u2014 for a benchmark that already has its own code and procedure \u2014 a thin wrapper so olmo-eval can run it as is and report the results alongside other benchmark scores in the same format.",
+      "score": 9,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        9
+      ]
+    },
+    {
+      "index": 7,
+      "title": "How olmo-eval differs from existing tools",
+      "body": "Both Harbor and olmo-eval keep benchmarks separate from the runtime policy (how the model is run to produce its answers) so you can change one without rewriting the other, but olmo-eval is designed for greater modularity. In olmo-eval, the model being evaluated, the tools it can use, the containerized environment, and any helper models \u2013 like an LLM-as-a-judge \u2013 are all swappable components. You can reuse a tool across many harnesses, or plug a grading model into one benchmark without perturbing the others, and adjust small settings (e.g., the exact wording of the prompt) without extensive effort.",
+      "score": 10,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        10
+      ]
+    },
+    {
+      "index": 8,
+      "title": "How olmo-eval differs from existing tools",
+      "body": "Harbor reports an overall score for each model. olmo-eval reports those scores too, each with a standard error and a minimum detectable effect (the smallest difference that can be reliably distinguished from noise). But the more useful view lines the same questions up across two model checkpoints and compares them one by one, with all else held fixed. This helps you to see whether a tiny change in an overall average might indicate a real improvement or simply noise.",
+      "score": 9,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        11
+      ]
+    },
+    {
+      "index": 9,
+      "title": "An integrated evaluation stack",
+      "body": "olmo-eval is composed of four components that are useful on their own but designed to work together to tighten the experimental LLM development loop: A task/suite/harness abstraction that decouples benchmark logic from runtime policy. A task is how you define a benchmark in olmo-eval\u2014what's being evaluated. A suite groups tasks into a set you run together, and a harness controls how each task is run. This separation lets the same task run as a standard baseline or with tools and scaffolding, without changing what it measures.",
+      "score": 8,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        13,
+        14
+      ]
+    },
+    {
+      "index": 10,
+      "title": "An integrated evaluation stack",
+      "body": "A sandbox and capability-routing layer, including an asynchronous sandbox planner. This supports evaluations where a model's response depends on the actions it takes using tools, like writing and running code or browsing the web. The point is to evaluate the model's real tool use: when a benchmark calls for tools, olmo-eval runs those tools and feeds the results back to the model. A normalized experiment schema that records every run, its configuration, and the results in the same structured format. This makes it possible to group related experiments, compare checkpoints over time, and avoid the inconsistencies that often accumulate in long-running model development workflows.",
+      "score": 8,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        15,
+        16
+      ]
+    },
+    {
+      "index": 11,
+      "title": "An integrated evaluation stack",
+      "body": "A results viewer for pairwise model comparison: lining two models or checkpoints up question by question surfaces small but real performance changes that an overall average can hide. In most model evaluation setups, adding a benchmark is a sizeable integration project. In olmo-eval, all that\u2019s needed is a task\u2014tasks define the benchmark dataset, how evaluation requests are built, and how model answers are scored (all code in Python): Variants express changes in evaluation policy without duplicating the benchmark: And because runtime policy lives in the harness rather than the task definition, the same benchmark can be easily rerun under different execution rather than relying on whether a generated point track merely looks plausible.",
+      "score": 9,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        17,
+        18,
+        19,
+        20
+      ]
+    },
+    {
+      "index": 12,
+      "title": "Reproducible evaluation made open",
+      "body": "Use olmo-eval when evaluation is part of ongoing model development rather than a one-off run\u2014when you need to run the same benchmarks repeatedly across checkpoints under reproducible conditions and compare interventions at both the aggregate and per-question level. If your recurring question is \u201cHow does this checkpoint differ from the last one, and where exactly did it improve or regress?\u201d, that\u2019s the workflow olmo-eval is built for. Reproducible evaluation should keep pace with how models are built\u2014not only how they're scored once they're finished. olmo-eval carries the OLMES standard into active model development, and we're releasing it openly so the community can build on it.",
+      "score": 7,
+      "reasons": [
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        22,
+        23,
+        24
+      ]
+    }
+  ]
+}

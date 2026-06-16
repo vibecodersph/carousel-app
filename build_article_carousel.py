@@ -1337,10 +1337,38 @@ def manifest_article(article: Article) -> dict[str, Any]:
     }
 
 
+def cover_title_override(
+    title: str | None,
+    article_title: str,
+    title_context: dict[str, Any],
+) -> str | None:
+    """Decide what to pass as render_title_slide's ``title`` argument.
+
+    Returning None lets the cover use the VibeCoders PH brand-voice cover copy
+    (Taglish IG line with one [accent] word). We only force a literal title when
+    the user passed --title, or when enrichment produced no brand headline to fall
+    back on (then keep the article title with a heuristic two-tone accent). This
+    mirrors how the X carousel renders its covers.
+    """
+    if title:
+        return title
+    cover_copy = title_context.get("cover_copy")
+    has_brand_headline = (
+        bool(string_value(cover_copy.get("headline")))
+        if isinstance(cover_copy, dict)
+        else False
+    )
+    return None if has_brand_headline else article_title
+
+
 def manifest_title_context(context: dict[str, Any]) -> dict[str, Any]:
     topic_image_path = context.get("topic_image_path")
+    cover_copy = context.get("cover_copy")
     return {
         "topic": context.get("topic", ""),
+        "cover_copy": cover_copy if isinstance(cover_copy, dict) else {},
+        "instagram_caption": context.get("instagram_caption", ""),
+        "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
         "google_enabled": bool(context.get("google_enabled")),
@@ -1410,12 +1438,18 @@ def build_article_carousel(
             "topic_image_path": None,
         }
     else:
-        title_context = build_title_enrichment([post], title=title_text, out_dir=out_dir)
+        title_context = build_title_enrichment(
+            [post],
+            title=title_text,
+            out_dir=out_dir,
+            source_type="article",
+        )
     maybe_add_article_image(title_context, article, out_dir)
 
     slides: list[dict[str, Any]] = []
     title_path = out_dir / "slide_01.png"
-    render_title_slide(post, title_path, total, title_text, title_context, account_name)
+    cover_title = cover_title_override(title, article.title, title_context)
+    render_title_slide(post, title_path, total, cover_title, title_context, account_name)
     slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": article.url})
 
     for slide_index, page in enumerate(pages_to_render, start=2):

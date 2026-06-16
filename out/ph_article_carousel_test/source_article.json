@@ -1,0 +1,191 @@
+{
+  "url": "https://backendnews.net/tp-boosts-tp-ai-data-services-amid-growing-ai-demand-in-asia/",
+  "canonical_url": "https://backendnews.net/tp-boosts-tp-ai-data-services-amid-growing-ai-demand-in-asia/",
+  "title": "TP boosts TP.ai Data Services amid growing AI demand in Asia",
+  "description": "TP.ai Data Services provides end-to-end AI data support, including data collection, validation, annotation, labeling. | Back End News",
+  "site_name": "Back End News",
+  "author": "Back End News",
+  "published_at": "2026-06-15T02:23:47+00:00",
+  "image_url": "https://backendnews.net/wp-content/uploads/2025/11/AI-Chatbot.png",
+  "block_count": 13,
+  "blocks": [
+    {
+      "index": 0,
+      "role": "h1",
+      "text": "TP boosts TP.ai Data Services amid growing AI demand in Asia"
+    },
+    {
+      "index": 1,
+      "role": "p",
+      "text": "TP is scaling up its AI data services across Asia Pacific as enterprises accelerate adoption of artificial intelligence (AI) systems that rely on localized, well-governed, and compliant data."
+    },
+    {
+      "index": 2,
+      "role": "p",
+      "text": "The expansion of TP.ai Data Services is part of the company\u2019s Future Forward strategy and comes as businesses across Asia demand AI models trained in local languages while meeting stricter data residency and governance rules in each country."
+    },
+    {
+      "index": 3,
+      "role": "p",
+      "text": "At Asia Tech x Singapore 2026, held on May 20-22, TP highlighted how AI success is shifting from model development alone to the quality of data preparation, localization, and human oversight behind those systems."
+    },
+    {
+      "index": 4,
+      "role": "blockquote",
+      "text": "TP uses AI to improve debt collection and customer service"
+    },
+    {
+      "index": 5,
+      "role": "p",
+      "text": "TP.ai Data Services provides end-to-end AI data support, including data collection, validation, annotation, labeling, model evaluation, analytics operations, and human-in-the-loop governance. The company operates across Singapore, Malaysia, Indonesia, Thailand, China, Japan, South Korea, and Vietnam, supporting both traditional AI and generative AI (GenAI) deployments."
+    },
+    {
+      "index": 6,
+      "role": "p",
+      "text": "\u201cThe companies seeing real operational impact from AI in Asia are the ones investing in scalable data foundations, in-country execution and human expertise alongside the technology itself,\u201d said Dave Rizzo, president, APAC TP."
+    },
+    {
+      "index": 7,
+      "role": "p",
+      "text": "The company said its system was able to build customized warehouse video streams in three weeks, with detailed object labeling and dimensional data used to train AI models for worker-safety risk detection in real time environments."
+    },
+    {
+      "index": 8,
+      "role": "p",
+      "text": "TP was also recognized at the 2026 Data Breakthrough Awards, where its data analytics services were named Overall Data Analytics Platform of the Year. Reported outcomes included up to 31% improvement in customer experience scores, up to 30% higher sales conversions, up to 20% better forecasting accuracy, and up to 15% workforce efficiency gains."
+    },
+    {
+      "index": 9,
+      "role": "p",
+      "text": "Beyond enterprise deployment, TP is investing in AI upskilling across its APAC workforce, focusing on model evaluation, synthetic data, human-in-the-loop and human-on-the-loop processes, and AI governance to support responsible scaling across diverse Asian markets."
+    },
+    {
+      "index": 10,
+      "role": "h3",
+      "text": "Like this:"
+    },
+    {
+      "index": 11,
+      "role": "h3",
+      "text": "Related Stories"
+    },
+    {
+      "index": 12,
+      "role": "h2",
+      "text": "Discover more from Back End News"
+    }
+  ],
+  "candidate_sections": [
+    {
+      "index": 0,
+      "title": "",
+      "body": "TP is scaling up its AI data services across Asia Pacific as enterprises accelerate adoption of artificial intelligence (AI) systems that rely on localized, well-governed, and compliant data.",
+      "score": 3,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        1
+      ]
+    },
+    {
+      "index": 1,
+      "title": "",
+      "body": "The expansion of TP.ai Data Services is part of the company\u2019s Future Forward strategy and comes as businesses across Asia demand AI models trained in local languages while meeting stricter data residency and governance rules in each country.",
+      "score": 4,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        2
+      ]
+    },
+    {
+      "index": 2,
+      "title": "",
+      "body": "At Asia Tech x Singapore 2026, held on May 20-22, TP highlighted how AI success is shifting from model development alone to the quality of data preparation, localization, and human oversight behind those systems.",
+      "score": 9,
+      "reasons": [
+        "numbers",
+        "topic terms"
+      ],
+      "block_indices": [
+        3
+      ]
+    },
+    {
+      "index": 3,
+      "title": "",
+      "body": "TP uses AI to improve debt collection and customer service",
+      "score": -1,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        4
+      ]
+    },
+    {
+      "index": 4,
+      "title": "",
+      "body": "TP.ai Data Services provides end-to-end AI data support, including data collection, validation, annotation, labeling, model evaluation, analytics operations, and human-in-the-loop governance. The company operates across Singapore, Malaysia, Indonesia, Thailand, China, Japan, South Korea, and Vietnam, supporting both traditional AI and generative AI (GenAI) deployments.",
+      "score": 5,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        5
+      ]
+    },
+    {
+      "index": 5,
+      "title": "",
+      "body": "\u201cThe companies seeing real operational impact from AI in Asia are the ones investing in scalable data foundations, in-country execution and human expertise alongside the technology itself,\u201d said Dave Rizzo, president, APAC TP.",
+      "score": 2,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        6
+      ]
+    },
+    {
+      "index": 6,
+      "title": "",
+      "body": "The company said its system was able to build customized warehouse video streams in three weeks, with detailed object labeling and dimensional data used to train AI models for worker-safety risk detection in real time environments.",
+      "score": 4,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        7
+      ]
+    },
+    {
+      "index": 7,
+      "title": "",
+      "body": "TP was also recognized at the 2026 Data Breakthrough Awards, where its data analytics services were named Overall Data Analytics Platform of the Year. Reported outcomes included up to 31% improvement in customer experience scores, up to 30% higher sales conversions, up to 20% better forecasting accuracy, and up to 15% workforce efficiency gains.",
+      "score": 15,
+      "reasons": [
+        "numbers",
+        "strong terms",
+        "topic terms"
+      ],
+      "block_indices": [
+        8
+      ]
+    },
+    {
+      "index": 8,
+      "title": "",
+      "body": "Beyond enterprise deployment, TP is investing in AI upskilling across its APAC workforce, focusing on model evaluation, synthetic data, human-in-the-loop and human-on-the-loop processes, and AI governance to support responsible scaling across diverse Asian markets.",
+      "score": 5,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        9
+      ]
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "source_type": "article",
+  "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+  "article": {
+    "url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+    "canonical_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+    "title": "Malaysia\u2019s AI agent-powered messaging app Respond.io raises $62.5M, eyes acquisitions",
+    "description": "Respond.io, one of Malaysia startups to watch, uses AI agents to handle high volumes of customer inquiries and charges per convo, not per seat.",
+    "site_name": "TechCrunch",
+    "author": "Kate Park",
+    "published_at": "2026-06-16T06:59:00+00:00",
+    "image_url": "https://techcrunch.com/wp-content/uploads/2026/06/respond-team-comp-2.webp?resize=1200,800",
+    "block_count": 25
+  },
+  "section_count": 18,
+  "selected_section_count": 5,
+  "slide_count": 6,
+  "rendered_slide_count": 6,
+  "first_page_only": false,
+  "account_name": "vibecodersph",
+  "curation_backend": "gemini",
+  "min_score": 4,
+  "max_pages": 5,
+  "source_article_path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/source_article.json",
+  "instagram_caption": "Bakit ka pa magbabayad para sa upuan kung pwede namang per usapan na lang ang singilan? Malaysia's Respond.io just secured $62.5M para palakihin pa ang kanilang AI-agent messaging platform.\n\nAlamin kung paano binabago ng AI agents ang customer support pricing model at kung bakit patungo na tayo sa pay-per-conversation era.\n\nAno sa tingin mo, mas makakatipid ba ang mga local startups sa ganitong pricing model?\n\n#VibeCodersPH #RespondIO #AIAgents #SaaS #TechNewsPH #StartupLife\n\nSource: https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+  "title_context": {
+    "topic": "Respond.io raises $62.5M for AI messaging",
+    "provider": "gemini",
+    "image_provider": "openai",
+    "google_enabled": true,
+    "gemini_text_model": "gemini-3.5-flash",
+    "openai_image_model": "gpt-image-2",
+    "openai_image_size": "2048x1152",
+    "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'Respond.io raises $62.5M for AI messaging'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. Add a tasteful editorial portrait element of the CEO: Gerardo Salandra of Respond.io. Company context: Respond.io. Do not show logos or brand marks.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
+    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/title_assets/openai-topic-72072ad8a2.png",
+    "cover_copy": {
+      "kicker": "Tech Balita",
+      "headline": "Hindi na per seat, per [chika] na ang singilan.",
+      "swipe_line": "Swipe para sa resibo"
+    }
+  },
+  "slides": [
+    {
+      "index": 1,
+      "type": "title",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_01.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/"
+    },
+    {
+      "index": 2,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_02.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+      "kicker": "THE NEWS",
+      "headline": "Respond.io raises 62.5 million Series B",
+      "body": "Malaysian customer conversation platform Respond.io secures new funding to scale its AI agent-powered messaging software and pursue strategic acquisitions globally.",
+      "stat": "$62.5M",
+      "source_heading": "",
+      "source_indices": [
+        2
+      ],
+      "score": 7,
+      "why": "concrete funding round details"
+    },
+    {
+      "index": 3,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_03.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+      "kicker": "THE NUMBERS",
+      "headline": "Annual recurring revenue hits 35 million",
+      "body": "The startup reports rapid financial growth, reaching $35 million in ARR with a 169% year-over-year growth rate and a 30% profit margin.",
+      "stat": "169%",
+      "source_heading": "",
+      "source_indices": [
+        2
+      ],
+      "score": 7,
+      "why": "quantified growth and revenue metrics"
+    },
+    {
+      "index": 4,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_04.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+      "kicker": "ADOPTION",
+      "headline": "Platform processes 2 billion quarterly messages",
+      "body": "High-volume customer interactions across WhatsApp, Instagram, and TikTok fuel the platform, processing billions of messages to automate lead qualification and sales.",
+      "stat": "2B",
+      "source_heading": "",
+      "source_indices": [
+        4,
+        7
+      ],
+      "score": 4,
+      "why": "quantified message volume and adoption scale"
+    },
+    {
+      "index": 5,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_05.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+      "kicker": "BUSINESS MODEL",
+      "headline": "Pricing model charges per conversation",
+      "body": "Unlike traditional SaaS platforms charging per seat, Respond.io bills by conversation volume, ensuring revenue remains stable even as AI agents replace human agents.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        9
+      ],
+      "score": 4,
+      "why": "strategic pricing model details for AI agent adoption"
+    },
+    {
+      "index": 6,
+      "type": "article-section",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/qc_respondio/slide_06.png",
+      "source_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+      "kicker": "THE FLYWHEEL",
+      "headline": "Data flywheel powers better AI agents",
+      "body": "Processing massive message volumes creates a continuous feedback loop, training superior AI models that attract more enterprise customers and generate more data.",
+      "stat": "",
+      "source_heading": "",
+      "source_indices": [
+        11
+      ],
+      "score": 5,
+      "why": "technical strategy and data moat details"
+    }
+  ]
+}

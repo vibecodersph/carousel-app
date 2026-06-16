@@ -1,0 +1,355 @@
+{
+  "url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+  "canonical_url": "https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/",
+  "title": "Malaysia\u2019s AI agent-powered messaging app Respond.io raises $62.5M, eyes acquisitions",
+  "description": "Respond.io, one of Malaysia startups to watch, uses AI agents to handle high volumes of customer inquiries and charges per convo, not per seat.",
+  "site_name": "TechCrunch",
+  "author": "Kate Park",
+  "published_at": "2026-06-16T06:59:00+00:00",
+  "image_url": "https://techcrunch.com/wp-content/uploads/2026/06/respond-team-comp-2.webp?resize=1200,800",
+  "block_count": 25,
+  "blocks": [
+    {
+      "index": 0,
+      "role": "h1",
+      "text": "Malaysia\u2019s AI agent-powered messaging app Respond.io raises $62.5M, eyes acquisitions"
+    },
+    {
+      "index": 1,
+      "role": "p",
+      "text": "In 2017, Respond.io set out to solve a simple problem: businesses couldn\u2019t keep up with customers who had moved to messaging apps. Today Respond, with its customer conversation management software, has become one of the tech success stories of Malaysia."
+    },
+    {
+      "index": 2,
+      "role": "p",
+      "text": "The startup, headquartered in Kuala Lumpur, has raised a $62.5 million Series B round led by Camber Partners, with participation from Endeavor Catalyst and existing investors. It last raised a $7 million Series A in 2022 . The company has grown to $35 million in annual recurring revenue (ARR), growing 169% year-over-year, at a 30% profit margin, it tells TechCrunch."
+    },
+    {
+      "index": 3,
+      "role": "p",
+      "text": "Co-founder and CEO Gerardo Salandra, who worked at IBM and Google before joining Runtastic , a fitness tracking app that was sold to Adidas in 2015, founded Respond in Hong Kong in 2017 alongside Hassan Ahmed (CTO) and laroslav Kudritskiy (COO). The team relocated the business to Malaysia two years later."
+    },
+    {
+      "index": 4,
+      "role": "p",
+      "text": "The platform helps mid- to large-sized B2C businesses drive revenue from customer conversations across multiple messaging channels including WhatsApp, Instagram, TikTok, Messenger, Line, Telegram, WeChat, voice calls and web chat. It also uses AI agents to automatically handle high volumes of customer inquiries, qualify leads and close sales without human intervention."
+    },
+    {
+      "index": 5,
+      "role": "p",
+      "text": "Salandra described its core customers as \u201chigh-consideration\u201d businesses, where customers need to talk to someone before buying, such as healthcare, automotive, retail, education and travel. \u201cYou don\u2019t go to a website, put your credit card, and buy a car; you chat with someone, you ask a lot of questions,\u201d he said. Its sweet spot is companies with 200 to 10,000 employees."
+    },
+    {
+      "index": 6,
+      "role": "p",
+      "text": "The rise of AI has raised an obvious question for platforms like Respond: Can tools like ChatGPT simply replace what they\u2019ve built?"
+    },
+    {
+      "index": 7,
+      "role": "p",
+      "text": "Salandra thinks his foothold is strong enough to stop such encroachment, should it come. The company is currently processing 2 billion messages per quarter."
+    },
+    {
+      "index": 8,
+      "role": "p",
+      "text": "\u201cIf I just look at the numbers, every day that AI becomes more prominent, we grow faster,\u201d he told TechCrunch. \u201cWe are not seeing what the public SaaS markets are seeing.\u201d"
+    },
+    {
+      "index": 9,
+      "role": "p",
+      "text": "Part of that comes down to pricing, he said. Unlike enterprise software competitors that charge per seat, Respond charges based on the volume of customer conversations, meaning it doesn\u2019t matter whether a human or an AI is answering. \u201cWhen fewer humans use your product, they make less money,\u201d he said. \u201cBut we don\u2019t charge like that.\u201d"
+    },
+    {
+      "index": 10,
+      "role": "p",
+      "text": "The incumbent platforms, particularly those dominant in North America and Europe, were built around email and phone calls. \u201cThe platforms that exist, they bolted on messaging as a second thought. They\u2019re very email focused, they\u2019re very call focused, but when it comes to messaging, it\u2019s an afterthought,\u201d Salandra said."
+    },
+    {
+      "index": 11,
+      "role": "p",
+      "text": "That volume of message data creates a feedback loop, according to the CEO. More messages mean better AI. Better AI attracts more customers. More customers generate more messages. \u201cThis is what we call the data flywheel,\u201d Salandra said. He added that the head start matters for any upstart AI company, as well. \u201cBecause we started so long ago and we have such a strong foundation, we can provide better AI compared to someone who just entered into the messaging space.\u201d"
+    },
+    {
+      "index": 12,
+      "role": "p",
+      "text": "With the new capital, Salandra said the company plans to pursue hiring, organic growth and acquisitions. The CEO has two types of buying targets in mind: bolt-on technology that fits into its existing ecosystem, and established teams with strong customer bases in strategic markets like Europe and North America. \u201cImagine how many months I can save if I find the right company that maybe already has the clients and the team,\u201d he said. \u201cI can save myself six months to a year through an acquisition.\u201d He confirmed the company is already in talks with a couple of potential targets."
+    },
+    {
+      "index": 13,
+      "role": "p",
+      "text": "The geographic push makes strategic sense. Respond currently generates roughly 30% of its revenue from APAC, 30% from Latin America, and 20% from the Middle East and Africa, leaving North America and Western Europe at just 20%. But Salandra says those regions are now its fastest-growing. \u201cThey took longer to make the change, but now they\u2019re moving very rapidly into messaging channels,\u201d he said, adding that he expects both regions to become the company\u2019s largest segment within two to three years."
+    },
+    {
+      "index": 14,
+      "role": "p",
+      "text": "Despite the fresh injection of capital, Salandra is cautious about what comes next. \u201cWe don\u2019t want to be a growth at all costs company,\u201d he said. \u201cEven with this money, we\u2019re going to be very disciplined.\u201d But Salandra has bigger plans in mind. \u201cMy favorite outcome?\u201d he said. \u201cRinging the bell at Nasdaq.\u201d"
+    },
+    {
+      "index": 15,
+      "role": "p",
+      "text": "When you purchase through links in our articles, we may earn a small commission . This doesn\u2019t affect our editorial independence."
+    },
+    {
+      "index": 16,
+      "role": "p",
+      "text": "Kate Park is a reporter at TechCrunch, with a focus on technology, startups and venture capital in Asia. She previously was a financial journalist at Mergermarket covering M&A, private equity and venture capital."
+    },
+    {
+      "index": 17,
+      "role": "p",
+      "text": "Get an inside look at what it takes to scale and succeed from leaders at Mach Industries, Founders Fund, and Shinkei Systems. Through candid fireside chats and high-impact networking, you\u2019ll walk away with valuable insights and new connections."
+    },
+    {
+      "index": 18,
+      "role": "h2",
+      "text": "Most Popular"
+    },
+    {
+      "index": 19,
+      "role": "p",
+      "text": "Amazon CEO reportedly raised Anthropic model concerns before government crackdown"
+    },
+    {
+      "index": 20,
+      "role": "p",
+      "text": "The FBI built its own replica small town to simulate real-world cyberattacks"
+    },
+    {
+      "index": 21,
+      "role": "p",
+      "text": "Meta\u2019s months-old AI unit is a soul-crushing gulag, say the engineers stuck inside it"
+    },
+    {
+      "index": 22,
+      "role": "p",
+      "text": "Jeff Bezos\u2019s Prometheus raises $12B to build an \u2018artificial general engineer\u2019 for the physical world"
+    },
+    {
+      "index": 23,
+      "role": "p",
+      "text": "Cybersecurity researchers aren\u2019t happy about the guardrails on Anthropic\u2019s Fable"
+    },
+    {
+      "index": 24,
+      "role": "p",
+      "text": "Google just fired a warning shot in the AI subscription price wars"
+    }
+  ],
+  "candidate_sections": [
+    {
+      "index": 0,
+      "title": "",
+      "body": "In 2017, Respond.io set out to solve a simple problem: businesses couldn\u2019t keep up with customers who had moved to messaging apps. Today Respond, with its customer conversation management software, has become one of the tech success stories of Malaysia.",
+      "score": 5,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        1
+      ]
+    },
+    {
+      "index": 1,
+      "title": "",
+      "body": "The startup, headquartered in Kuala Lumpur, has raised a $62.5 million Series B round led by Camber Partners, with participation from Endeavor Catalyst and existing investors. It last raised a $7 million Series A in 2022 . The company has grown to $35 million in annual recurring revenue (ARR), growing 169% year-over-year, at a 30% profit margin, it tells TechCrunch.",
+      "score": 7,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        2
+      ]
+    },
+    {
+      "index": 2,
+      "title": "",
+      "body": "Co-founder and CEO Gerardo Salandra, who worked at IBM and Google before joining Runtastic , a fitness tracking app that was sold to Adidas in 2015, founded Respond in Hong Kong in 2017 alongside Hassan Ahmed (CTO) and laroslav Kudritskiy (COO). The team relocated the business to Malaysia two years later.",
+      "score": 6,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        3
+      ]
+    },
+    {
+      "index": 3,
+      "title": "",
+      "body": "The platform helps mid- to large-sized B2C businesses drive revenue from customer conversations across multiple messaging channels including WhatsApp, Instagram, TikTok, Messenger, Line, Telegram, WeChat, voice calls and web chat. It also uses AI agents to automatically handle high volumes of customer inquiries, qualify leads and close sales without human intervention.",
+      "score": 3,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        4
+      ]
+    },
+    {
+      "index": 4,
+      "title": "",
+      "body": "Salandra described its core customers as \u201chigh-consideration\u201d businesses, where customers need to talk to someone before buying, such as healthcare, automotive, retail, education and travel. \u201cYou don\u2019t go to a website, put your credit card, and buy a car; you chat with someone, you ask a lot of questions,\u201d he said. Its sweet spot is companies with 200 to 10,000 employees.",
+      "score": 7,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        5
+      ]
+    },
+    {
+      "index": 5,
+      "title": "",
+      "body": "The rise of AI has raised an obvious question for platforms like Respond: Can tools like ChatGPT simply replace what they\u2019ve built?",
+      "score": 2,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        6
+      ]
+    },
+    {
+      "index": 6,
+      "title": "",
+      "body": "Salandra thinks his foothold is strong enough to stop such encroachment, should it come. The company is currently processing 2 billion messages per quarter.",
+      "score": 4,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        7
+      ]
+    },
+    {
+      "index": 7,
+      "title": "",
+      "body": "\u201cIf I just look at the numbers, every day that AI becomes more prominent, we grow faster,\u201d he told TechCrunch. \u201cWe are not seeing what the public SaaS markets are seeing.\u201d",
+      "score": 2,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        8
+      ]
+    },
+    {
+      "index": 8,
+      "title": "",
+      "body": "Part of that comes down to pricing, he said. Unlike enterprise software competitors that charge per seat, Respond charges based on the volume of customer conversations, meaning it doesn\u2019t matter whether a human or an AI is answering. \u201cWhen fewer humans use your product, they make less money,\u201d he said. \u201cBut we don\u2019t charge like that.\u201d",
+      "score": 4,
+      "reasons": [
+        "topic terms"
+      ],
+      "block_indices": [
+        9
+      ]
+    },
+    {
+      "index": 9,
+      "title": "",
+      "body": "The incumbent platforms, particularly those dominant in North America and Europe, were built around email and phone calls. \u201cThe platforms that exist, they bolted on messaging as a second thought. They\u2019re very email focused, they\u2019re very call focused, but when it comes to messaging, it\u2019s an afterthought,\u201d Salandra said.",
+      "score": 1,
+      "reasons": [],
+      "block_indices": [
+        10
+      ]
+    },
+    {
+      "index": 10,
+      "title": "",
+      "body": "That volume of message data creates a feedback loop, according to the CEO. More messages mean better AI. Better AI attracts more customers. More customers generate more messages. \u201cThis is what we call the data flywheel,\u201d Salandra said. He added that the head start matters for any upstart AI company, as well. \u201cBecause we started so long ago and we have such a strong foundation, we can provide better AI compared to someone who just entered into the messaging space.\u201d",
+      "score": 5,
+      "reasons": [
+        "topic terms",
+        "comparison"
+      ],
+      "block_indices": [
+        11
+      ]
+    },
+    {
+      "index": 11,
+      "title": "",
+      "body": "With the new capital, Salandra said the company plans to pursue hiring, organic growth and acquisitions. The CEO has two types of buying targets in mind: bolt-on technology that fits into its existing ecosystem, and established teams with strong customer bases in strategic markets like Europe and North America. \u201cImagine how many months I can save if I find the right company that maybe already has the clients and the team,\u201d he said. \u201cI can save myself six months to a year through an acquisition.\u201d He confirmed the company is already in talks with a couple of potential targets.",
+      "score": 3,
+      "reasons": [
+        "news"
+      ],
+      "block_indices": [
+        12
+      ]
+    },
+    {
+      "index": 12,
+      "title": "",
+      "body": "The geographic push makes strategic sense. Respond currently generates roughly 30% of its revenue from APAC, 30% from Latin America, and 20% from the Middle East and Africa, leaving North America and Western Europe at just 20%. But Salandra says those regions are now its fastest-growing. \u201cThey took longer to make the change, but now they\u2019re moving very rapidly into messaging channels,\u201d he said, adding that he expects both regions to become the company\u2019s largest segment within two to three years.",
+      "score": 7,
+      "reasons": [
+        "numbers"
+      ],
+      "block_indices": [
+        13
+      ]
+    },
+    {
+      "index": 13,
+      "title": "",
+      "body": "Despite the fresh injection of capital, Salandra is cautious about what comes next. \u201cWe don\u2019t want to be a growth at all costs company,\u201d he said. \u201cEven with this money, we\u2019re going to be very disciplined.\u201d But Salandra has bigger plans in mind. \u201cMy favorite outcome?\u201d he said. \u201cRinging the bell at Nasdaq.\u201d",
+      "score": 1,
+      "reasons": [],
+      "block_indices": [
+        14
+      ]
+    },
+    {
+      "index": 14,
+      "title": "",
+      "body": "When you purchase through links in our articles, we may earn a small commission . This doesn\u2019t affect our editorial independence.",
+      "score": 1,
+      "reasons": [],
+      "block_indices": [
+        15
+      ]
+    },
+    {
+      "index": 15,
+      "title": "",
+      "body": "Kate Park is a reporter at TechCrunch, with a focus on technology, startups and venture capital in Asia. She previously was a financial journalist at Mergermarket covering M&A, private equity and venture capital.",
+      "score": 2,
+      "reasons": [],
+      "block_indices": [
+        16
+      ]
+    },
+    {
+      "index": 16,
+      "title": "",
+      "body": "Get an inside look at what it takes to scale and succeed from leaders at Mach Industries, Founders Fund, and Shinkei Systems. Through candid fireside chats and high-impact networking, you\u2019ll walk away with valuable insights and new connections.",
+      "score": 4,
+      "reasons": [
+        "news"
+      ],
+      "block_indices": [
+        17
+      ]
+    },
+    {
+      "index": 17,
+      "title": "Most Popular",
+      "body": "Amazon CEO reportedly raised Anthropic model concerns before government crackdown The FBI built its own replica small town to simulate real-world cyberattacks Meta\u2019s months-old AI unit is a soul-crushing gulag, say the engineers stuck inside it Jeff Bezos\u2019s Prometheus raises $12B to build an \u2018artificial general engineer\u2019 for the physical world Cybersecurity researchers aren\u2019t happy about the guardrails on Anthropic\u2019s Fable Google just fired a warning shot in the AI subscription price wars",
+      "score": 7,
+      "reasons": [
+        "numbers",
+        "topic terms"
+      ],
+      "block_indices": [
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ]
+    }
+  ]
+}

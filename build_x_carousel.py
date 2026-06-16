@@ -1056,6 +1056,89 @@ def split_title_for_two_tone(text: str) -> tuple[str, str]:
     return " ".join(parts[:-accent_count]), " ".join(parts[-accent_count:])
 
 
+ACCENT_STOPWORDS = {
+    "a",
+    "about",
+    "amid",
+    "an",
+    "and",
+    "ang",
+    "are",
+    "as",
+    "at",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "lang",
+    "may",
+    "mga",
+    "mo",
+    "na",
+    "ng",
+    "nito",
+    "natin",
+    "niyo",
+    "of",
+    "on",
+    "or",
+    "our",
+    "pa",
+    "para",
+    "rin",
+    "sa",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "via",
+    "with",
+    "yung",
+}
+
+
+def accent_word_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in re.finditer(r"[A-Za-z0-9][A-Za-z0-9'._+-]*", text):
+        word = match.group(0).strip("'._+-")
+        if word:
+            candidates.append(word)
+    return candidates
+
+
+def choose_accent_word(text: str) -> str:
+    candidates = accent_word_candidates(text)
+    if not candidates:
+        return ""
+    meaningful = [word for word in candidates if word.lower() not in ACCENT_STOPWORDS]
+    return (meaningful or candidates)[-1]
+
+
+def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
+    headline = headline.replace("\u2014", ",").strip()
+    if not headline:
+        return ""
+
+    bracket_match = re.search(r"\[([^\[\]]+)\]", headline)
+    target = (
+        choose_accent_word(accent_word.strip().strip("[]"))
+        or (choose_accent_word(bracket_match.group(1)) if bracket_match else "")
+        or choose_accent_word(headline)
+    )
+    plain = headline.replace("[", "").replace("]", "")
+    if not target:
+        return plain
+    pattern = re.compile(rf"(?<![\w'])({re.escape(target)})(?![\w'])", re.I)
+    updated, count = pattern.subn(r"[\1]", plain, count=1)
+    return updated if count else plain
+
+
 def title_from_post(post: dict[str, str]) -> tuple[str, str]:
     text = post.get("text", "")
     text = re.split(r"[.!?]\s+", text.strip())[0] or text
@@ -1066,15 +1149,7 @@ def title_from_post(post: dict[str, str]) -> tuple[str, str]:
 
 
 def with_bracketed_accent(headline: str, accent_word: str) -> str:
-    headline = headline.replace("\u2014", ",").strip()
-    if re.search(r"\[[^\[\]]+\]", headline):
-        return headline
-    accent_word = accent_word.strip().strip("[]")
-    if not headline or not accent_word:
-        return headline
-    pattern = re.compile(rf"(?<![\w'-])({re.escape(accent_word)})(?![\w'-])", re.I)
-    updated, count = pattern.subn(r"[\1]", headline, count=1)
-    return updated if count else headline
+    return bracket_single_accent_word(headline, accent_word)
 
 
 def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
@@ -1133,14 +1208,14 @@ def manual_cover_copy(
     if kicker:
         cover["kicker"] = string_value(kicker)
     if headline:
-        cover["headline"] = string_value(headline).replace("\u2014", ",")
+        cover["headline"] = bracket_single_accent_word(string_value(headline))
     if swipe_line:
         cover["swipe_line"] = string_value(swipe_line)
     return {key: value for key, value in cover.items() if value}
 
 
 def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
-    headline = re.sub(r"\s+", " ", headline).strip()
+    headline = re.sub(r"\s+", " ", bracket_single_accent_word(headline)).strip()
     match = re.search(r"\[([^\[\]]+)\]", headline)
     if not match:
         return html.escape(headline), headline, False
@@ -1212,6 +1287,8 @@ def gemini_title_analysis(
     posts: list[dict[str, str]],
     fallback_topic: str,
     api_key: str | None,
+    *,
+    source_type: str = "x",
 ) -> dict[str, object] | None:
     if not api_key:
         return None
@@ -1220,8 +1297,11 @@ def gemini_title_analysis(
         "Write witty Taglish-native Instagram cover lines for VibeCoders PH. "
         "Exactly one accent word must be wrapped in [brackets]."
     )
+    is_article = source_type == "article"
+    source_description = "an article source" if is_article else "X/Twitter posts"
+    source_payload_label = "Source article JSON" if is_article else "Posts JSON"
     prompt = f"""
-You prepare editorial carousel title-slide metadata from X/Twitter posts.
+You prepare editorial carousel title-slide metadata from {source_description}.
 Use Google Search grounding when available to identify companies and their current CEOs.
 Return JSON only with this exact shape:
 {{
@@ -1241,8 +1321,8 @@ Return JSON only with this exact shape:
 Rules:
 - Apply the VibeCoders PH Instagram voice guide below when writing cover.kicker,
   cover.headline, cover.accent_word, and cover.swipe_line.
-- The cover headline must not be a neutral summary of the post. It should be a
-  witty Taglish hook that earns the swipe while staying true to the post.
+- The cover headline must not be a neutral summary of the source. It should be a
+  witty Taglish hook that earns the swipe while staying true to the source.
 - cover.headline must contain exactly one bracketed accent word, like [alam].
 - cover.accent_word must match the bracketed word without brackets.
 - instagram_caption should be 3 to 4 short blocks separated by blank lines:
@@ -1266,7 +1346,7 @@ VibeCoders PH Instagram voice guide:
 {voice_prompt}
 
 Fallback topic: {fallback_topic}
-Posts JSON:
+{source_payload_label}:
 {json.dumps(gemini_post_brief(posts), ensure_ascii=False)}
 """.strip()
     base_payload: dict[str, object] = {
@@ -1534,6 +1614,7 @@ def build_title_enrichment(
     cover_kicker: str | None = None,
     cover_headline: str | None = None,
     cover_swipe_line: str | None = None,
+    source_type: str = "x",
 ) -> dict[str, object]:
     api_key = gemini_api_key()
     kg_api_key = os.environ.get("GOOGLE_KG_API_KEY")
@@ -1545,7 +1626,7 @@ def build_title_enrichment(
     else:
         print("[google] GOOGLE_API_KEY or GEMINI_API_KEY not set; using generated title visual")
 
-    analysis = gemini_title_analysis(posts, topic, api_key)
+    analysis = gemini_title_analysis(posts, topic, api_key, source_type=source_type)
     if isinstance(analysis, dict):
         gemini_topic = compact_topic(string_value(analysis.get("topic")))
         if gemini_topic:
