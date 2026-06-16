@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import build_article_carousel
+import build_x_article_carousel
 import story_scout
 
 
@@ -540,6 +541,96 @@ class LocalFallbackBodyQualityTests(unittest.TestCase):
                 "GPT-5 launched with a new agent benchmark today."
             ),
             ("", ""),
+        )
+
+
+class XArticleParsingTests(unittest.TestCase):
+    def test_looks_like_heading_accepts_title_style_lines(self) -> None:
+        looks_like_heading = build_x_article_carousel.looks_like_heading
+        self.assertTrue(looks_like_heading("The Benchmark That Broke The Room Is A Capacity Test"))
+        self.assertTrue(looks_like_heading("Pick The Model The Bandwidth Likes"))
+        self.assertTrue(looks_like_heading("You're About To Buy The Wrong Box"))
+
+    def test_looks_like_heading_rejects_prose_and_bullets(self) -> None:
+        looks_like_heading = build_x_article_carousel.looks_like_heading
+        # Sentence-cased prose ending in a period is a paragraph, not a heading.
+        self.assertFalse(
+            looks_like_heading(
+                "The system carves a slice of the shared pool for the GPU on boot."
+            )
+        )
+        # Lowercase running text is body even without terminal punctuation.
+        self.assertFalse(looks_like_heading("same chip, brand-name tax"))
+        # Bullets / numbered leads are body.
+        self.assertFalse(looks_like_heading("1. First buy the right SKU"))
+        self.assertFalse(looks_like_heading(""))
+
+    def test_blocks_from_full_text_tags_headings_and_paragraphs(self) -> None:
+        full_text = (
+            "The viral thread oversold a tiny PC and you almost bought the wrong box "
+            "for two grand based on a benchmark that measures capacity not speed.\n"
+            "Pick The Model The Bandwidth Likes\n"
+            "At 256 GB/s the box favours mixture-of-experts models that stream only "
+            "the active experts, while dense 70B models stall in the single digits."
+        )
+        blocks = build_x_article_carousel.blocks_from_full_text(full_text)
+        roles = [block.role for block in blocks]
+        self.assertIn("h2", roles)
+        self.assertIn("p", roles)
+        heading = next(block.text for block in blocks if block.role == "h2")
+        self.assertEqual(heading, "Pick The Model The Bandwidth Likes")
+        # Block indices stay contiguous so source_indices map back correctly.
+        self.assertEqual([block.index for block in blocks], list(range(len(blocks))))
+
+    def test_blocks_from_full_text_splits_overlong_paragraphs(self) -> None:
+        long_paragraph = " ".join(
+            f"Sentence number {n} carries a concrete benchmark detail." for n in range(60)
+        )
+        blocks = build_x_article_carousel.blocks_from_full_text(long_paragraph)
+        self.assertGreater(len(blocks), 1)
+        for block in blocks:
+            self.assertLessEqual(build_article_carousel.count_words(block.text), 220)
+
+    def test_x_article_to_article_feeds_the_shared_pipeline(self) -> None:
+        data = {
+            "id": "2066297019912610286",
+            "is_long_form": True,
+            "title": "The $1,499 Box Cannot Run That Model",
+            "subtitle": "What the viral AMD thread left out.",
+            "full_text": (
+                "You saw the thread and almost bought the cheap box, but the demo ran "
+                "a 235B model the $1,499 unit physically cannot load.\n"
+                "The Cost You Actually Pay\n"
+                "The 128GB EVO-X2 lands around $2,200, not $1,499, because a 235B "
+                "mixture-of-experts model needs the larger memory pool to load at all."
+            ),
+            "author_name": "plutos",
+            "handle": "@plutos_eth",
+            "date": "Sun Jun 14, 2026",
+        }
+        article = build_x_article_carousel.x_article_to_article(
+            data, url="https://x.com/plutos_eth/status/2066297019912610286"
+        )
+        self.assertEqual(article.title, "The $1,499 Box Cannot Run That Model")
+        self.assertEqual(article.site_name, "plutos on X")
+        self.assertEqual(article.author, "plutos")
+        self.assertTrue(article.blocks)
+
+        sections = build_article_carousel.build_candidate_sections(article)
+        pages = build_article_carousel.local_curate_pages(sections, max_pages=2, min_score=2)
+        self.assertGreaterEqual(len(pages), 1)
+        for page in pages:
+            self.assertTrue(page.source_indices)
+
+    def test_derive_title_falls_back_to_first_heading(self) -> None:
+        data = {"title": "", "full_text": ""}
+        blocks = [
+            build_article_carousel.TextBlock("p", "A short lede paragraph that opens the piece.", 0),
+            build_article_carousel.TextBlock("h2", "The Real Cost Of The Box", 1),
+        ]
+        self.assertEqual(
+            build_x_article_carousel.derive_title(data, blocks),
+            "The Real Cost Of The Box",
         )
 
     def test_single_sentence_section_headline_is_not_a_body_prefix(self) -> None:

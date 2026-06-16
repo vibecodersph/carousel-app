@@ -1166,10 +1166,13 @@ def render_article_slide(
     out_path: Path,
     active: int,
     count: int,
+    *,
+    badge: str = "ARTICLE",
 ) -> Path:
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    safe_badge = html.escape(badge or "ARTICLE")
     safe_kicker = html.escape(page.kicker or "THE SIGNAL")
     safe_headline = html.escape(page.headline)
     safe_body = html.escape(page.body)
@@ -1288,7 +1291,7 @@ def render_article_slide(
 </style></head>
 <body>
 <div class="slide">
-  <div class="article-source"><span>ARTICLE</span></div>
+  <div class="article-source"><span>{safe_badge}</span></div>
   <div class="kicker"><em>{safe_kicker}</em></div>
   <div class="signal">
     {heading_markup}
@@ -1393,15 +1396,50 @@ def build_article_carousel(
     no_title_enrichment: bool,
     timeout: int,
 ) -> Path:
-    out_dir = out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    account_name = account_name.strip() or DEFAULT_ACCOUNT_NAME
-
     print(f"[article] reading {source}")
     html_text, final_url = read_source(source, timeout=timeout)
     article = parse_article(source, html_text, final_url)
     if not article.blocks:
         raise SystemExit("could not extract enough article text to build a carousel")
+
+    return render_carousel_from_article(
+        article,
+        out_dir=out_dir,
+        max_pages=max_pages,
+        min_score=min_score,
+        title=title,
+        account_name=account_name,
+        curation_backend=curation_backend,
+        first_page_only=first_page_only,
+        no_title_enrichment=no_title_enrichment,
+    )
+
+
+def render_carousel_from_article(
+    article: Article,
+    *,
+    out_dir: Path,
+    max_pages: int,
+    min_score: int,
+    title: str | None,
+    account_name: str,
+    curation_backend: str,
+    first_page_only: bool,
+    no_title_enrichment: bool,
+    source_type: str = "article",
+    source_badge: str = "ARTICLE",
+) -> Path:
+    """Curate, render, and write a carousel from an already-parsed Article.
+
+    This is the shared tail of every article-shaped pipeline. build_article_carousel
+    feeds it an Article parsed from web HTML; build_x_article_carousel feeds it an
+    Article assembled from an X long-form post. Everything from candidate sectioning
+    through manifest writing is identical, so source_type / source_badge are the only
+    knobs the X path needs.
+    """
+    out_dir = out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    account_name = account_name.strip() or DEFAULT_ACCOUNT_NAME
 
     candidates = build_candidate_sections(article)
     pages, used_backend = curate_pages(
@@ -1454,7 +1492,7 @@ def build_article_carousel(
 
     for slide_index, page in enumerate(pages_to_render, start=2):
         slide_path = out_dir / f"slide_{slide_index:02d}.png"
-        render_article_slide(article, page, slide_path, slide_index, total)
+        render_article_slide(article, page, slide_path, slide_index, total, badge=source_badge)
         slides.append(page_manifest(page, slide_path, article, slide_index))
 
     article_report_path = out_dir / "source_article.json"
@@ -1484,7 +1522,7 @@ def build_article_carousel(
     )
 
     manifest = {
-        "source_type": "article",
+        "source_type": source_type,
         "source_url": article.url,
         "article": manifest_article(article),
         "section_count": len(candidates),

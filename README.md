@@ -244,6 +244,38 @@ uv run python story_scout.py scan --config story_sources.json
 uv run python story_scout.py approve article_abc123def0 --article-curation-backend local
 ```
 
+## One-URL X Article Carousel
+
+X Articles and long-form X notes are full essays published behind a single
+status URL. Drop in that URL to turn the essay into a vibecodersph carousel,
+picking only the highest-signal sections:
+
+```sh
+uv run python build_x_article_carousel.py "https://x.com/satyanadella/status/2066182223213293753"
+uv run python build_x_article_carousel.py "https://x.com/plutos_eth/status/2066297019912610286"
+```
+
+The script writes to `out/x_article_carousel`:
+
+- `slide_01.png`: the shared vibecodersph title cover (same brand-voice cover
+  system as the X-post and web-article workflows)
+- `slide_02.png` and onward: the highest-signal article sections, paraphrased
+  by Gemini when `GOOGLE_API_KEY` is available, each badged `X ARTICLE`
+- `manifest.json`: ordered slide list plus an `x_article` block recording the
+  author handle, post date, and engagement counts (likes / reposts / views)
+
+It fetches the verbatim long-form text via the xAI `x_search` API (the same auth
+as `fetch_tweet_data.py`: `XAI_API_KEY` in `.env`, or a Hermes xAI OAuth token),
+detects section headings, rebuilds the essay into the web-article `Article`
+structure, and reuses that pipeline end to end -- candidate sectioning, Gemini /
+local curation, the title cover, slide rendering, and the manifest.
+
+Because X Articles are curated thought pieces rather than benchmark-dense news,
+section selection defaults to a lower threshold than the web-article builder
+(`--min-score 3` vs `6`). Tune with `--max-pages`, `--min-score`,
+`--curation-backend gemini|local|auto`, `--title`, or `--no-title-enrichment`.
+For short tweets (not long-form essays), use `build_x_carousel.py` instead.
+
 ## Instagram Publishing
 
 `instagram_publish.py` publishes any generated carousel manifest through the Instagram Graph API. Instagram requires a professional Instagram account, an access token with content publishing permissions, and media files that Instagram can fetch from public HTTPS URLs. Local files and `localhost` URLs cannot be published directly.
