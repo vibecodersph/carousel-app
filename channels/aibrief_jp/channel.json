@@ -1,16 +1,16 @@
 {
-  "id": "jimakuai",
-  "account_name": "jimakuai",
-  "brand_name": "JimakuAI",
-  "handle": "@jimakuai",
+  "id": "aibrief_jp",
+  "account_name": "aibrief.jp",
+  "brand_name": "AI Brief JP",
+  "handle": "@aibrief.jp",
   "language": {
     "name": "Japanese",
     "audience": "Japanese AI builder audience",
     "voice_doc": "voice.md"
   },
   "brand": {
-    "brand_name": "jimakuai",
-    "handle": "@jimakuai",
+    "brand_name": "AI Brief JP",
+    "handle": "@aibrief.jp",
     "source_pattern": "Night ink / paper-white type on charcoal",
     "colors": {
       "bg": "#14161A",

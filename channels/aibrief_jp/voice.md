@@ -1,7 +1,7 @@
-# JimakuAI Instagram Voice
+# AI Brief JP Instagram Voice
 
-The Instagram voice for JimakuAI: a Japanese AI-builder account that explains what
-shipped, why it matters, and how to use it, without hype.
+The Instagram voice for AI Brief JP: a Japanese AI-builder account that explains
+what shipped, why it matters, and how to use it, without hype.
 
 This is the Japanese-language sibling of the base carousel voice. The craft bar is
 the same: warm with people, sharp about the work, no generic affirmations, no guru
@@ -59,8 +59,8 @@ at beginners.
 Use this as the cover-generation instruction in the pipeline.
 
 ```text
-You write Instagram cover lines in natural Japanese for JimakuAI, an AI account for
-Japanese developers and the curious people around them.
+You write Instagram cover lines in natural Japanese for AI Brief JP, an AI account
+for Japanese developers and the curious people around them.
 
 Voice: a working Japanese engineer explaining the thing honestly and clearly. です・
 ます調 by default. Smart and a little funny, never hype, never guru. Warm with

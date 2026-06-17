@@ -21,8 +21,8 @@ Channels live under `channels/`:
 channels/
   channels.json            # { "default_channel": "vibecodersph" }  <- the default setting
   vibecodersph/channel.json # cream/ink branding, Taglish, Filipino audience
-  jimakuai/channel.json     # charcoal/crimson branding, Japanese audience
-  jimakuai/voice.md         # JimakuAI voice guide (Japanese)
+  aibrief_jp/channel.json   # charcoal/crimson branding, Japanese audience
+  aibrief_jp/voice.md       # AI Brief JP voice guide (Japanese)
 ```
 
 The active channel is resolved in priority order:
@@ -35,12 +35,12 @@ The active channel is resolved in priority order:
 ```sh
 # Change the default for every build: edit channels/channels.json -> "default_channel"
 # Or override for one run:
-uv run python build_article_carousel.py "https://example.com/story" --channel jimakuai
-CAROUSEL_CHANNEL=jimakuai uv run python build_x_carousel.py "https://x.com/user/status/123"
+uv run python build_article_carousel.py "https://example.com/story" --channel aibrief_jp
+CAROUSEL_CHANNEL=aibrief_jp uv run python build_x_carousel.py "https://x.com/user/status/123"
 
 # Inspect resolved channels:
 uv run python channel.py --list
-uv run python channel.py jimakuai
+uv run python channel.py aibrief_jp
 ```
 
 To add a channel: copy a `channels/<id>/` folder, edit its `channel.json` (brand
