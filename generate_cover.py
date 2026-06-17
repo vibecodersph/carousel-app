@@ -11,7 +11,7 @@ Usage:
     uv run python generate_cover.py "Fable 5 changes everything"
     uv run python generate_cover.py "Fable 5 changes everything" --provider gemini --model nano-banana-pro
     uv run python generate_cover.py "Why reasoning models win" --provider xai
-    uv run python generate_cover.py "The prompt" --out assets/my_cover.png --style abstract
+    uv run python generate_cover.py "The prompt" --out out/my_cover.png --style abstract
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 BRAND_PATH = ROOT / "brand.json"
-ASSETS = ROOT / "assets"
+OUT = ROOT / "out"
 DEFAULT_OPENAI_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
@@ -434,7 +434,7 @@ def main() -> int:
         "--out",
         "-o",
         type=Path,
-        help="Output path (default: assets/cover_<topic_slug>.png)",
+        help="Output path (default: out/cover_<topic_slug>.png)",
     )
     ap.add_argument(
         "--style",
@@ -471,7 +471,7 @@ def main() -> int:
         print(prompt)
         return 0
 
-    out_path = args.out or ASSETS / f"cover_{re.sub(r'[^a-z0-9]+', '_', args.topic.lower()).strip('_')}.png"
+    out_path = args.out or OUT / f"cover_{re.sub(r'[^a-z0-9]+', '_', args.topic.lower()).strip('_')}.png"
 
     if args.provider == "openai":
         generate_openai(prompt, out_path, model=args.model, size=args.size)

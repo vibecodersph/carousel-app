@@ -5,6 +5,15 @@ story_sources.json
 __pycache__/
 *.pyc
 
+/deck.png
+/reference.png
+/slide*.png
+
+assets/cover_*.png
+assets/fable5*.png
+assets/tweet_*.json
+assets/tweet_*.png
+assets/tweet_embed.html
 assets/video_sources/
 out/automation/
 out/_video_frame.html

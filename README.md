@@ -1,15 +1,16 @@
 # vibecodersph Carousel Automation
 
-This repo renders vibecodersph-branded carousel assets from HTML:
+This repo renders vibecodersph-branded carousel assets from X posts, articles,
+and source media:
 
-- `out/slide_NN.png` for static carousel pages
-- `out/carousel.pptx` for Canva import
+- `out/x_carousel/` for one-URL X/Twitter carousels
+- `out/article_carousel/` for one-URL article carousels
 - `out/video_slide_02.mp4` for a branded video page inside a carousel
 
 ## One-time setup
 
 ```sh
-# Core deps (Playwright, python-pptx, yt-dlp, openai)
+# Core deps (Playwright, yt-dlp, openai)
 uv sync
 uv run python -m playwright install chromium
 
@@ -63,7 +64,7 @@ uv run python generate_cover.py "Fable 5 changes everything" --provider gemini -
 uv run python generate_cover.py "Why reasoning models win" --provider xai
 
 # Choose a visual style
-uv run python generate_cover.py "The prompt" --style typographic --out assets/cover.png
+uv run python generate_cover.py "The prompt" --style typographic --out out/cover.png
 
 # Preview the prompt without generating
 uv run python generate_cover.py "topic" --prompt-only
@@ -168,18 +169,6 @@ poller command, such as `--article-max-pages`, `--article-min-score-build`, and
 `--article-curation-backend`. A poller started with `--publish-buffer` turns
 each approved X post or article into a built carousel plus a Buffer draft
 automatically. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
-
-## Static PNG/PPTX build
-
-```sh
-uv run python build.py
-```
-
-Use retina PNGs when needed:
-
-```sh
-uv run python build.py --scale 2
-```
 
 ## One-URL X Carousel
 
@@ -344,7 +333,7 @@ Use an X/Twitter embed snippet as the full post context plus the video:
 
 ```sh
 uv run python build_video_slide.py \
-  --tweet-embed-file assets/tweet_embed.html \
+  --tweet-embed-file path/to/tweet_embed.html \
   --layout post-video \
   --source-label "@claudeai on X" \
   --kicker "The post"
@@ -378,18 +367,6 @@ uv run python build_video_slide.py \
   --cookies-from-browser chrome \
   --source-label "@claudeai on X" \
   --caption "Claude's launch video, framed as a carousel receipt."
-```
-
-## Full Build Plus Video
-
-`build.py` keeps the static PNG/PPTX path and can also emit the MP4 slide in one command:
-
-```sh
-uv run python build.py \
-  --video-tweet-embed-file assets/tweet_embed.html \
-  --video-layout post-video \
-  --video-source-label "@claudeai on X" \
-  --video-kicker "The post"
 ```
 
 Video outputs:
