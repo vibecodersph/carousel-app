@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from channel import load_channel
+
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
 FONTS = ASSETS / "archivo.css"
@@ -295,14 +297,19 @@ def dots(active: int, count: int) -> str:
 
 
 def handle_markup() -> str:
-    return """
+    channel = load_channel()
+    handle = html.escape(channel.handle)
+    colors = channel.brand.get("colors", {})
+    icon_fill = colors.get("fg", "#16140F")
+    icon_lens = colors.get("bg", "#F4F2EC")
+    return f"""
   <div class="handle">
     <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="#16140F"/>
-      <circle cx="12" cy="12" r="4.4" stroke="#F4F2EC" stroke-width="1.8"/>
-      <circle cx="17.2" cy="6.8" r="1.3" fill="#F4F2EC"/>
+      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="{icon_fill}"/>
+      <circle cx="12" cy="12" r="4.4" stroke="{icon_lens}" stroke-width="1.8"/>
+      <circle cx="17.2" cy="6.8" r="1.3" fill="{icon_lens}"/>
     </svg>
-    <span>@vibecodersph</span>
+    <span>{handle}</span>
   </div>
 """
 

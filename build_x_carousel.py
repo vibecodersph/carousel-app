@@ -36,13 +36,17 @@ from build_video_slide import (
     extract_status_url,
     format_post_date,
 )
+from channel import load_channel
 from fetch_tweet_data import fetch_thread, resolve_xai_token
 from generate_cover import DEFAULT_OPENAI_IMAGE_MODEL, generate_openai, openai_api_key
 
 ROOT = Path(__file__).resolve().parent
 FONTS = ROOT / "assets" / "archivo.css"
+# Legacy voice-doc path, kept for the default channel's backward-compatible fallback.
+# The active channel's voice guide is resolved via load_channel(); see channel.py.
 IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
+# Last-resort account label. The active channel's account_name normally supplies this.
 DEFAULT_ACCOUNT_NAME = "vibecodersph"
 PERSON_SOURCE_HANDLES = {
     "sama",
@@ -225,18 +229,8 @@ def compact_topic(text: str, limit: int = 95) -> str:
 
 
 def load_ig_voice_prompt() -> str:
-    try:
-        text = IG_VOICE_DOC.read_text()
-    except OSError:
-        return ""
-    section = re.search(
-        r"## Copy-Paste Prompt Block For Automation.*?```(?:text)?\s*(.*?)```",
-        text,
-        flags=re.S,
-    )
-    if section:
-        return section.group(1).strip()
-    return text[:6000].strip()
+    """Cover-generation voice instruction for the active channel's voice guide."""
+    return load_channel().voice_prompt
 
 
 def kg_search(
@@ -1293,10 +1287,10 @@ def gemini_title_analysis(
     if not api_key:
         return None
     model = gemini_text_model()
-    voice_prompt = load_ig_voice_prompt() or (
-        "Write witty Taglish-native Instagram cover lines for VibeCoders PH. "
-        "Exactly one accent word must be wrapped in [brackets]."
-    )
+    channel = load_channel()
+    lang = channel.language_name
+    brand = channel.brand_name
+    voice_prompt = load_ig_voice_prompt() or channel.default_cover_voice()
     is_article = source_type == "article"
     source_description = "an article source" if is_article else "X/Twitter posts"
     source_payload_label = "Source article JSON" if is_article else "Posts JSON"
@@ -1308,25 +1302,27 @@ Return JSON only with this exact shape:
   "topic": "short topic, 4 to 10 words",
   "cover": {{
     "kicker": "short section label or handle, 1 to 3 words",
-    "headline": "Taglish-native IG cover line with exactly one [accent] word",
+    "headline": "{lang}-native IG cover line with exactly one [accent] word",
     "accent_word": "same accent word without brackets",
-    "swipe_line": "short Taglish swipe prompt"
+    "swipe_line": "short {lang} swipe prompt"
   }},
-  "instagram_caption": "short Taglish Instagram caption with one CTA, clean hashtags, and source attribution",
+  "instagram_caption": "short {lang} Instagram caption with one CTA, clean hashtags, and source attribution",
   "companies": [
     {{"name": "Company name", "ceo_name": "Current CEO name"}}
   ]
 }}
 
 Rules:
-- Apply the VibeCoders PH Instagram voice guide below when writing cover.kicker,
+- Write cover.kicker, cover.headline, cover.accent_word, cover.swipe_line, and
+  instagram_caption in {lang}.
+- Apply the {brand} Instagram voice guide below when writing cover.kicker,
   cover.headline, cover.accent_word, and cover.swipe_line.
 - The cover headline must not be a neutral summary of the source. It should be a
-  witty Taglish hook that earns the swipe while staying true to the source.
+  witty {lang} hook that earns the swipe while staying true to the source.
 - cover.headline must contain exactly one bracketed accent word, like [alam].
 - cover.accent_word must match the bracketed word without brackets.
 - instagram_caption should be 3 to 4 short blocks separated by blank lines:
-  1) one witty Taglish hook,
+  1) one witty {lang} hook,
   2) one useful true line about what the carousel teaches,
   3) one CTA only,
   4) clean hashtags and Source: {posts[0].get("url", "")}
@@ -1342,7 +1338,7 @@ Rules:
 - Do not include markdown, comments, source citations, or extra keys.
 - Do not use em dashes.
 
-VibeCoders PH Instagram voice guide:
+{brand} Instagram voice guide:
 {voice_prompt}
 
 Fallback topic: {fallback_topic}
@@ -1815,7 +1811,7 @@ def build_title_enrichment(
         "topic_image_path": topic_image_path,
         "cover_copy": cover_copy,
         "instagram_caption": instagram_caption,
-        "brand_voice_doc": str(IG_VOICE_DOC.relative_to(ROOT)) if IG_VOICE_DOC.exists() else "",
+        "brand_voice_doc": load_channel().voice_doc_rel,
         "google_enabled": bool(api_key),
         "provider": "gemini" if api_key else "local",
         "image_provider": image_provider,
@@ -2374,9 +2370,18 @@ def main() -> int:
     )
     ap.add_argument("--cover-swipe-line", help="Override the generated cover swipe line")
     ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id selecting branding + language + voice as one bundle "
+            "(see channels/<id>/channel.json). Defaults to channels.json's "
+            "default_channel; also settable with CAROUSEL_CHANNEL."
+        ),
+    )
+    ap.add_argument(
         "--account-name",
-        default=os.environ.get("X_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
-        help="Account or publisher name displayed in the title slide template",
+        default=os.environ.get("X_CAROUSEL_ACCOUNT_NAME"),
+        help="Override the account/publisher name on the title slide (default: channel account_name)",
     )
     ap.add_argument("--no-thread", action="store_true", help="Only build from the supplied post")
     ap.add_argument(
@@ -2404,6 +2409,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # Select the active channel for every load_channel() call in this process.
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
+    channel = load_channel()
+    account_name = args.account_name or channel.account_name
+
     if not shutil.which("ffmpeg"):
         print("warning: ffmpeg not found; video posts will fail to render", file=sys.stderr)
 
@@ -2415,7 +2426,7 @@ def main() -> int:
         cover_kicker=args.cover_kicker,
         cover_headline=args.cover_headline,
         cover_swipe_line=args.cover_swipe_line,
-        account_name=args.account_name,
+        account_name=account_name,
         no_thread=args.no_thread,
         first_page_only=args.first_page_only,
         cookies_from_browser=args.cookies_from_browser,

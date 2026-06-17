@@ -1,7 +1,7 @@
 [project]
 name = "carousel-app"
 version = "0.1.0"
-description = "vibecodersph branded carousel renderer for PNG and video slides."
+description = "Multi-channel branded carousel renderer for PNG and video slides."
 requires-python = ">=3.9"
 dependencies = [
   "openai>=2.41.0",

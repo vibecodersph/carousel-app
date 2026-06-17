@@ -38,6 +38,7 @@ from build_article_carousel import (
     split_sentences,
 )
 from build_x_carousel import DEFAULT_ACCOUNT_NAME
+from channel import load_channel
 from fetch_tweet_data import (
     compact_number,
     extract_json_value,
@@ -299,7 +300,7 @@ def build_x_article_carousel(
 def main() -> int:
     load_env_file(ROOT / ".env")
     ap = argparse.ArgumentParser(
-        description="Build a vibecodersph carousel from an X long-form Article URL"
+        description="Build a branded carousel from an X long-form Article URL (--channel selects branding/language/voice)"
     )
     ap.add_argument("source", help="X/Twitter Article URL or status ID")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
@@ -314,9 +315,18 @@ def main() -> int:
     )
     ap.add_argument("--title", help="Override generated title slide text")
     ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id selecting branding + language + voice as one bundle "
+            "(see channels/<id>/channel.json). Defaults to channels.json's "
+            "default_channel; also settable with CAROUSEL_CHANNEL."
+        ),
+    )
+    ap.add_argument(
         "--account-name",
-        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
-        help="Account or publisher name displayed in the title slide template",
+        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME"),
+        help="Override the account/publisher name on the title slide (default: channel account_name)",
     )
     ap.add_argument(
         "--curation-backend",
@@ -345,13 +355,18 @@ def main() -> int:
     if args.max_pages < 1:
         raise SystemExit("--max-pages must be at least 1")
 
+    # Select the active channel for every load_channel() call in this process.
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
+    account_name = args.account_name or load_channel().account_name
+
     build_x_article_carousel(
         args.source,
         out_dir=args.out_dir,
         max_pages=args.max_pages,
         min_score=args.min_score,
         title=args.title,
-        account_name=args.account_name,
+        account_name=account_name,
         curation_backend=args.curation_backend,
         first_page_only=args.first_page_only,
         no_title_enrichment=args.no_title_enrichment,

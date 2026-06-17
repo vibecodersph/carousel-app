@@ -1,0 +1,50 @@
+{
+  "id": "jimakuai",
+  "account_name": "jimakuai",
+  "brand_name": "JimakuAI",
+  "handle": "@jimakuai",
+  "language": {
+    "name": "Japanese",
+    "audience": "Japanese AI builder audience",
+    "voice_doc": "voice.md"
+  },
+  "brand": {
+    "brand_name": "jimakuai",
+    "handle": "@jimakuai",
+    "source_pattern": "Night ink / paper-white type on charcoal",
+    "colors": {
+      "bg": "#14161A",
+      "bg_top": "#1C1F25",
+      "fg": "#F4F3EF",
+      "ink_soft": "rgba(244, 243, 239, 0.78)",
+      "primary": "#E0314B",
+      "muted": "rgba(244, 243, 239, 0.55)",
+      "rule": "rgba(244, 243, 239, 0.26)"
+    },
+    "typography": {
+      "heading_font": "Noto Sans JP, Archivo, sans-serif",
+      "heading_weight": 800,
+      "heading_size_px": 78,
+      "heading_letter_spacing": "0.01em",
+      "body_font": "Noto Sans JP, Archivo, sans-serif",
+      "body_weight": 600,
+      "kicker_weight": 700,
+      "kicker_letter_spacing": "0.18em",
+      "font_source": "Noto Sans JP needed for Japanese glyphs; embed a JP woff2 like assets/archivo.css for offline render"
+    },
+    "pattern": {
+      "handle_position": "top-left, icon + lowercase handle",
+      "kicker": "centered uppercase label between two horizontal rules",
+      "headline": "centered, one accent word in primary color",
+      "swipe_cue": "スワイプして続きを + primary chip with chevron",
+      "progress": "primary dash for active slide + muted dots",
+      "edge_affordance": "circled chevron at right edge, headline height (slide 1 only)"
+    },
+    "logo_zones": {
+      "top_right": true,
+      "bottom_handle": true,
+      "page_counter": false
+    },
+    "default_slide_count": 6
+  }
+}

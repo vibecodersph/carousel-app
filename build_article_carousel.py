@@ -28,6 +28,7 @@ from urllib.parse import unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from build_video_slide import clean_post_text
+from channel import load_channel
 from build_x_carousel import (
     DEFAULT_ACCOUNT_NAME,
     build_title_enrichment,
@@ -211,6 +212,9 @@ class CarouselPage:
     source_indices: list[int]
     score: int
     why: str
+    # Open-loop hook teasing the next slide. Empty on the final page (and on the
+    # local fallback path, which has no model to write one).
+    tease: str = ""
 
 
 class ArticleHTMLParser(HTMLParser):
@@ -967,9 +971,10 @@ def gemini_curate_pages(
         return []
 
     model = gemini_text_model()
+    audience = load_channel().audience
     prompt = f"""
 You are an editorial producer turning one article into an Instagram carousel for a
-Filipino AI builder audience. Choose only the highest-signal sections: concrete
+{audience}. Choose only the highest-signal sections: concrete
 technical facts, benchmarks, launches, open-source details, adoption signals,
 pricing, model releases, strategic stakes, or credible quantified claims.
 
@@ -978,10 +983,11 @@ Return JSON only with this exact shape:
   "pages": [
     {{
       "source_indices": [0],
-      "kicker": "BENCHMARK",
-      "headline": "Qwen3-Coder tops SWE-Bench",
-      "body": "The open-weights model scores 71% on SWE-Bench Verified, beating the prior open-source baseline on real GitHub pull-request tasks.",
+      "kicker": "THE CLAIM",
+      "headline": "An open model just cracked real GitHub tasks",
+      "body": "Qwen3-Coder hits 71% on SWE-Bench Verified, resolving actual pull requests and narrowing the gap to closed models.",
       "stat": "71%",
+      "tease": "next: where it still falls short",
       "why": "concrete benchmark result"
     }}
   ]
@@ -989,11 +995,12 @@ Return JSON only with this exact shape:
 
 Rules:
 - Pick {max_pages} pages when the article has that many distinct high-signal points; return fewer only when the rest would be filler. Use at least 2.
-- Order pages to tell a coherent story: what happened, then the evidence or numbers, then why it matters.
-- headline: 3 to 8 words, specific and concrete, lead with the subject or number, no ending period, no quotation marks.
-- body: 18 to 38 words, tightly paraphrased in active voice. Never copy long article wording.
+- Order the pages as a retention arc, not a summary. Open on the hook or the contrarian claim, escalate through the evidence and numbers, and land the payoff or stakes last. Each slide should raise a question the next slide answers, so the reader keeps swiping.
+- headline: 3 to 9 words that open a curiosity gap. Pose the tension, the contrarian angle, or the surprising specific so the reader needs the body to resolve it. Do NOT state the flat takeaway or conclusion here. Lead with a concrete noun or number, no ending period, no quotation marks.
+- body: 18 to 38 words that PAY OFF the headline with new information the headline did not already give: the mechanism, the number, the example, or the consequence. Never restate or paraphrase the headline. Tight, active voice, never copy long article wording.
+- tease: a 4 to 8 word lowercase open loop pointing at what the NEXT slide reveals (e.g. "but the price hides a catch", "the number the thread left out"). No ending period. Use an empty string on the final page.
 - stat: one quantity with its unit when the section has a real number (e.g. "72%", "32K tokens", "$2B", "10x", "SWE-Bench 71"). If the section has no genuine number, use an empty string. Never put a phrase, label, or non-numeric word here.
-- kicker: a 1 to 3 word ALL-CAPS section label that frames the slide (e.g. THE NEWS, BENCHMARK, OPEN SOURCE, THE NUMBERS, WHY IT MATTERS, THE STAKES, UNDER THE HOOD, ADOPTION).
+- kicker: a 1 to 3 word ALL-CAPS curiosity frame specific to THIS slide's tension (e.g. THE CATCH, THE REAL COST, THE FIX, WHAT BROKE, THE TRADE-OFF, THE CLAIM). Do not reuse the same kicker twice in one carousel, and avoid generic table-of-contents labels.
 - Each page must stand on a specific fact, benchmark, technical detail, or implication.
 - Skip intro fluff, event promos, newsletter language, author bio, generic quotes, and background unless it changes the story.
 - No markdown, citations, extra keys, hashtags, emojis, or quotation marks around the body.
@@ -1065,10 +1072,15 @@ Candidate sections:
                 source_indices=source_indices,
                 score=source_score,
                 why=string_value(raw_page.get("why")),
+                tease=string_value(raw_page.get("tease"))[:80],
             )
         )
         if len(pages) >= max_pages:
             break
+    # The last article slide has nothing to tease, so never leave a dangling hook
+    # even if the model wrote one.
+    if pages:
+        pages[-1].tease = ""
     return pages
 
 
@@ -1192,6 +1204,10 @@ def render_article_slide(
         and not heading_key.endswith(headline_key)
     )
     heading_markup = f'<div class="source-heading">{safe_heading}</div>' if show_heading else ""
+    progress_label = f"{active:02d} / {count:02d}"
+    # The bottom cue becomes the open-loop tease when we have one; dot_markup falls
+    # back to the generic "swipe for more" otherwise and stays blank on the last slide.
+    swipe_cue = f"{page.tease} →" if page.tease else ""
 
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -1219,11 +1235,24 @@ def render_article_slide(
   text-transform: uppercase;
 }}
 .kicker {{
-  top: 170px;
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+  margin: 0 0 44px;
+}}
+.progress {{
+  position: absolute;
+  top: 78px;
+  right: 72px;
+  font-size: 23px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  color: rgba(20, 18, 14, 0.4);
 }}
 .signal {{
   position: absolute;
-  top: 266px;
+  top: 190px;
   left: 72px;
   right: 72px;
   bottom: 178px;
@@ -1292,8 +1321,9 @@ def render_article_slide(
 <body>
 <div class="slide">
   <div class="article-source"><span>{safe_badge}</span></div>
-  <div class="kicker"><em>{safe_kicker}</em></div>
+  <div class="progress">{progress_label}</div>
   <div class="signal">
+    <div class="kicker"><em>{safe_kicker}</em></div>
     {heading_markup}
     <h1 class="headline">{safe_headline}</h1>
     <div class="rule"></div>
@@ -1301,7 +1331,7 @@ def render_article_slide(
     {stat_markup}
   </div>
   <div class="source-label">{safe_source}</div>
-  <div class="dots">{dot_markup(active, count)}</div>
+  <div class="dots">{dot_markup(active, count, swipe_cue)}</div>
 </div>
 </body></html>"""
     html_path.write_text(html_text)
@@ -1323,6 +1353,7 @@ def page_manifest(page: CarouselPage, slide_path: Path, article: Article, index:
         "source_indices": page.source_indices,
         "score": page.score,
         "why": page.why,
+        "tease": page.tease,
     }
 
 
@@ -1548,7 +1579,9 @@ def render_carousel_from_article(
 
 def main() -> int:
     load_env_file(ROOT / ".env")
-    ap = argparse.ArgumentParser(description="Build a vibecodersph carousel from an article URL")
+    ap = argparse.ArgumentParser(
+        description="Build a branded carousel from an article URL (--channel selects branding/language/voice)"
+    )
     ap.add_argument("source", help="Article URL, file:// URL, or local HTML file")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--max-pages", type=int, default=6, help="Maximum article-section slides")
@@ -1560,9 +1593,18 @@ def main() -> int:
     )
     ap.add_argument("--title", help="Override generated title slide text")
     ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id selecting branding + language + voice as one bundle "
+            "(see channels/<id>/channel.json). Defaults to channels.json's "
+            "default_channel; also settable with CAROUSEL_CHANNEL."
+        ),
+    )
+    ap.add_argument(
         "--account-name",
-        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
-        help="Account or publisher name displayed in the title slide template",
+        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME"),
+        help="Override the account/publisher name on the title slide (default: channel account_name)",
     )
     ap.add_argument(
         "--curation-backend",
@@ -1586,13 +1628,18 @@ def main() -> int:
     if args.max_pages < 1:
         raise SystemExit("--max-pages must be at least 1")
 
+    # Select the active channel for every load_channel() call in this process.
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
+    account_name = args.account_name or load_channel().account_name
+
     build_article_carousel(
         args.source,
         out_dir=args.out_dir,
         max_pages=args.max_pages,
         min_score=args.min_score,
         title=args.title,
-        account_name=args.account_name,
+        account_name=account_name,
         curation_backend=args.curation_backend,
         first_page_only=args.first_page_only,
         no_title_enrichment=args.no_title_enrichment,

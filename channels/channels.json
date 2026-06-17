@@ -1,0 +1,4 @@
+{
+  "default_channel": "vibecodersph",
+  "_comment": "Change default_channel to switch every build (branding + language + voice) at once. Override per run with CAROUSEL_CHANNEL=<id> or the --channel <id> flag. Each id maps to channels/<id>/channel.json."
+}

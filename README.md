@@ -1,11 +1,56 @@
-# vibecodersph Carousel Automation
+# Carousel Automation
 
-This repo renders vibecodersph-branded carousel assets from X posts, articles,
-and source media:
+This repo renders branded carousel assets from X posts, articles, and source
+media. The default brand is `vibecodersph`, but branding, language, and voice are
+swappable as one bundle per **channel** (see [Channels](#channels-branding--language--voice)):
 
 - `out/x_carousel/` for one-URL X/Twitter carousels
 - `out/article_carousel/` for one-URL article carousels
 - `out/video_slide_02.mp4` for a branded video page inside a carousel
+
+## Channels (branding + language + voice)
+
+A **channel** bundles everything that makes output specific to one brand and one
+language at the same time: the slide branding (colors, type, layout), the account
+handle shown on slides, the language the AI writes copy in, the audience it writes
+for, and the brand-voice guide it follows. Switch all of it with one setting.
+
+Channels live under `channels/`:
+
+```
+channels/
+  channels.json            # { "default_channel": "vibecodersph" }  <- the default setting
+  vibecodersph/channel.json # cream/ink branding, Taglish, Filipino audience
+  jimakuai/channel.json     # charcoal/crimson branding, Japanese audience
+  jimakuai/voice.md         # JimakuAI voice guide (Japanese)
+```
+
+The active channel is resolved in priority order:
+
+1. `--channel <id>` flag on any builder (`build_x_carousel.py`, `build_article_carousel.py`, `generate_cover.py`),
+2. the `CAROUSEL_CHANNEL` environment variable,
+3. `default_channel` in `channels/channels.json`,
+4. the built-in `vibecodersph` fallback (which also reads the legacy root `brand.json` / `brand/VIBECODERS_IG_VOICE.md`, so existing checkouts keep working).
+
+```sh
+# Change the default for every build: edit channels/channels.json -> "default_channel"
+# Or override for one run:
+uv run python build_article_carousel.py "https://example.com/story" --channel jimakuai
+CAROUSEL_CHANNEL=jimakuai uv run python build_x_carousel.py "https://x.com/user/status/123"
+
+# Inspect resolved channels:
+uv run python channel.py --list
+uv run python channel.py jimakuai
+```
+
+To add a channel: copy a `channels/<id>/` folder, edit its `channel.json` (brand
+colors/type + `language.name` + `language.audience`) and its voice guide markdown
+(keep the `## Copy-Paste Prompt Block For Automation` section — that block is what
+the pipeline injects into the cover prompt), then point `default_channel` (or
+`CAROUSEL_CHANNEL`) at the new id. The AI writes cover copy and captions in the
+channel's `language.name`, so a Japanese channel produces Japanese copy with no
+code changes. Note: rendering non-Latin text offline needs a matching embedded
+font (e.g. a Noto Sans JP woff2) alongside `assets/archivo.css`.
 
 ## One-time setup
 

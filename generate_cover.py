@@ -80,7 +80,18 @@ def load_local_env() -> None:
 
 
 def load_brand() -> dict[str, Any]:
-    """Load brand config for prompt guidance."""
+    """Load the active channel's brand config for prompt guidance.
+
+    Falls back to the legacy root brand.json if no channel brand is available.
+    """
+    try:
+        from channel import load_channel
+
+        brand = load_channel().brand
+        if brand:
+            return brand
+    except Exception:
+        pass
     if BRAND_PATH.exists():
         return json.loads(BRAND_PATH.read_text())
     return {}
@@ -414,7 +425,7 @@ def generate_xai(prompt: str, out_path: Path) -> Path:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Generate vibecodersph-branded cover art for carousel slides"
+        description="Generate channel-branded cover art for carousel slides (--channel selects the brand palette)"
     )
     ap.add_argument("topic", help="The carousel topic/headline")
     ap.add_argument(
@@ -463,7 +474,18 @@ def main() -> int:
         choices=["1K", "2K", "4K"],
         help="Gemini image size override for Gemini 3 image models",
     )
+    ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id whose brand palette guides the cover art "
+            "(see channels/<id>/channel.json); also settable with CAROUSEL_CHANNEL."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
 
     prompt = add_ceo_context(build_prompt(args.topic, args.style), args.ceo, args.company)
 
