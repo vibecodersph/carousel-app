@@ -2,6 +2,7 @@
   "accounts": [
     "OpenAI",
     "AnthropicAI",
+    "ClaudeDevs",
     "GoogleDeepMind",
     "MistralAI",
     "sama"
