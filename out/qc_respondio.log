@@ -1,7 +1,0 @@
-[article] reading https://techcrunch.com/2026/06/15/malaysias-respond-io-raises-62-5m-eyes-acquisitions-in-north-america-and-europe/
-[google] enriching title slide with Google AI Studio / Gemini
-Generating cover art via gpt-image-2...
-Saved /Users/aiagent/GitHub/carousel-app/out/qc_respondio/title_assets/openai-topic-72072ad8a2.png
-[openai] generated GPT Image title cover -> /Users/aiagent/GitHub/carousel-app/out/qc_respondio/title_assets/openai-topic-72072ad8a2.png
-[article] selected 5 high-signal section(s) via gemini
-[article] wrote manifest -> /Users/aiagent/GitHub/carousel-app/out/qc_respondio/manifest.json

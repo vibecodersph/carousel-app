@@ -1619,7 +1619,20 @@ def is_person_source_post(post: dict[str, str]) -> bool:
     handle = normalized_handle(post.get("handle"))
     if not handle or handle in ORGANIZATION_SOURCE_HANDLES:
         return False
-    return handle in PERSON_SOURCE_HANDLES
+    if handle in PERSON_SOURCE_HANDLES:
+        return True
+    return bool(
+        source_profile_candidate_post(post)
+        and normalize_x_profile_image_url(post.get("profile_image_url"))
+    )
+
+
+def source_profile_candidate_post(post: dict[str, str]) -> bool:
+    handle = normalized_handle(post.get("handle"))
+    if not handle or handle in ORGANIZATION_SOURCE_HANDLES:
+        return False
+    author = string_value(post.get("author"))
+    return bool(author and author != "Source post")
 
 
 def source_person_from_post(post: dict[str, str]) -> dict[str, object] | None:
@@ -2592,7 +2605,7 @@ def build_x_carousel(
         embed_post = fetch_embed_post(posts[0]["url"])
         if embed_post:
             posts[0] = {**posts[0], **embed_post}
-    if is_person_source_post(posts[0]) and not posts[0].get("profile_image_url"):
+    if source_profile_candidate_post(posts[0]) and not posts[0].get("profile_image_url"):
         embed_post = fetch_embed_post(posts[0]["url"])
         if embed_post and embed_post.get("profile_image_url"):
             posts[0]["profile_image_url"] = embed_post["profile_image_url"]

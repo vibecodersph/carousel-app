@@ -1,9 +1,0 @@
-Getting AI agents into production sounds exciting... until credentials, sandboxing, and observability join the standup.
-
-ClaudeDevs shared how Anthropic's Applied AI team is approaching this with Claude Managed Agents: managed sandboxes, safer credential flows, and a cleaner path from prototype to prod.
-
-Save this if you're building agents beyond the demo stage.
-
-#AIAgents #ClaudeAI #Anthropic #SoftwareEngineering #VibeCodersPH
-
-Source: https://x.com/ClaudeDevs/status/2066926619714007115

@@ -1,7 +1,0 @@
-[article] reading https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/
-[google] enriching title slide with Google AI Studio / Gemini
-Generating cover art via gpt-image-2...
-Saved /Users/aiagent/GitHub/carousel-app/out/qc_nvidia/title_assets/openai-topic-fe667b2a96.png
-[openai] generated GPT Image title cover -> /Users/aiagent/GitHub/carousel-app/out/qc_nvidia/title_assets/openai-topic-fe667b2a96.png
-[article] selected 5 high-signal section(s) via gemini
-[article] wrote manifest -> /Users/aiagent/GitHub/carousel-app/out/qc_nvidia/manifest.json
