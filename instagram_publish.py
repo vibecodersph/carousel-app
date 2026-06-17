@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from channel import available_channels, load_channel
 from fetch_tweet_data import load_env_file
 
 ROOT = Path(__file__).resolve().parent
@@ -95,6 +96,72 @@ def env_value(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def env_key_suffix(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in value.upper()).strip("_")
+
+
+def manifest_channel_id(manifest: dict[str, Any], manifest_path: Path) -> str:
+    direct = str(manifest.get("channel_id") or "").strip()
+    if direct:
+        return direct
+    context = manifest.get("title_context") if isinstance(manifest.get("title_context"), dict) else {}
+    voice_doc = str(context.get("brand_voice_doc") or "").strip()
+    parts = Path(voice_doc).parts
+    if "channels" in parts:
+        index = parts.index("channels")
+        if index + 1 < len(parts):
+            return parts[index + 1]
+    folder = manifest_path.parent.name
+    for channel_id in available_channels():
+        if folder == channel_id or folder.startswith(f"{channel_id}_"):
+            return channel_id
+    account_name = str(manifest.get("account_name") or "").strip()
+    for channel_id in available_channels():
+        try:
+            channel = load_channel(channel_id)
+        except Exception:
+            continue
+        names = {channel.account_name, channel.brand_name, channel.handle.lstrip("@"), channel.handle}
+        if account_name in names:
+            return channel_id
+    return ""
+
+
+def channel_env_value(channel_id: str, *bases: str) -> str:
+    suffix = env_key_suffix(channel_id)
+    if not suffix:
+        return ""
+    names: list[str] = []
+    for base in bases:
+        names.extend((f"{base}_{suffix}", f"{suffix}_{base}"))
+    return env_value(*names)
+
+
+def channel_instagram_user_id(channel_id: str) -> str:
+    value = channel_env_value(channel_id, "INSTAGRAM_USER_ID", "IG_USER_ID")
+    if value:
+        return value
+    if channel_id:
+        try:
+            channel = load_channel(channel_id)
+        except Exception:
+            return ""
+        publishing = channel.publishing if isinstance(channel.publishing, dict) else {}
+        return str(publishing.get("instagram_user_id") or publishing.get("ig_user_id") or "").strip()
+    return ""
+
+
+def resolve_instagram_user_id(explicit: str, manifest: dict[str, Any], manifest_path: Path) -> tuple[str, str]:
+    if explicit.strip():
+        return explicit.strip(), "cli"
+    channel_id = manifest_channel_id(manifest, manifest_path)
+    channel_value = channel_instagram_user_id(channel_id)
+    if channel_value:
+        return channel_value, f"channel:{channel_id}"
+    fallback = env_value("INSTAGRAM_USER_ID", "IG_USER_ID")
+    return fallback, "env:INSTAGRAM_USER_ID"
 
 
 def graph_api_version() -> str:
@@ -726,6 +793,7 @@ def build_report(
     graph_version: str,
     graph_api_root: str,
     instagram_user_id: str,
+    instagram_user_id_source: str,
     single_video_media_type: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
@@ -737,6 +805,7 @@ def build_report(
         "source_url": manifest.get("source_url"),
         "account_name": manifest.get("account_name"),
         "instagram_user_id": instagram_user_id,
+        "instagram_user_id_source": instagram_user_id_source,
         "graph_api_version": graph_version,
         "graph_api_root": graph_api_root,
         "caption": caption,
@@ -788,13 +857,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--caption-file", type=Path, help="Read the Instagram caption from a text file")
     parser.add_argument(
         "--instagram-user-id",
-        default=env_value("INSTAGRAM_USER_ID", "IG_USER_ID"),
-        help="Instagram professional account ID",
+        default="",
+        help=(
+            "Instagram professional account ID. Defaults to the manifest channel's "
+            "publishing.instagram_user_id, then INSTAGRAM_USER_ID / IG_USER_ID."
+        ),
     )
     parser.add_argument(
         "--access-token",
-        default=env_value("INSTAGRAM_ACCESS_TOKEN", "IG_ACCESS_TOKEN"),
-        help="Instagram Graph API access token",
+        default=env_value("META_SYSTEM_USER_ACCESS_TOKEN", "INSTAGRAM_ACCESS_TOKEN", "IG_ACCESS_TOKEN"),
+        help="Instagram Graph API access token; META_SYSTEM_USER_ACCESS_TOKEN is preferred when present",
     )
     parser.add_argument("--graph-api-version", default=graph_api_version())
     parser.add_argument(
@@ -826,6 +898,11 @@ def main() -> int:
     manifest = load_json(manifest_path)
     if not isinstance(manifest, dict):
         raise SystemExit("Manifest JSON must be an object")
+    instagram_user_id, instagram_user_id_source = resolve_instagram_user_id(
+        args.instagram_user_id,
+        manifest,
+        manifest_path,
+    )
 
     graph_version = normalize_graph_version(args.graph_api_version)
     graph_root = args.graph_api_root.rstrip("/")
@@ -852,14 +929,14 @@ def main() -> int:
     if args.dry_run:
         print(f"[instagram] dry run: validated {len(media_items)} media item(s)")
     else:
-        if not args.instagram_user_id:
+        if not instagram_user_id:
             raise SystemExit("INSTAGRAM_USER_ID or --instagram-user-id is required to publish")
         if not args.access_token:
             raise SystemExit("INSTAGRAM_ACCESS_TOKEN or --access-token is required to publish")
         result = publish_to_instagram(
             media_items,
             caption=caption,
-            instagram_user_id=args.instagram_user_id,
+            instagram_user_id=instagram_user_id,
             access_token=args.access_token,
             graph_version=graph_version,
             graph_api_root=graph_root,
@@ -876,7 +953,8 @@ def main() -> int:
         dry_run=args.dry_run,
         graph_version=graph_version,
         graph_api_root=graph_root,
-        instagram_user_id=args.instagram_user_id,
+        instagram_user_id=instagram_user_id,
+        instagram_user_id_source=instagram_user_id_source,
         single_video_media_type=args.single_video_media_type,
         uploads=uploads,
         result=result,

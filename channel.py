@@ -53,6 +53,7 @@ class Channel:
     language_name: str  # language the AI writes copy in, e.g. "Taglish", "Japanese"
     audience: str  # who the copy is for, e.g. "Filipino AI builder audience"
     brand: dict[str, Any] = field(default_factory=dict)  # colors / type / pattern (was brand.json)
+    publishing: dict[str, Any] = field(default_factory=dict)
     voice_doc: Path | None = None  # markdown voice guide for this channel
     config_path: Path | None = None
 
@@ -157,6 +158,7 @@ def _channel_from_config(channel_id: str, data: dict[str, Any], config_path: Pat
         language_name=str(language.get("name") or data.get("language_name") or "English"),
         audience=str(language.get("audience") or data.get("audience") or "an AI builder audience"),
         brand=brand,
+        publishing=data.get("publishing") if isinstance(data.get("publishing"), dict) else {},
         voice_doc=voice_doc,
         config_path=config_path,
     )
@@ -179,6 +181,7 @@ def _legacy_vibecodersph() -> Channel:
         language_name="Taglish",
         audience="Filipino AI builder audience",
         brand=brand,
+        publishing={},
         voice_doc=ROOT / "brand" / "VIBECODERS_IG_VOICE.md",
         config_path=brand_path if brand_path.exists() else None,
     )

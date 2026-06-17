@@ -1553,6 +1553,7 @@ def render_carousel_from_article(
     )
 
     manifest = {
+        "channel_id": load_channel().id,
         "source_type": source_type,
         "source_url": article.url,
         "article": manifest_article(article),

@@ -2688,6 +2688,7 @@ def build_x_carousel(
         slide_index += 1
 
     manifest = {
+        "channel_id": load_channel().id,
         "source_url": url,
         "thread_source": used_thread_source,
         "thread_post_count": len(posts),

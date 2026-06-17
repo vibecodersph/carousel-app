@@ -1,0 +1,199 @@
+{
+  "created_at": "2026-06-17T07:08:59+00:00",
+  "dry_run": false,
+  "manifest_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/manifest.json",
+  "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115",
+  "account_name": "AIブリーフ",
+  "instagram_user_id": "17841411137200252",
+  "instagram_user_id_source": "channel:aibrief_jp",
+  "graph_api_version": "v23.0",
+  "graph_api_root": "https://graph.facebook.com",
+  "caption": "AIエージェントをいざ本番環境で動かそうとすると、サンドボックスの用意や認証情報の管理など、泥臭い課題が山積みになりますよね。\n\nAnthropicのApplied AIチームが公開した「Claude Managed Agents」の解説記事から、本番運用のリアルな課題と、それを解決する実践的なアプローチをまとめました。\n\n最新のAI開発トレンドを追いかけたい方は、ぜひフォローして次の投稿をお待ちください。\n\n#AIエージェント #Claude #Anthropic #エンジニア #システム開発\n\nSource: https://x.com/ClaudeDevs/status/2066926619714007115",
+  "media": [
+    {
+      "index": 1,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+      "slide_type": "title",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115"
+    },
+    {
+      "index": 2,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+      "slide_type": "post-explanation",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115"
+    },
+    {
+      "index": 3,
+      "kind": "video",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+      "slide_type": "post-video",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115"
+    },
+    {
+      "index": 4,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+      "slide_type": "post-explanation",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926620989169932"
+    },
+    {
+      "index": 5,
+      "kind": "image",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+      "slide_type": "post",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926620989169932"
+    }
+  ],
+  "uploads": [
+    {
+      "key": "aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+      "status": 200,
+      "bytes": 1296794,
+      "content_type": "image/png"
+    },
+    {
+      "key": "aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+      "status": 200,
+      "bytes": 175983,
+      "content_type": "image/png"
+    },
+    {
+      "key": "aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+      "status": 200,
+      "bytes": 496924,
+      "content_type": "video/mp4"
+    },
+    {
+      "key": "aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+      "status": 200,
+      "bytes": 143226,
+      "content_type": "image/png"
+    },
+    {
+      "key": "aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+      "local_path": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+      "public_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+      "status": 200,
+      "bytes": 249154,
+      "content_type": "image/png"
+    }
+  ],
+  "api_steps": [
+    {
+      "action": "create_carousel_item_container",
+      "slide_index": 1,
+      "params": {
+        "image_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_01.png",
+        "is_carousel_item": "true"
+      }
+    },
+    {
+      "action": "create_carousel_item_container",
+      "slide_index": 2,
+      "params": {
+        "image_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_02.png",
+        "is_carousel_item": "true"
+      }
+    },
+    {
+      "action": "create_carousel_item_container",
+      "slide_index": 3,
+      "params": {
+        "media_type": "VIDEO",
+        "video_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_03.mp4",
+        "is_carousel_item": "true"
+      }
+    },
+    {
+      "action": "create_carousel_item_container",
+      "slide_index": 4,
+      "params": {
+        "image_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_04.png",
+        "is_carousel_item": "true"
+      }
+    },
+    {
+      "action": "create_carousel_item_container",
+      "slide_index": 5,
+      "params": {
+        "image_url": "https://pub-010164abaff84929ae890815a7290ca0.r2.dev/aibrief_jp_claudedevs_2066926619714007115/slide_05.png",
+        "is_carousel_item": "true"
+      }
+    },
+    {
+      "action": "create_carousel_container",
+      "params": {
+        "media_type": "CAROUSEL",
+        "children": "<child_container_ids>",
+        "caption": "AIエージェントをいざ本番環境で動かそうとすると、サンドボックスの用意や認証情報の管理など、泥臭い課題が山積みになりますよね。\n\nAnthropicのApplied AIチームが公開した「Claude Managed Agents」の解説記事から、本番運用のリアルな課題と、それを解決する実践的なアプローチをまとめました。\n\n最新のAI開発トレンドを追いかけたい方は、ぜひフォローして次の投稿をお待ちください。\n\n#AIエージェント #Claude #Anthropic #エンジニア #システム開発\n\nSource: https://x.com/ClaudeDevs/status/2066926619714007115"
+      }
+    },
+    {
+      "action": "publish_carousel_container",
+      "creation_id": "<carousel_container_id>"
+    }
+  ],
+  "result": {
+    "child_containers": [
+      {
+        "slide_index": 1,
+        "container_id": "18175583500371241",
+        "status": {}
+      },
+      {
+        "slide_index": 2,
+        "container_id": "18175583518371241",
+        "status": {}
+      },
+      {
+        "slide_index": 3,
+        "container_id": "18175583530371241",
+        "status": {
+          "status_code": "FINISHED",
+          "status": "Finished: Media has been uploaded and it is ready to be published.",
+          "id": "18175583530371241"
+        }
+      },
+      {
+        "slide_index": 4,
+        "container_id": "18175583827371241",
+        "status": {}
+      },
+      {
+        "slide_index": 5,
+        "container_id": "18175583860371241",
+        "status": {}
+      }
+    ],
+    "publish_container_id": "18175583872371241",
+    "publish_container_status": {
+      "status_code": "FINISHED",
+      "status": "Finished: Media has been uploaded and it is ready to be published.",
+      "id": "18175583872371241"
+    },
+    "published": {
+      "id": "18369082240231480"
+    },
+    "permalink": {
+      "permalink": "https://www.instagram.com/p/DZrZY7Om19N/",
+      "media_type": "CAROUSEL_ALBUM",
+      "media_product_type": "FEED",
+      "id": "18369082240231480"
+    }
+  }
+}
