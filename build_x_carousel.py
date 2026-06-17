@@ -1120,14 +1120,23 @@ def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
         return ""
 
     bracket_match = re.search(r"\[([^\[\]]+)\]", headline)
+    explicit_accent = (accent_word.strip().strip("[]") if accent_word else "") or (
+        bracket_match.group(1).strip() if bracket_match else ""
+    )
     target = (
-        choose_accent_word(accent_word.strip().strip("[]"))
-        or (choose_accent_word(bracket_match.group(1)) if bracket_match else "")
+        choose_accent_word(explicit_accent)
         or choose_accent_word(headline)
+        or explicit_accent
     )
     plain = headline.replace("[", "").replace("]", "")
     if not target:
         return plain
+    if not re.search(r"[A-Za-z0-9]", target):
+        start = plain.find(target)
+        if start < 0:
+            return plain
+        end = start + len(target)
+        return f"{plain[:start]}[{plain[start:end]}]{plain[end:]}"
     pattern = re.compile(rf"(?<![\w'])({re.escape(target)})(?![\w'])", re.I)
     updated, count = pattern.subn(r"[\1]", plain, count=1)
     return updated if count else plain
@@ -1144,6 +1153,102 @@ def title_from_post(post: dict[str, str]) -> tuple[str, str]:
 
 def with_bracketed_accent(headline: str, accent_word: str) -> str:
     return bracket_single_accent_word(headline, accent_word)
+
+
+def contains_japanese(text: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+
+
+def is_katakana_char(value: str) -> bool:
+    return bool(value and re.match(r"[\u30a0-\u30ffー]", value))
+
+
+def is_ascii_word_char(value: str) -> bool:
+    return bool(value and re.match(r"[A-Za-z0-9'._+-]", value))
+
+
+def japanese_phrase_chunks(text: str, max_chars: int = 12) -> list[str]:
+    """Create browser-safe Japanese line chunks without splitting terms mid-word."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    soft_suffixes = (
+        "から",
+        "まで",
+        "なら",
+        "では",
+        "には",
+        "にも",
+        "ので",
+        "ため",
+        "こと",
+        "です",
+        "ます",
+    )
+    soft_particles = set("でにをがはへともか")
+    for index, char in enumerate(text):
+        current += char
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if char in "、。！？!?":
+            chunks.append(current)
+            current = ""
+            continue
+        if len(current) >= 5 and (
+            current.endswith(soft_suffixes) or char in soft_particles
+        ):
+            if next_char and next_char not in "、。！？!?":
+                chunks.append(current)
+                current = ""
+                continue
+        if len(current) >= max_chars:
+            if (is_katakana_char(char) and is_katakana_char(next_char)) or (
+                is_ascii_word_char(char) and is_ascii_word_char(next_char)
+            ):
+                continue
+            chunks.append(current)
+            current = ""
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+TERM_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9'._+-]*|[\u3400-\u9fff々〆ヵヶ]{1,6}[\u30a0-\u30ffー]+|[\u30a0-\u30ffー]+"
+)
+
+
+def inline_text_markup(text: str) -> str:
+    pieces: list[str] = []
+    position = 0
+    for match in TERM_RE.finditer(text):
+        pieces.append(html.escape(text[position : match.start()]))
+        pieces.append(f'<span class="term">{html.escape(match.group(0))}</span>')
+        position = match.end()
+    pieces.append(html.escape(text[position:]))
+    return "".join(pieces)
+
+
+def phrase_text_markup(text: str, *, accent: str = "", max_chars: int = 12) -> str:
+    if not contains_japanese(text):
+        return inline_text_markup(text)
+    chunks = japanese_phrase_chunks(text, max_chars=max_chars)
+    accent_used = False
+    phrase_markup: list[str] = []
+    for chunk in chunks:
+        if accent and not accent_used and accent in chunk:
+            before, after = chunk.split(accent, 1)
+            inner = (
+                inline_text_markup(before)
+                + f'<span class="accent">{html.escape(accent)}</span>'
+                + inline_text_markup(after)
+            )
+            accent_used = True
+        else:
+            inner = inline_text_markup(chunk)
+        phrase_markup.append(f'<span class="jp-phrase">{inner}</span>')
+    return "".join(phrase_markup)
 
 
 def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
@@ -1192,6 +1297,52 @@ def normalize_instagram_caption(
     return caption
 
 
+def fallback_post_explanation(post: dict[str, str], index: int) -> dict[str, str]:
+    channel = load_channel()
+    if channel.language_name.lower().startswith("japanese"):
+        return {
+            "url": post.get("url", ""),
+            "headline": "元投稿の要点",
+            "body": "このあと、元投稿の画面をそのまま確認します。重要なポイントだけ先に押さえておきましょう。",
+        }
+    text = clean_post_text(post.get("text", ""))
+    first_sentence = re.split(r"(?<=[.!?])\s+", text.strip())[0] if text else ""
+    return {
+        "url": post.get("url", ""),
+        "headline": f"Source Note {index}",
+        "body": first_sentence or "Read the original source on the next slide.",
+    }
+
+
+def normalize_post_explanations(
+    analysis: dict[str, object] | None,
+    posts: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    raw_items = analysis.get("post_summaries") if isinstance(analysis, dict) else None
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    explanations: list[dict[str, str]] = []
+    for index, post in enumerate(posts, start=1):
+        raw = raw_items[index - 1] if index - 1 < len(raw_items) else None
+        raw = raw if isinstance(raw, dict) else {}
+        headline = string_value(raw.get("headline") or raw.get("title"))
+        body = string_value(raw.get("body") or raw.get("summary") or raw.get("text"))
+        url = string_value(raw.get("url")) or post.get("url", "")
+        if not headline or not body:
+            fallback = fallback_post_explanation(post, index)
+            headline = headline or fallback["headline"]
+            body = body or fallback["body"]
+            url = url or fallback["url"]
+        body = re.sub(r"\s+", " ", body.replace("\u2014", ",")).strip()
+        explanations.append(
+            {
+                "url": url,
+                "headline": headline.replace("\u2014", ","),
+                "body": body,
+            }
+        )
+    return explanations
+
+
 def manual_cover_copy(
     *,
     kicker: str | None,
@@ -1212,16 +1363,12 @@ def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
     headline = re.sub(r"\s+", " ", bracket_single_accent_word(headline)).strip()
     match = re.search(r"\[([^\[\]]+)\]", headline)
     if not match:
-        return html.escape(headline), headline, False
+        return phrase_text_markup(headline), headline, False
     before = headline[: match.start()].replace("[", "").replace("]", "")
     accent = match.group(1).strip()
     after = headline[match.end() :].replace("[", "").replace("]", "")
     plain = re.sub(r"\s+", " ", f"{before}{accent}{after}").strip()
-    markup = (
-        f"{html.escape(before)}"
-        f"<span class=\"accent\">{html.escape(accent)}</span>"
-        f"{html.escape(after)}"
-    )
+    markup = phrase_text_markup(plain, accent=accent, max_chars=11)
     return markup, plain, True
 
 
@@ -1235,6 +1382,16 @@ def fallback_headline_markup(post: dict[str, str], title: str | None) -> tuple[s
 
 
 def title_font_size(text: str) -> int:
+    if contains_japanese(text):
+        if len(text) > 42:
+            return 56
+        if len(text) > 34:
+            return 62
+        if len(text) > 26:
+            return 68
+        if len(text) > 18:
+            return 76
+        return 84
     if len(text) > 110:
         return 58
     if len(text) > 90:
@@ -1307,6 +1464,13 @@ Return JSON only with this exact shape:
     "swipe_line": "short {lang} swipe prompt"
   }},
   "instagram_caption": "short {lang} Instagram caption with one CTA, clean hashtags, and source attribution",
+  "post_summaries": [
+    {{
+      "url": "source post URL copied exactly",
+      "headline": "short {lang} explanation-slide headline",
+      "body": "clear, concise {lang} explanation of this post before showing the original source"
+    }}
+  ],
   "companies": [
     {{"name": "Company name", "ceo_name": "Current CEO name"}}
   ]
@@ -1327,6 +1491,12 @@ Rules:
   3) one CTA only,
   4) clean hashtags and Source: {posts[0].get("url", "")}
 - Keep instagram_caption under 900 characters.
+- post_summaries must include exactly one item for each source post, in the same
+  order as the input. Copy each source URL exactly from the input.
+- Each post_summaries headline/body pair becomes the translated explanation slide
+  before the original screenshot or video. Keep it clear, concise, and useful.
+- For Japanese, keep post_summaries.body to one or two short sentences. Do not
+  paste a literal line-by-line translation; explain what the viewer needs to know.
 - Avoid generic hype phrases like "completely change," "game-changing,"
   "ultimate guide," "must-read," "let us know in the comments below," and
   "stop scrolling."
@@ -1632,6 +1802,7 @@ def build_title_enrichment(
         analysis,
         source_url=posts[0].get("url", ""),
     )
+    post_explanations = normalize_post_explanations(analysis, posts)
     cover_override = manual_cover_copy(
         kicker=cover_kicker,
         headline=cover_headline,
@@ -1810,6 +1981,7 @@ def build_title_enrichment(
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
         "cover_copy": cover_copy,
+        "post_explanations": post_explanations,
         "instagram_caption": instagram_caption,
         "brand_voice_doc": load_channel().voice_doc_rel,
         "google_enabled": bool(api_key),
@@ -1916,7 +2088,10 @@ body {{ margin: 0; background: #555; font-family: 'Archivo', sans-serif; }}
 def dot_markup(active: int, count: int, swipe_line: str = "") -> str:
     if active >= count:
         return ""
-    text = string_value(swipe_line) or "swipe for more"
+    text = string_value(swipe_line)
+    if not text and load_channel().language_name.lower().startswith("japanese"):
+        text = "スワイプで続きへ"
+    text = text or "swipe for more"
     return f"<span>{html.escape(text)}</span>"
 
 
@@ -2064,10 +2239,19 @@ def render_title_slide(
   letter-spacing: 0;
   line-height: 1.03;
   color: var(--fg);
+  line-break: strict;
+  overflow-wrap: normal;
   text-wrap: balance;
+  word-break: normal;
 }}
 .headline .accent {{
   color: var(--primary);
+}}
+.headline .jp-phrase {{
+  display: inline-block;
+}}
+.headline .term {{
+  white-space: nowrap;
 }}
 .dots {{
   bottom: 116px;
@@ -2081,6 +2265,139 @@ def render_title_slide(
     <h1 class="headline">{headline_markup}</h1>
   </div>
   <div class="dots">{dot_markup(1, count, swipe_line)}</div>
+</div>
+</body></html>"""
+    html_path.write_text(html_text)
+    render_html_slide(html_path, out_path)
+    return out_path
+
+
+def post_explanation(
+    title_context: dict[str, object],
+    post_index: int,
+    post: dict[str, str],
+) -> dict[str, str]:
+    raw_items = title_context.get("post_explanations")
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    raw = raw_items[post_index] if post_index < len(raw_items) else None
+    if isinstance(raw, dict):
+        headline = string_value(raw.get("headline") or raw.get("title"))
+        body = string_value(raw.get("body") or raw.get("summary") or raw.get("text"))
+        if headline and body:
+            return {
+                "headline": headline,
+                "body": body,
+                "url": string_value(raw.get("url")) or post.get("url", ""),
+            }
+    return fallback_post_explanation(post, post_index + 1)
+
+
+def render_explainer_slide(
+    post: dict[str, str],
+    explanation: dict[str, str],
+    out_path: Path,
+    active: int,
+    count: int,
+) -> Path:
+    html_path = out_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    headline = explanation.get("headline", "元投稿の要点")
+    body = explanation.get("body", "")
+    headline_markup = phrase_text_markup(headline, max_chars=10)
+    body_markup = "".join(
+        f"<p>{phrase_text_markup(paragraph, max_chars=17)}</p>"
+        for paragraph in re.split(r"\n{2,}", body)
+        if paragraph.strip()
+    )
+    source = html.escape(f"{post.get('author', 'Source')} {post.get('handle', '')}".strip())
+    html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+{shared_css()}
+.explainer {{
+  position: absolute;
+  inset: 0;
+  padding: 116px 72px 132px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}}
+.explainer-kicker {{
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 54px;
+  color: var(--primary);
+}}
+.explainer-kicker::before,
+.explainer-kicker::after {{
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--rule);
+}}
+.explainer-kicker span {{
+  font-size: 22px;
+  font-weight: 820;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}}
+.explainer-title {{
+  font-size: 74px;
+  font-weight: 860;
+  letter-spacing: 0;
+  line-height: 1.07;
+  margin-bottom: 42px;
+  color: var(--fg);
+  line-break: strict;
+  overflow-wrap: normal;
+  text-wrap: balance;
+  word-break: normal;
+}}
+.explainer-body {{
+  max-width: 924px;
+  color: var(--fg);
+  font-size: 43px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.42;
+}}
+.explainer-body p + p {{
+  margin-top: 28px;
+}}
+.jp-phrase {{
+  display: inline-block;
+}}
+.term {{
+  white-space: nowrap;
+}}
+.source-note {{
+  position: absolute;
+  left: 72px;
+  right: 72px;
+  bottom: 154px;
+  color: var(--primary);
+  font-size: 22px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}}
+.dots {{
+  bottom: 78px;
+}}
+</style></head>
+<body>
+<div class="slide">
+  <section class="explainer">
+    <div class="explainer-kicker"><span>要点</span></div>
+    <h1 class="explainer-title">{headline_markup}</h1>
+    <div class="explainer-body">{body_markup}</div>
+  </section>
+  <div class="source-note">{source}</div>
+  <div class="dots">{dot_markup(active, count)}</div>
 </div>
 </body></html>"""
     html_path.write_text(html_text)
@@ -2185,6 +2502,7 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
     return {
         "topic": context.get("topic", ""),
         "cover_copy": context.get("cover_copy", {}),
+        "post_explanations": context.get("post_explanations", []),
         "instagram_caption": context.get("instagram_caption", ""),
         "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
@@ -2262,7 +2580,7 @@ def build_x_carousel(
         if embed_post and embed_post.get("profile_image_url"):
             posts[0]["profile_image_url"] = embed_post["profile_image_url"]
 
-    total = len(posts) + 1
+    total = 1 if first_page_only else 1 + (len(posts) * 2)
     slides: list[dict[str, object]] = []
     title_path = out_dir / "slide_01.png"
     title_context = build_title_enrichment(
@@ -2281,7 +2599,8 @@ def build_x_carousel(
     else:
         posts_to_render = posts
 
-    for idx, post in enumerate(posts_to_render, start=2):
+    slide_index = 2
+    for post_index, post in enumerate(posts_to_render):
         source_url = post["url"]
         metadata = fetch_metadata(source_url, cookies_from_browser)
         if metadata:
@@ -2291,10 +2610,25 @@ def build_x_carousel(
             if embed_post:
                 post = {**post, **embed_post}
 
+        explanation = post_explanation(title_context, post_index, post)
+        explainer_path = out_dir / f"slide_{slide_index:02d}.png"
+        render_explainer_slide(post, explanation, explainer_path, slide_index, total)
+        slides.append(
+            {
+                "index": slide_index,
+                "type": "post-explanation",
+                "path": str(explainer_path),
+                "source_url": source_url,
+                "headline": explanation.get("headline", ""),
+                "body": explanation.get("body", ""),
+            }
+        )
+        slide_index += 1
+
         if metadata_has_video(metadata):
-            out_path = out_dir / f"slide_{idx:02d}.mp4"
-            frame_path = out_dir / f"slide_{idx:02d}_frame.png"
-            poster_path = out_dir / f"slide_{idx:02d}_poster.png"
+            out_path = out_dir / f"slide_{slide_index:02d}.mp4"
+            frame_path = out_dir / f"slide_{slide_index:02d}_frame.png"
+            poster_path = out_dir / f"slide_{slide_index:02d}_poster.png"
             build_video_slide(
                 source=source_url,
                 tweet_embed_file=None,
@@ -2304,7 +2638,7 @@ def build_x_carousel(
                 caption="",
                 kicker="",
                 source_label=post.get("handle", ""),
-                active=idx,
+                active=slide_index,
                 count=total,
                 fit="cover",
                 fps=30,
@@ -2318,7 +2652,7 @@ def build_x_carousel(
             )
             slides.append(
                 {
-                    "index": idx,
+                    "index": slide_index,
                     "type": "post-video",
                     "path": str(out_path),
                     "poster": str(poster_path),
@@ -2329,11 +2663,12 @@ def build_x_carousel(
             status_id = post["id"] or extract_status_id(source_url)
             if not status_id:
                 raise SystemExit(f"could not find status id for {source_url}")
-            embed_path = out_dir / f"source_post_{idx:02d}.png"
+            embed_path = out_dir / f"source_post_{slide_index:02d}.png"
             capture_embed(status_id, embed_path)
-            out_path = out_dir / f"slide_{idx:02d}.png"
-            render_post_slide(post, embed_path, out_path, idx, total)
-            slides.append({"index": idx, "type": "post", "path": str(out_path), "source_url": source_url})
+            out_path = out_dir / f"slide_{slide_index:02d}.png"
+            render_post_slide(post, embed_path, out_path, slide_index, total)
+            slides.append({"index": slide_index, "type": "post", "path": str(out_path), "source_url": source_url})
+        slide_index += 1
 
     manifest = {
         "source_url": url,

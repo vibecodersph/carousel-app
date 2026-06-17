@@ -1,0 +1,24 @@
+{
+  "source": "https://x.com/ClaudeDevs/status/2066926619714007115",
+  "source_video": "/Users/aiagent/GitHub/carousel-app/assets/video_sources/twitter_2066920981512540160.mp4",
+  "frame": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_02_frame.png",
+  "video": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_02.mp4",
+  "poster": "/Users/aiagent/GitHub/carousel-app/out/aibrief_jp_claudedevs_2066926619714007115/slide_02_poster.png",
+  "layout": "post-video",
+  "post": {
+    "author": "ClaudeDevs",
+    "handle": "@ClaudeDevs",
+    "text": "How do teams get agents into production?\n\nNew blog post from our Applied AI team on Claude Managed Agents and the challenges it solves (credentials, sandboxing, observability, & more) ...",
+    "date_line": "Jun 16, 2026 \u00b7 245.3K views",
+    "metrics": "2.5K likes \u00b7 162 reposts \u00b7 235 replies",
+    "initial": "C"
+  },
+  "size": "1080x1350",
+  "media_box": {
+    "x": 75,
+    "y": 600,
+    "width": 930,
+    "height": 523,
+    "fit": "cover"
+  }
+}
