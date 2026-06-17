@@ -1,0 +1,96 @@
+{
+  "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115",
+  "thread_source": "xai",
+  "thread_post_count": 2,
+  "slide_count": 5,
+  "rendered_slide_count": 5,
+  "first_page_only": false,
+  "account_name": "vibecodersph",
+  "title_context": {
+    "topic": "Claude Managed Agents for AI Builders",
+    "cover_copy": {
+      "kicker": "AI Agents",
+      "headline": "Paano mag-deploy ng AI agents nang hindi [sumasabog]?",
+      "swipe_line": "Swipe para malaman kung paano"
+    },
+    "post_explanations": [
+      {
+        "url": "https://x.com/ClaudeDevs/status/2066926619714007115",
+        "headline": "Ang Hamon sa Production",
+        "body": "Ipinaliwanag ng Applied AI team ng Claude kung paano tinutulungan ng Claude Managed Agents ang mga developers sa mga isyu tulad ng credentials, sandboxing, at observability."
+      },
+      {
+        "url": "https://x.com/ClaudeDevs/status/2066926620989169932",
+        "headline": "Mga Case Study at Tips",
+        "body": "Nagbahagi rin sila ng mga totoong karanasan ng mga team na gumagamit nito, kasama ang mga praktikal na tips para makapagsimula ka na rin."
+      }
+    ],
+    "instagram_caption": "Sakit sa ulo talaga kapag dinala na ang AI agents sa production. Daming kailangang asikasuhin mula sa sandboxing hanggang sa credentials at observability.\n\nMabuti na lang at nag-share ang Applied AI team ng Claude tungkol sa Claude Managed Agents para mas mapadali ang deployment process natin.\n\nI-check ang link sa ating bio para sa buong detalye.\n\n#AIAgents #ClaudeAI #Anthropic #SoftwareEngineering #VibeCodersPH\n\nSource: https://x.com/ClaudeDevs/status/2066926619714007115",
+    "brand_voice_doc": "brand/VIBECODERS_IG_VOICE.md",
+    "provider": "gemini",
+    "image_provider": "openai",
+    "google_enabled": true,
+    "gemini_text_model": "gemini-3.5-flash",
+    "openai_image_model": "gpt-image-2",
+    "openai_image_size": "2048x1152",
+    "generated_image_prompt": "Horizontal editorial cover art for an Instagram carousel about 'Claude Managed Agents for AI Builders'. Cream/off-white paper background (#F4F2EC). Dark ink (#16140F) and rust/terracotta accent color (#C0552E). Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold. The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI. Add a tasteful editorial portrait element of the CEO: Dario Amodei of Anthropic. Company context: Anthropic. Do not show logos or brand marks.\n\nFormat and style:\n- 16:9 horizontal composition, 2048x1152.\n- Make it feel like the output of generate_cover.py, not a corporate headshot.\n- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.\n- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.\n- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.\n- Do not place any graphic or symbol that resembles text.\n- Carousel typography will sit outside the image, not over it.",
+    "topic_entity": null,
+    "topic_image_path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/title_assets/openai-topic-061f843e74.png",
+    "companies": [
+      {
+        "name": "Anthropic",
+        "query": "Anthropic",
+        "ceo_name": "Dario Amodei",
+        "provider": "gemini"
+      }
+    ],
+    "ceos": [
+      {
+        "name": "Dario Amodei",
+        "description": "CEO",
+        "query": "Dario Amodei Anthropic",
+        "company": "Anthropic",
+        "provider": "gemini"
+      }
+    ],
+    "source_people": []
+  },
+  "instagram_caption": "Sakit sa ulo talaga kapag dinala na ang AI agents sa production. Daming kailangang asikasuhin mula sa sandboxing hanggang sa credentials at observability.\n\nMabuti na lang at nag-share ang Applied AI team ng Claude tungkol sa Claude Managed Agents para mas mapadali ang deployment process natin.\n\nI-check ang link sa ating bio para sa buong detalye.\n\n#AIAgents #ClaudeAI #Anthropic #SoftwareEngineering #VibeCodersPH\n\nSource: https://x.com/ClaudeDevs/status/2066926619714007115",
+  "slides": [
+    {
+      "index": 1,
+      "type": "title",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_01.png",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115"
+    },
+    {
+      "index": 2,
+      "type": "post-explanation",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_02.png",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115",
+      "headline": "Ang Hamon sa Production",
+      "body": "Ipinaliwanag ng Applied AI team ng Claude kung paano tinutulungan ng Claude Managed Agents ang mga developers sa mga isyu tulad ng credentials, sandboxing, at observability."
+    },
+    {
+      "index": 3,
+      "type": "post-video",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_03.mp4",
+      "poster": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_03_poster.png",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926619714007115"
+    },
+    {
+      "index": 4,
+      "type": "post-explanation",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_04.png",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926620989169932",
+      "headline": "Mga Case Study at Tips",
+      "body": "Nagbahagi rin sila ng mga totoong karanasan ng mga team na gumagamit nito, kasama ang mga praktikal na tips para makapagsimula ka na rin."
+    },
+    {
+      "index": 5,
+      "type": "post",
+      "path": "/Users/aiagent/GitHub/carousel-app/out/vibecodersph_claudedevs_2066926619714007115/slide_05.png",
+      "source_url": "https://x.com/ClaudeDevs/status/2066926620989169932"
+    }
+  ]
+}

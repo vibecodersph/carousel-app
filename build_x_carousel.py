@@ -1232,6 +1232,13 @@ def inline_text_markup(text: str) -> str:
 
 def phrase_text_markup(text: str, *, accent: str = "", max_chars: int = 12) -> str:
     if not contains_japanese(text):
+        if accent and accent in text:
+            before, after = text.split(accent, 1)
+            return (
+                inline_text_markup(before)
+                + f'<span class="accent">{html.escape(accent)}</span>'
+                + inline_text_markup(after)
+            )
         return inline_text_markup(text)
     chunks = japanese_phrase_chunks(text, max_chars=max_chars)
     accent_used = False
@@ -1312,6 +1319,13 @@ def fallback_post_explanation(post: dict[str, str], index: int) -> dict[str, str
         "headline": f"Source Note {index}",
         "body": first_sentence or "Read the original source on the next slide.",
     }
+
+
+def explainer_kicker_label() -> str:
+    channel = load_channel()
+    if channel.language_name.lower().startswith("japanese"):
+        return "要点"
+    return "KEY POINT"
 
 
 def normalize_post_explanations(
@@ -2301,8 +2315,11 @@ def render_explainer_slide(
 ) -> Path:
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    headline = explanation.get("headline", "元投稿の要点")
+    channel = load_channel()
+    default_headline = "元投稿の要点" if channel.language_name.lower().startswith("japanese") else "Source Note"
+    headline = explanation.get("headline", default_headline)
     body = explanation.get("body", "")
+    kicker_label = html.escape(explainer_kicker_label())
     headline_markup = phrase_text_markup(headline, max_chars=10)
     body_markup = "".join(
         f"<p>{phrase_text_markup(paragraph, max_chars=17)}</p>"
@@ -2392,7 +2409,7 @@ def render_explainer_slide(
 <body>
 <div class="slide">
   <section class="explainer">
-    <div class="explainer-kicker"><span>要点</span></div>
+    <div class="explainer-kicker"><span>{kicker_label}</span></div>
     <h1 class="explainer-title">{headline_markup}</h1>
     <div class="explainer-body">{body_markup}</div>
   </section>
