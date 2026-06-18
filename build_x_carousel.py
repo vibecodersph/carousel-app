@@ -48,6 +48,7 @@ IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
 # Last-resort account label. The active channel's account_name normally supplies this.
 DEFAULT_ACCOUNT_NAME = "vibecodersph"
+DEFAULT_MAX_CAROUSEL_ITEMS = 20
 PERSON_SOURCE_HANDLES = {
     "sama",
     "karpathy",
@@ -2200,6 +2201,158 @@ def dot_markup(active: int, count: int, swipe_line: str = "") -> str:
     return f"<span>{html.escape(text)}</span>"
 
 
+def carousel_item_limit() -> int:
+    raw = os.environ.get("INSTAGRAM_MAX_CAROUSEL_ITEMS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CAROUSEL_ITEMS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CAROUSEL_ITEMS
+    return max(2, value)
+
+
+def carousel_cta_copy() -> dict[str, str]:
+    channel = load_channel()
+    handle = channel.handle.strip() or f"@{channel.account_name}"
+    if channel.language_name.lower().startswith("japanese"):
+        return {
+            "kicker": "FOLLOW",
+            "headline": "AIニュースを深く追う",
+            "body": "一次情報ベースで、AIと開発の重要ニュースを整理します。",
+            "action": f"{handle}をフォロー",
+        }
+    return {
+        "kicker": "FOLLOW FOR MORE",
+        "headline": "Na-save mo na ba?",
+        "body": f"Follow {handle} for source-first AI updates, builder context, and tools worth trying.",
+        "action": "Follow + Save",
+    }
+
+
+def render_cta_slide(
+    out_path: Path,
+    active: int,
+    count: int,
+    cta: dict[str, str] | None = None,
+) -> Path:
+    cta = cta or carousel_cta_copy()
+    channel = load_channel()
+    handle = html.escape(channel.handle.strip() or f"@{channel.account_name}")
+    kicker = html.escape(cta.get("kicker") or "FOLLOW")
+    headline_markup = phrase_text_markup(cta.get("headline") or "Follow for more", max_chars=11)
+    body_markup = phrase_text_markup(cta.get("body") or "", max_chars=17)
+    action = html.escape(cta.get("action") or "Follow + Save")
+    html_path = out_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+{shared_css()}
+.cta-progress {{
+  position: absolute;
+  top: 76px;
+  right: 72px;
+  font-size: 23px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  color: rgba(20, 18, 14, 0.42);
+}}
+.cta-shell {{
+  position: absolute;
+  inset: 112px 72px 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}}
+.cta-kicker {{
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 54px;
+  color: var(--primary);
+}}
+.cta-kicker::before,
+.cta-kicker::after {{
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--rule);
+}}
+.cta-kicker span {{
+  font-size: 24px;
+  font-weight: 840;
+  letter-spacing: 0.18em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}}
+.cta-title {{
+  max-width: 900px;
+  font-size: 96px;
+  line-height: 0.98;
+  font-weight: 880;
+  letter-spacing: 0;
+  color: var(--fg);
+  text-wrap: balance;
+}}
+.cta-title .jp-phrase,
+.cta-body .jp-phrase {{
+  display: inline-block;
+}}
+.cta-title .term,
+.cta-body .term {{
+  white-space: nowrap;
+}}
+.cta-body {{
+  max-width: 850px;
+  margin-top: 42px;
+  color: var(--ink-soft);
+  font-size: 39px;
+  line-height: 1.28;
+  font-weight: 640;
+}}
+.cta-action {{
+  align-self: flex-start;
+  margin-top: 54px;
+  padding: 18px 24px 17px;
+  border: 3px solid var(--primary);
+  color: var(--primary);
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 860;
+  letter-spacing: 0;
+}}
+.cta-handle {{
+  position: absolute;
+  left: 72px;
+  right: 72px;
+  bottom: 86px;
+  color: var(--primary);
+  font-size: 24px;
+  font-weight: 840;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}}
+</style></head>
+<body>
+<div class="slide">
+  <div class="cta-progress">{active:02d} / {count:02d}</div>
+  <section class="cta-shell">
+    <div class="cta-kicker"><span>{kicker}</span></div>
+    <h1 class="cta-title">{headline_markup}</h1>
+    <div class="cta-body">{body_markup}</div>
+    <div class="cta-action">{action}</div>
+  </section>
+  <div class="cta-handle">{handle}</div>
+</div>
+</body></html>"""
+    html_path.write_text(html_text)
+    render_html_slide(html_path, out_path)
+    return out_path
+
+
 def render_title_slide(
     post: dict[str, str],
     out_path: Path,
@@ -2652,6 +2805,7 @@ def build_x_carousel(
     account_name: str,
     no_thread: bool,
     first_page_only: bool,
+    skip_first_explainer: bool,
     cookies_from_browser: str | None,
     thread_source: str = "auto",
 ) -> Path:
@@ -2688,7 +2842,16 @@ def build_x_carousel(
         if embed_post and embed_post.get("profile_image_url"):
             posts[0]["profile_image_url"] = embed_post["profile_image_url"]
 
-    total = 1 if first_page_only else 1 + (len(posts) * 2)
+    skipped_explainer_count = 1 if skip_first_explainer and not first_page_only and posts else 0
+    content_total = 1 if first_page_only else 1 + (len(posts) * 2) - skipped_explainer_count
+    include_cta = not first_page_only
+    total = content_total + (1 if include_cta else 0)
+    if total > carousel_item_limit():
+        print(
+            f"[x] warning: rendering {total} slides; configured Instagram item limit is "
+            f"{carousel_item_limit()}",
+            file=sys.stderr,
+        )
     slides: list[dict[str, object]] = []
     title_path = out_dir / "slide_01.png"
     title_context = build_title_enrichment(
@@ -2718,20 +2881,21 @@ def build_x_carousel(
             if embed_post:
                 post = {**post, **embed_post}
 
-        explanation = post_explanation(title_context, post_index, post)
-        explainer_path = out_dir / f"slide_{slide_index:02d}.png"
-        render_explainer_slide(post, explanation, explainer_path, slide_index, total)
-        slides.append(
-            {
-                "index": slide_index,
-                "type": "post-explanation",
-                "path": str(explainer_path),
-                "source_url": source_url,
-                "headline": explanation.get("headline", ""),
-                "body": explanation.get("body", ""),
-            }
-        )
-        slide_index += 1
+        if not (skip_first_explainer and post_index == 0):
+            explanation = post_explanation(title_context, post_index, post)
+            explainer_path = out_dir / f"slide_{slide_index:02d}.png"
+            render_explainer_slide(post, explanation, explainer_path, slide_index, total)
+            slides.append(
+                {
+                    "index": slide_index,
+                    "type": "post-explanation",
+                    "path": str(explainer_path),
+                    "source_url": source_url,
+                    "headline": explanation.get("headline", ""),
+                    "body": explanation.get("body", ""),
+                }
+            )
+            slide_index += 1
 
         if metadata_has_video(metadata):
             out_path = out_dir / f"slide_{slide_index:02d}.mp4"
@@ -2777,6 +2941,22 @@ def build_x_carousel(
             render_post_slide(post, embed_path, out_path, slide_index, total)
             slides.append({"index": slide_index, "type": "post", "path": str(out_path), "source_url": source_url})
         slide_index += 1
+
+    if include_cta:
+        cta = carousel_cta_copy()
+        cta_path = out_dir / f"slide_{slide_index:02d}.png"
+        render_cta_slide(cta_path, slide_index, total, cta)
+        slides.append(
+            {
+                "index": slide_index,
+                "type": "cta",
+                "path": str(cta_path),
+                "source_url": url,
+                "headline": cta["headline"],
+                "body": cta["body"],
+                "action": cta["action"],
+            }
+        )
 
     manifest = {
         "channel_id": load_channel().id,
@@ -2834,6 +3014,11 @@ def main() -> int:
         help="Render only the title/cover page after metadata is fetched",
     )
     ap.add_argument(
+        "--skip-first-explainer",
+        action="store_true",
+        help="Skip the first post explanation card when you want a shorter thread carousel",
+    )
+    ap.add_argument(
         "--thread-source",
         choices=("auto", "xai", "playwright"),
         default=os.environ.get("X_THREAD_SOURCE", "auto"),
@@ -2873,6 +3058,7 @@ def main() -> int:
         account_name=account_name,
         no_thread=args.no_thread,
         first_page_only=args.first_page_only,
+        skip_first_explainer=args.skip_first_explainer,
         cookies_from_browser=args.cookies_from_browser,
         thread_source=args.thread_source,
     )

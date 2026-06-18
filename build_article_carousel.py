@@ -32,6 +32,7 @@ from channel import load_channel
 from build_x_carousel import (
     DEFAULT_ACCOUNT_NAME,
     build_title_enrichment,
+    carousel_cta_copy,
     dot_markup,
     download_image,
     extract_gemini_text,
@@ -41,6 +42,7 @@ from build_x_carousel import (
     load_env_file,
     parse_json_object,
     render_html_slide,
+    render_cta_slide,
     render_title_slide,
     shared_css,
     string_value,
@@ -1491,7 +1493,8 @@ def render_carousel_from_article(
     else:
         pages_to_render = pages
 
-    total = len(pages) + 1
+    include_cta = not first_page_only
+    total = (1 if first_page_only else len(pages) + 1 + (1 if include_cta else 0))
     post = article_as_post(article)
     title_text = title or article.title
     if no_title_enrichment:
@@ -1525,6 +1528,23 @@ def render_carousel_from_article(
         slide_path = out_dir / f"slide_{slide_index:02d}.png"
         render_article_slide(article, page, slide_path, slide_index, total, badge=source_badge)
         slides.append(page_manifest(page, slide_path, article, slide_index))
+
+    if include_cta:
+        cta = carousel_cta_copy()
+        cta_index = len(slides) + 1
+        cta_path = out_dir / f"slide_{cta_index:02d}.png"
+        render_cta_slide(cta_path, cta_index, total, cta)
+        slides.append(
+            {
+                "index": cta_index,
+                "type": "cta",
+                "path": str(cta_path),
+                "source_url": article.url,
+                "headline": cta["headline"],
+                "body": cta["body"],
+                "action": cta["action"],
+            }
+        )
 
     article_report_path = out_dir / "source_article.json"
     article_report_path.write_text(

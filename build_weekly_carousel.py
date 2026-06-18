@@ -21,8 +21,8 @@ last ``--days`` days. Cover copy and per-story headlines/summaries are written
 in the channel's language by Gemini when GOOGLE_API_KEY is set, with a local
 fallback otherwise.
 
-Page cap: Instagram carousels top out at 10 slides. A roundup spends one on the
-cover and one on the outro, so stories are capped at 8 (default 7).
+Page cap: Instagram carousels support up to 20 slides. A roundup spends one on
+the cover and one on the outro, so stories are capped at 18 (default 7).
 """
 from __future__ import annotations
 
@@ -62,14 +62,20 @@ from build_x_carousel import (
     string_value,
 )
 from channel import Channel, load_channel
+from weekly_verifier import (
+    SlideRecord,
+    assert_no_blocked,
+    verify_records,
+    write_run_manifest,
+)
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OUT = ROOT / "out" / "weekly_carousel"
 DEFAULT_QUEUE = ROOT / "out" / "automation" / "candidates.json"
 
-# Instagram caps a carousel at 10 slides. A roundup reserves one for the cover
-# and one for the outro, so at most 8 stories fit; 7 reads best by default.
-MAX_TOTAL_SLIDES = 10
+# Instagram carousels support up to 20 slides. A roundup reserves one for the
+# cover and one for the outro, so at most 18 stories fit; 7 reads best by default.
+MAX_TOTAL_SLIDES = 20
 MAX_STORIES = MAX_TOTAL_SLIDES - 2  # cover + outro
 DEFAULT_STORIES = 7
 MIN_STORIES = 3
@@ -87,6 +93,13 @@ class WeeklyStory:
     score: int
     source_type: str
     reasons: list[str] = field(default_factory=list)
+    source_text: str = ""
+    source_name: str = ""
+    source_handle: str = ""
+    category: str = ""
+    hero_metric: str = ""
+    hero_label: str = ""
+    copy_locked: bool = False
     # Channel-voice copy, filled in by curate_copy:
     kicker: str = ""
     headline: str = ""
@@ -127,6 +140,9 @@ def _story_from_candidate(candidate: dict[str, Any]) -> WeeklyStory | None:
         score=int(candidate.get("score") or 0),
         source_type=source_type,
         reasons=[str(r) for r in (candidate.get("score_reasons") or []) if r],
+        source_text=text,
+        source_name=author,
+        source_handle=handle,
     )
 
 
@@ -146,21 +162,33 @@ def gather_top_stories(
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
-            text = clean_article_text(string_value(item.get("text") or item.get("title")))
-            url = string_value(item.get("url"))
+            text = clean_article_text(
+                string_value(item.get("text") or item.get("title") or item.get("source_text") or item.get("body"))
+            )
+            url = string_value(item.get("source_url") or item.get("url"))
             if not text or not url:
                 continue
             raw.append(
                 WeeklyStory(
                     rank=0,
-                    author=string_value(item.get("author")),
-                    handle=string_value(item.get("handle")),
-                    url=url,
+                    author=string_value(item.get("author") or item.get("source_name")),
+                    handle=string_value(item.get("handle") or item.get("source_handle")),
+                    url=string_value(item.get("source_url")) or url,
                     text=text,
                     date=string_value(item.get("date")),
                     score=int(item.get("score") or 0),
                     source_type=string_value(item.get("source_type")) or "x",
                     reasons=[str(r) for r in (item.get("reasons") or []) if r],
+                    source_text=string_value(item.get("source_text")) or text,
+                    source_name=string_value(item.get("source_name") or item.get("author")),
+                    source_handle=string_value(item.get("source_handle") or item.get("handle")),
+                    category=string_value(item.get("category") or item.get("kicker")).upper(),
+                    hero_metric=string_value(item.get("hero_metric")),
+                    hero_label=string_value(item.get("hero_label")),
+                    kicker=string_value(item.get("kicker") or item.get("category")).upper(),
+                    headline=string_value(item.get("headline")),
+                    summary=string_value(item.get("summary") or item.get("body")),
+                    copy_locked=bool(item.get("headline") and (item.get("summary") or item.get("body"))),
                 )
             )
     else:
@@ -243,12 +271,12 @@ def localized_labels(channel: Channel, *, start: datetime, end: datetime, count:
             "cover_headline_fallback": "今週のAI、[まとめ]ました。",
             "swipe_fallback": "スワイプして続きを",
             "source_prefix": "出典",
-            "outro_headline": "保存しましたか？",
-            "outro_body": "毎週のAIニュースまとめをフォローしよう。",
-            "outro_cta": "フォロー & 保存",
+            "outro_headline": "AIニュースを毎週、深く",
+            "outro_body": "企業AIの重要ニュースだけを、一次情報ベースで整理します。",
+            "outro_cta": "フォローする",
         }
     months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
-    week_range = f"{months[start.month - 1]} {start.day} – {months[end.month - 1]} {end.day}, {end.year}"
+    week_range = f"{months[start.month - 1]} {start.day} - {months[end.month - 1]} {end.day}, {end.year}"
     return {
         "section_label": "AI NEWS THIS WEEK",
         "week_range": week_range,
@@ -300,6 +328,9 @@ Rules:
 - headline: at most 9 words, concrete, lead with the company or product, no ending period.
 - summary: one sentence, at most 24 words, factual, active voice, no hype words.
 - Stay faithful to each story's text; never overstate or fabricate numbers.
+- Keep load-bearing product names, model names, dates, and amounts from the source text.
+- Do not change entity type: a model must not become a company, and access suspension must not become company closure.
+- Any number or enumerated claim in the summary must appear in the story text.
 - No markdown, no emojis, no quotation marks around values, no extra keys.
 
 {channel.brand_name} voice guide:
@@ -353,6 +384,12 @@ def local_story_copy(story: WeeklyStory) -> tuple[str, str, str]:
 
 def curate_copy(channel: Channel, stories: list[WeeklyStory]) -> tuple[dict[str, str], str]:
     """Fill each story's channel-voice copy; return (cover_copy, backend)."""
+    if all(story.copy_locked for story in stories):
+        for story in stories:
+            story.kicker = (story.kicker or story.category or kicker_from_reasons(story.reasons)).upper()
+            story.category = story.category or story.kicker
+        return {}, "curated"
+
     parsed = gemini_weekly_copy(channel, stories)
     backend = "local"
     cover_copy: dict[str, str] = {}
@@ -375,6 +412,10 @@ def curate_copy(channel: Channel, stories: list[WeeklyStory]) -> tuple[dict[str,
             backend = "gemini"
 
     for story in stories:
+        if story.copy_locked:
+            story.kicker = (story.kicker or story.category or kicker_from_reasons(story.reasons)).upper()
+            story.category = story.category or story.kicker
+            continue
         entry = by_rank.get(story.rank)
         if entry:
             story.kicker = string_value(entry.get("kicker"))[:24].upper()
@@ -386,6 +427,7 @@ def curate_copy(channel: Channel, stories: list[WeeklyStory]) -> tuple[dict[str,
             story.headline = story.headline or h
             story.summary = story.summary or s
         story.kicker = story.kicker or kicker_from_reasons(story.reasons)
+        story.category = story.category or story.kicker
     return cover_copy, backend
 
 
@@ -447,6 +489,24 @@ def _write_slide(html_text: str, out_path: Path) -> Path:
     html_path.write_text(html_text)
     render_html_slide(html_path, out_path)
     return out_path
+
+
+def category_icon(category: str) -> str:
+    stroke = 'stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"'
+    icons = {
+        "SECURITY": f'<svg viewBox="0 0 24 24" aria-hidden="true"><path {stroke} d="M12 3l7 3v5c0 4.5-2.8 8-7 10-4.2-2-7-5.5-7-10V6l7-3z"/><path {stroke} d="M9 12l2 2 4-5"/></svg>',
+        "LAUNCH": f'<svg viewBox="0 0 24 24" aria-hidden="true"><path {stroke} d="M5 19l4-1 9-9 1-4-4 1-9 9-1 4z"/><path {stroke} d="M14 6l4 4"/><path {stroke} d="M5 19l4-4"/></svg>',
+        "RESEARCH": f'<svg viewBox="0 0 24 24" aria-hidden="true"><circle {stroke} cx="6" cy="7" r="2.5"/><circle {stroke} cx="18" cy="7" r="2.5"/><circle {stroke} cx="12" cy="17" r="2.5"/><path {stroke} d="M8 8.5l3 6M16 8.5l-3 6M8.5 7h7"/></svg>',
+        "POLICY": f'<svg viewBox="0 0 24 24" aria-hidden="true"><path {stroke} d="M7 4h7l3 3v13H7z"/><path {stroke} d="M14 4v4h4"/><path {stroke} d="M9.5 12h5M9.5 16h4"/></svg>',
+        "BUSINESS": f'<svg viewBox="0 0 24 24" aria-hidden="true"><path {stroke} d="M4 18h16"/><path {stroke} d="M6 15l4-4 3 2 5-6"/><path {stroke} d="M16 7h2v2"/></svg>',
+    }
+    return icons.get(category.upper(), f'<svg viewBox="0 0 24 24" aria-hidden="true"><circle {stroke} cx="12" cy="12" r="7"/><path {stroke} d="M8 12h8"/></svg>')
+
+
+def editorial_mark() -> str:
+    return """<div class="wk-watermark" aria-hidden="true">
+      <span></span><span></span><span></span><span></span>
+    </div>"""
 
 
 def weekly_cover_posts(stories: list[WeeklyStory], labels: dict[str, str]) -> list[dict[str, str]]:
@@ -511,38 +571,86 @@ def render_news_slide(
     total: int,
 ) -> Path:
     rank_label = f"{story.rank:02d}"
-    kicker = html.escape(story.kicker or labels["section_label"])
+    category = (story.category or story.kicker or labels["section_label"]).upper()
+    kicker = html.escape(story.kicker or category)
     headline = html.escape(story.headline)
     summary = html.escape(story.summary)
-    source_name = story.author or story.handle.lstrip("@")
+    source_name = story.source_name or story.author or story.handle.lstrip("@")
+    source_handle = story.source_handle or story.handle
     source_bits = [source_name]
-    if story.handle and story.handle.lstrip("@").lower() != source_name.lower():
-        source_bits.append(story.handle)
+    if source_handle and source_handle.lstrip("@").lower() != source_name.lower():
+        source_bits.append(source_handle)
     source = html.escape(f"{labels['source_prefix']}: {' · '.join(b for b in source_bits if b)}")
-    headline_size = 76 if len(story.headline) <= 40 else (66 if len(story.headline) <= 58 else 58)
+    headline_size = 68 if len(story.headline) <= 28 else (60 if len(story.headline) <= 42 else 54)
+    tag_class = "lead" if story.rank == 1 else "standard"
+    hero_html = (
+        f"""<div class="wk-hero wk-hero-metric">
+    <div class="wk-metric">{html.escape(story.hero_metric)}</div>
+    <div class="wk-metric-label">{html.escape(story.hero_label)}</div>
+  </div>"""
+        if story.hero_metric
+        else f'<div class="wk-hero">{editorial_mark()}</div>'
+    )
 
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
 {channel_css(channel)}
 .wk-top {{
-  position: absolute; top: 84px; left: 96px; right: 96px;
-  display: flex; align-items: baseline; justify-content: space-between;
+  position: absolute; top: 82px; left: 96px; right: 96px;
+  display: flex; align-items: center; justify-content: space-between;
 }}
-.wk-rank {{ font-size: 120px; font-weight: 880; line-height: 0.8; color: var(--primary); letter-spacing: -0.04em; }}
+.wk-rank {{ font-size: 104px; font-weight: 880; line-height: 0.8; color: var(--primary); letter-spacing: 0; }}
 .wk-kicker {{
-  font-size: 27px; font-weight: 820; letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--ink-soft); padding: 14px 18px; border: 2px solid var(--rule);
+  min-height: 58px; display: inline-flex; gap: 12px; align-items: center;
+  font-size: 24px; font-weight: 820; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-soft); padding: 11px 16px; border: 2px solid var(--rule);
 }}
+.wk-kicker svg {{ width: 28px; height: 28px; flex: 0 0 28px; }}
+.wk-kicker.lead {{
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 70%, var(--rule));
+}}
+.wk-hero {{
+  position: absolute; top: 198px; left: 96px; right: 96px; height: 220px;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+}}
+.wk-hero-metric {{ flex-direction: column; align-items: flex-start; text-align: left; }}
+.wk-metric {{
+  font-size: 128px; line-height: 0.9; font-weight: 900; letter-spacing: 0;
+  color: var(--fg);
+}}
+.wk-metric-label {{
+  margin-top: 22px; font-size: 22px; font-weight: 860; letter-spacing: 0.18em;
+  color: var(--muted); text-transform: uppercase;
+}}
+.wk-watermark {{
+  width: 390px; height: 168px; position: relative; opacity: 0.11;
+}}
+.wk-watermark span {{
+  position: absolute; left: 0; right: 0; height: 2px; background: var(--fg);
+}}
+.wk-watermark span:nth-child(1) {{ top: 18px; transform: rotate(-14deg); }}
+.wk-watermark span:nth-child(2) {{ top: 62px; transform: rotate(14deg); }}
+.wk-watermark span:nth-child(3) {{ top: 106px; transform: rotate(-14deg); }}
+.wk-watermark span:nth-child(4) {{ top: 150px; transform: rotate(14deg); }}
+.wk-watermark::before, .wk-watermark::after {{
+  content: ""; position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg);
+}}
+.wk-watermark::before {{ left: 112px; transform: rotate(14deg); }}
+.wk-watermark::after {{ right: 112px; transform: rotate(-14deg); }}
 .wk-body {{
-  position: absolute; left: 96px; right: 96px; top: 300px; bottom: 230px;
-  display: flex; flex-direction: column; justify-content: center;
+  position: absolute; left: 96px; right: 96px; top: 462px; bottom: 232px;
+  display: flex; flex-direction: column; justify-content: flex-start;
 }}
 .wk-headline {{
   font-size: {headline_size}px; line-height: 1.04; font-weight: 870;
-  letter-spacing: -0.02em; color: var(--fg);
+  letter-spacing: 0; color: var(--fg); margin: 0;
 }}
-.wk-rule {{ width: 100%; height: 2px; margin: 38px 0 34px; background: var(--rule); }}
-.wk-summary {{ font-size: 34px; line-height: 1.3; font-weight: 600; color: var(--ink-soft); }}
+.wk-rule {{ width: 100%; height: 2px; margin: 32px 0 28px; background: var(--rule); }}
+.wk-summary {{
+  font-size: 29px; line-height: 1.38; font-weight: 610; color: var(--ink-soft);
+  max-height: 82px; overflow: hidden;
+}}
 .wk-source {{
   position: absolute; left: 96px; right: 96px; bottom: 132px; text-align: center;
   font-size: 22px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
@@ -554,8 +662,9 @@ def render_news_slide(
 <div class="slide">
   <div class="wk-top">
     <div class="wk-rank">{rank_label}</div>
-    <div class="wk-kicker">{kicker}</div>
+    <div class="wk-kicker {tag_class}">{category_icon(category)}<span>{kicker}</span></div>
   </div>
+  {hero_html}
   <div class="wk-body">
     <h1 class="wk-headline">{headline}</h1>
     <div class="wk-rule"></div>
@@ -609,6 +718,77 @@ def render_outro_slide(
     return _write_slide(html_text, out_path)
 
 
+def story_slide_records(stories: list[WeeklyStory]) -> list[SlideRecord]:
+    records: list[SlideRecord] = []
+    for story in stories:
+        slide_index = story.rank + 1
+        category = (story.category or story.kicker or "THIS WEEK").upper()
+        records.append(
+            SlideRecord(
+                slide=slide_index,
+                label=f"{story.rank:02d} {category}",
+                headline=story.headline,
+                body=story.summary,
+                category=category,
+                source_url=story.url,
+                source_text=story.source_text or story.text,
+                source_name=story.source_name or story.author or story.handle,
+            )
+        )
+    return records
+
+
+def run_verification(
+    *,
+    stories: list[WeeklyStory],
+    out_dir: Path,
+    channel: Channel,
+    labels: dict[str, str],
+    total: int,
+    render_block: bool,
+) -> Path:
+    records = verify_records(story_slide_records(stories))
+    extra_slides = [
+        {
+            "slide": 1,
+            "label": "COVER",
+            "headline": labels["cover_headline_fallback"],
+            "body": labels["week_range"],
+            "category": "COVER",
+            "source_url": "multiple news sources",
+            "claims": [],
+            "verdict": "verified",
+            "verified": True,
+            "notes": ["Cover uses the verified news set as source context."],
+        },
+        {
+            "slide": total,
+            "label": "CTA",
+            "headline": labels["outro_headline"],
+            "body": labels["outro_body"],
+            "category": "CTA",
+            "source_url": "n/a",
+            "claims": [],
+            "verdict": "verified",
+            "verified": True,
+            "notes": ["Structural follow CTA. No factual news claim."],
+        },
+    ]
+    manifest_path = write_run_manifest(
+        out_dir / "run_manifest.json",
+        records,
+        meta={
+            "channel_id": channel.id,
+            "story_count": len(stories),
+            "slide_count": total,
+        },
+        extra_slides=extra_slides,
+    )
+    if render_block:
+        assert_no_blocked(records)
+    return manifest_path
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
@@ -621,6 +801,8 @@ def build_weekly_carousel(
     max_stories: int,
     per_source: int,
     account_name: str | None,
+    verify_only: bool = False,
+    reuse_cover: bool = False,
 ) -> Path:
     channel = load_channel()
     max_stories = max(MIN_STORIES, min(max_stories, MAX_STORIES))
@@ -651,17 +833,56 @@ def build_weekly_carousel(
     total = len(stories) + 2  # cover + stories + outro
     slides: list[dict[str, Any]] = []
 
+    run_manifest_path = run_verification(
+        stories=stories,
+        out_dir=out_dir,
+        channel=channel,
+        labels=labels,
+        total=total,
+        render_block=not verify_only,
+    )
+    print(f"[weekly] verification report -> {run_manifest_path}")
+    if verify_only:
+        return run_manifest_path
+
     # Regular image cover (AI editorial art + up to 3 in-the-news CEO portraits).
     cover_path = out_dir / "slide_01.png"
-    title_context = render_cover_slide(
-        channel,
-        cover_path,
-        stories=stories,
-        labels=labels,
-        account_name=account_label,
-        out_dir=out_dir,
-        total=total,
-    )
+    if reuse_cover and cover_path.exists():
+        existing_manifest_path = out_dir / "manifest.json"
+        existing_manifest = {}
+        if existing_manifest_path.exists():
+            try:
+                existing_manifest = json.loads(existing_manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                existing_manifest = {}
+        title_context = {
+            "cover_copy": existing_manifest.get("cover_copy")
+            if isinstance(existing_manifest.get("cover_copy"), dict)
+            else {
+                "kicker": labels["section_label"],
+                "headline": labels["cover_headline_fallback"],
+                "swipe_line": labels["swipe_fallback"],
+            },
+            "image_provider": "reused",
+            "ceos": [{"name": name} for name in existing_manifest.get("cover_ceos", [])]
+            if isinstance(existing_manifest.get("cover_ceos"), list)
+            else [],
+            "companies": [{"name": name} for name in existing_manifest.get("cover_companies", [])]
+            if isinstance(existing_manifest.get("cover_companies"), list)
+            else [],
+            "instagram_caption": string_value(existing_manifest.get("instagram_caption")),
+        }
+        print(f"[weekly] cover: reused existing {cover_path}")
+    else:
+        title_context = render_cover_slide(
+            channel,
+            cover_path,
+            stories=stories,
+            labels=labels,
+            account_name=account_label,
+            out_dir=out_dir,
+            total=total,
+        )
     cover_copy = title_context.get("cover_copy") if isinstance(title_context.get("cover_copy"), dict) else {}
     instagram_caption = string_value(title_context.get("instagram_caption"))
     ceos = [string_value(c.get("name")) for c in (title_context.get("ceos") or []) if isinstance(c, dict)]
@@ -723,6 +944,10 @@ def build_weekly_carousel(
     }
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    for stale in sorted(out_dir.glob("slide_*.*")):
+        match = re.match(r"slide_(\d+)\.", stale.name)
+        if match and int(match.group(1)) > total:
+            stale.unlink()
     print(f"[weekly] wrote {total} slides ({len(stories)} stories) -> {manifest_path}")
     return manifest_path
 
@@ -772,6 +997,16 @@ def main() -> int:
         default=os.environ.get("WEEKLY_CAROUSEL_ACCOUNT_NAME"),
         help="Override the account/publisher name recorded in the manifest (default: channel account_name)",
     )
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run source and copy verification, write run_manifest.json, and skip rendering",
+    )
+    ap.add_argument(
+        "--reuse-cover",
+        action="store_true",
+        help="Keep an existing slide_01.png in the output folder instead of regenerating the cover",
+    )
     args = ap.parse_args()
 
     # Select the active channel for every load_channel() call in this process.
@@ -787,6 +1022,8 @@ def main() -> int:
         max_stories=args.max_stories,
         per_source=args.per_source,
         account_name=account_name,
+        verify_only=args.verify,
+        reuse_cover=args.reuse_cover,
     )
     return 0
 

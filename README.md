@@ -336,9 +336,9 @@ Story source priority: an explicit `--input stories.json` (a list, or
 (`out/automation/candidates.json`) filtered to the last `--days` (default 7). If
 the dated window is too thin, it falls back to the all-time top of the queue.
 
-**Page cap:** Instagram carousels top out at 10 slides. A roundup spends one on
-the cover and one on the outro, so stories are capped at **8** (default **7**);
-`--max-stories` is clamped to 3–8. Use `--per-source` (default 2) to limit how
+**Page cap:** Instagram carousels support up to 20 slides. A roundup spends one
+on the cover and one on the outro, so stories are capped at **18** (default **7**);
+`--max-stories` is clamped to 3–18. Use `--per-source` (default 2) to limit how
 many stories one account can contribute, for variety. Outputs (cover, story
 slides, outro, `manifest.json` with the per-story source URLs and the channel's
 `instagram_caption`) go to `out/weekly_carousel`.

@@ -1,0 +1,63 @@
+{
+  "stories": [
+    {
+      "category": "SECURITY",
+      "headline": "米政府がClaudeの最新モデルを世界で停止",
+      "body": "米政府は6月12日、輸出管理を理由にFable 5とMythos 5を全世界で停止。Anthropicは軽微な脱獄だと反論。",
+      "source_name": "ANTHROPIC",
+      "source_handle": "@AnthropicAI",
+      "source_url": "https://www.anthropic.com/news/fable-mythos-access",
+      "source_type": "primary",
+      "hero_metric": "",
+      "hero_label": "",
+      "source_text": "Anthropic statement dated June 12, 2026: Claude Fable 5 and Claude Mythos 5 are Anthropic models. The US government issued an export control directive to suspend all access to Fable 5 and Mythos 5 by any foreign national. The net effect is that Anthropic must disable Fable 5 and Mythos 5 for all customers. Anthropic says the concern is a narrow, non-universal jailbreak and that other publicly available models can discover the same minor vulnerabilities."
+    },
+    {
+      "category": "LAUNCH",
+      "headline": "Anthropicが1,000人規模のAIフェロー制度を開始",
+      "body": "総額1.5億ドルで若手1,000人を年俸8.5万ドルで雇用。全米400以上の非営利団体のClaude活用を支援。",
+      "source_name": "ANTHROPIC",
+      "source_handle": "@AnthropicAI",
+      "source_url": "https://www.anthropic.com/news/claude-corps",
+      "source_type": "primary",
+      "hero_metric": "1,000人",
+      "hero_label": "CLAUDE CORPS",
+      "source_text": "Anthropic Introducing Claude Corps: Anthropic is committing an initial $150m. Claude Corps will teach 1,000 people to use Claude. Fellows will receive a full-time salary of $85,000. Over the next 12 months, at least 400 nonprofits will host Claude Corps Fellows."
+    },
+    {
+      "category": "RESEARCH",
+      "headline": "DeepMindがマルチエージェント安全研究に1,000万ドル",
+      "body": "Schmidt Sciences、英ARIA、Cooperative AI Foundationと共同で1,000万ドルを公募。締切は8月8日。",
+      "source_name": "GOOGLE DEEPMIND",
+      "source_handle": "@GoogleDeepMind",
+      "source_url": "https://deepmind.google/blog/investing-in-multi-agent-ai-safety-research/",
+      "source_type": "primary",
+      "hero_metric": "1,000万ドル",
+      "hero_label": "MULTI-AGENT SAFETY",
+      "source_text": "Google DeepMind, Schmidt Sciences, the Cooperative AI Foundation, ARIA and Google.org announced a new technical research funding call of up to $10M for researchers worldwide. The call studies how large-scale multi-agent AI systems behave as a group. The deadline to apply is August 8, 2026."
+    },
+    {
+      "category": "LAUNCH",
+      "headline": "OpenAIがCodexのレート制限リセットを繰り越し可能に",
+      "body": "有料プランの開発者がCodexのレート制限リセットを保存可能に。長時間作業前に温存でき、30日で失効。",
+      "source_name": "OPENAI",
+      "source_handle": "@OpenAI",
+      "source_url": "https://x.com/OpenAI/status/2065225362544726371",
+      "source_type": "primary_x",
+      "hero_metric": "",
+      "hero_label": "",
+      "source_text": "OpenAI post on June 12, 2026: We heard you wanted to use Codex rate limit resets on your own time. Starting today, we are rolling out the ability to save rate limit resets to use later. Go, Plus, Pro, and Business users start with one free reset. Saved Codex resets expire after 30 days."
+    },
+    {
+      "category": "POLICY",
+      "headline": "Anthropic CEOが「AI失業」への政策提言を公表",
+      "body": "ダリオ・アモデイ氏がAI雇用リスクへの段階的対応を提案。2億ドル基金も設け、深刻化時はAI企業課税でUBIを賄う構想。",
+      "source_name": "DARIO AMODEI",
+      "source_url": "https://www.anthropic.com/policy-on-the-ai-exponential/epf",
+      "source_type": "primary",
+      "hero_metric": "2億ドル",
+      "hero_label": "ECONOMIC FUTURES",
+      "source_text": "Anthropic CEO Dario Amodei outlines Policy on the AI Exponential and the Economic Policy Framework. The framework recommends responses for roughly 5% unemployment, 10% unemployment, and unprecedented unemployment. Anthropic makes a $200 million commitment to an Economic Futures Research Fund. If AI causes unprecedented unemployment, new tax revenue and mechanisms including basic income, sovereign wealth models, and equity-sharing mechanisms may be needed."
+    }
+  ]
+}

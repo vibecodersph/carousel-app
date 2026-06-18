@@ -712,6 +712,29 @@ class WeeklyCarouselTests(unittest.TestCase):
         self.assertLessEqual(build_article_carousel.count_words(headline), 10)
         self.assertTrue(summary)
 
+    def test_curated_weekly_copy_is_preserved(self) -> None:
+        story = build_weekly_carousel.WeeklyStory(
+            rank=1,
+            author="OpenAI",
+            handle="@OpenAI",
+            url="https://x.com/OpenAI/status/4",
+            text="OpenAI source text",
+            date="",
+            score=92,
+            source_type="primary_x",
+            category="LAUNCH",
+            kicker="LAUNCH",
+            headline="OpenAIがCodexのレート制限リセットを繰り越し可能に",
+            summary="有料プランの開発者がCodexのレート制限リセットを保存可能に。長時間作業前に温存でき、30日で失効。",
+            copy_locked=True,
+        )
+
+        _, backend = build_weekly_carousel.curate_copy(load_channel("aibrief_jp"), [story])
+
+        self.assertEqual(backend, "curated")
+        self.assertIn("Codex", story.headline)
+        self.assertIn("30日", story.summary)
+
     def test_accent_markup_wraps_one_word(self) -> None:
         markup, plain = build_weekly_carousel.accent_markup("Ang [pinakamainit] na balita")
         self.assertIn('<span class="accent">pinakamainit</span>', markup)
