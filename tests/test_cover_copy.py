@@ -18,6 +18,14 @@ class CoverCopyTests(unittest.TestCase):
             "本番エージェント、[足場]作りで止まっていませんか",
         )
 
+    def test_can_accent_ascii_token_embedded_in_japanese_text(self) -> None:
+        headline = "1.5TBの怪物、MITライセンスで誰でも使えます"
+
+        self.assertEqual(
+            build_x_carousel.bracket_single_accent_word(headline),
+            "1.5TBの怪物、[MIT]ライセンスで誰でも使えます",
+        )
+
     def test_headline_markup_supports_japanese_accent(self) -> None:
         markup, plain, has_accent = build_x_carousel.headline_markup_from_brackets(
             "本番エージェント、[足場]作りで止まっていませんか"

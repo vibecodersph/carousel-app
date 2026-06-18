@@ -155,9 +155,6 @@ OUTCOME_STATUS_WEIGHTS = {
     "approved": 2,
     "built": 4,
     "publish_previewed": 4,
-    "buffer_previewed": 4,
-    "buffer_drafted": 5,
-    "buffer_queued": 5,
     "published": 6,
     "rejected": -5,
 }
@@ -2284,11 +2281,6 @@ def build_candidate(
     instagram_media_base_url: str | None,
     instagram_caption: str | None,
     instagram_caption_file: Path | None,
-    publish_buffer: bool,
-    buffer_mode: str,
-    buffer_dry_run: bool,
-    buffer_upload_r2: bool,
-    buffer_video_strategy: str,
     article_max_pages: int,
     article_min_score: int,
     article_curation_backend: str,
@@ -2394,81 +2386,7 @@ def build_candidate(
             record_outcome_event(candidate, "instagram_publish_failed", detail=candidate["failure"])
         rc = publish_result.returncode
 
-    if publish_buffer:
-        rc = max(
-            rc,
-            publish_candidate_buffer(
-                candidate,
-                out_dir,
-                mode=buffer_mode,
-                dry_run=buffer_dry_run,
-                upload_r2=buffer_upload_r2,
-                video_strategy=buffer_video_strategy,
-                media_base_url=instagram_media_base_url,
-                caption=instagram_caption,
-                caption_file=instagram_caption_file,
-            ),
-        )
     return rc
-
-
-def publish_candidate_buffer(
-    candidate: dict[str, Any],
-    out_dir: Path,
-    *,
-    mode: str,
-    dry_run: bool,
-    upload_r2: bool,
-    video_strategy: str,
-    media_base_url: str | None,
-    caption: str | None,
-    caption_file: Path | None,
-) -> int:
-    buffer_cmd = [
-        sys.executable,
-        str(ROOT / "buffer_publish.py"),
-        str(out_dir / "manifest.json"),
-        "--mode",
-        mode,
-        "--video-strategy",
-        video_strategy,
-    ]
-    if dry_run:
-        buffer_cmd.append("--dry-run")
-    if upload_r2:
-        buffer_cmd.append("--upload-r2")
-    if media_base_url:
-        buffer_cmd.extend(["--media-base-url", media_base_url])
-    if caption is not None:
-        buffer_cmd.extend(["--caption", caption])
-    if caption_file:
-        buffer_cmd.extend(["--caption-file", str(caption_file)])
-
-    candidate["buffer_publish_started_at"] = utc_now()
-    candidate["buffer_publish_mode"] = mode
-    candidate["buffer_publish_dry_run"] = dry_run
-    print(f"[buffer] {'previewing' if dry_run else f'creating {mode} post for'} {candidate['id']}")
-    result = subprocess.run(buffer_cmd, check=False)
-    candidate["buffer_publish_finished_at"] = utc_now()
-    candidate["buffer_publish_returncode"] = result.returncode
-    candidate["buffer_publish_report_path"] = str(out_dir / "buffer_publish.json")
-    if result.returncode != 0:
-        candidate["status"] = "publish_failed"
-        candidate["failure"] = f"buffer_publish.py exited {result.returncode}"
-        record_outcome_event(candidate, "buffer_publish_failed", detail=candidate["failure"])
-    elif dry_run:
-        candidate["status"] = "buffer_previewed"
-        record_outcome_event(candidate, "buffer_previewed")
-    elif mode == "draft":
-        candidate["status"] = "buffer_drafted"
-        record_outcome_event(candidate, "buffer_drafted")
-    elif mode == "queue":
-        candidate["status"] = "buffer_queued"
-        record_outcome_event(candidate, "buffer_queued")
-    else:
-        candidate["status"] = "published"
-        record_outcome_event(candidate, "buffer_published")
-    return result.returncode
 
 
 def scan_command(args: argparse.Namespace) -> int:
@@ -2549,11 +2467,6 @@ def build_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "instagram_media_base_url": args.instagram_media_base_url,
         "instagram_caption": args.instagram_caption,
         "instagram_caption_file": args.instagram_caption_file,
-        "publish_buffer": args.publish_buffer,
-        "buffer_mode": args.buffer_mode,
-        "buffer_dry_run": args.buffer_dry_run,
-        "buffer_upload_r2": args.buffer_upload_r2,
-        "buffer_video_strategy": args.buffer_video_strategy,
         "article_max_pages": args.article_max_pages,
         "article_min_score": args.article_min_score_build,
         "article_curation_backend": args.article_curation_backend,
@@ -2760,39 +2673,6 @@ def add_common_build_args(parser: argparse.ArgumentParser) -> None:
         help="Caption file passed to instagram_publish.py",
     )
     parser.add_argument(
-        "--publish-buffer",
-        action="store_true",
-        help="After a successful build, run buffer_publish.py (creates a Buffer draft by default)",
-    )
-    parser.add_argument(
-        "--buffer-mode",
-        choices=("draft", "queue", "now"),
-        default="draft",
-        help="With --publish-buffer: draft for review in Buffer, queue to schedule, now to publish immediately",
-    )
-    parser.add_argument(
-        "--buffer-dry-run",
-        action="store_true",
-        help="With --publish-buffer, validate and write the Buffer payload only",
-    )
-    parser.add_argument(
-        "--buffer-no-upload-r2",
-        dest="buffer_upload_r2",
-        action="store_false",
-        help="With --publish-buffer, skip uploading slides to R2 before posting",
-    )
-    parser.set_defaults(buffer_upload_r2=True)
-    parser.add_argument(
-        "--buffer-video-strategy",
-        choices=("fail", "poster", "reel"),
-        default="fail",
-        help=(
-            "How buffer_publish.py handles video slides in carousels; Buffer cannot mix "
-            "video and images, so fail (default) aborts, poster uses stills, reel posts "
-            "the video alone"
-        ),
-    )
-    parser.add_argument(
         "--article-max-pages",
         type=int,
         default=6,
@@ -2842,9 +2722,6 @@ def build_parser() -> argparse.ArgumentParser:
             "built",
             "failed",
             "publish_previewed",
-            "buffer_previewed",
-            "buffer_drafted",
-            "buffer_queued",
             "published",
             "publish_failed",
         ),

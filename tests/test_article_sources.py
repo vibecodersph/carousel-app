@@ -1006,6 +1006,88 @@ class StoryScoutPostScoringTests(unittest.TestCase):
         self.assertEqual(candidate["outcome_events"][0]["status"], "approved")
 
 
+class ArticleCurationLanguageTests(unittest.TestCase):
+    def test_gemini_article_curation_prompt_uses_channel_language(self) -> None:
+        article = build_article_carousel.Article(
+            source="https://example.com/story",
+            url="https://example.com/story",
+            title="Open model release",
+            description="A lab released a new model with strong benchmark results.",
+            site_name="Example",
+            author="Reporter",
+            published_at="",
+            image_url="",
+        )
+        candidates = [
+            build_article_carousel.CandidateSection(
+                index=0,
+                title="Benchmark",
+                body=(
+                    "The model scored 71% on SWE-Bench Verified and ships with "
+                    "open weights under an MIT license for developers."
+                ),
+                score=9,
+                reasons=["benchmark"],
+                block_indices=[0],
+            )
+        ]
+        prompts: list[str] = []
+
+        def fake_generate(model, api_key, payload, *, api_version, timeout):
+            del model, api_key, api_version, timeout
+            prompts.append(payload["contents"][0]["parts"][0]["text"])
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "pages": [
+                                                {
+                                                    "source_indices": [0],
+                                                    "kicker": "実力の証拠",
+                                                    "headline": "実務ベンチに迫るオープンモデル",
+                                                    "body": "SWE-Bench Verifiedで71%を記録し、MITライセンスのオープンウェイトとして開発者が検証できます。",
+                                                    "stat": "71%",
+                                                    "tease": "",
+                                                    "why": "具体的なベンチマーク結果",
+                                                }
+                                            ]
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+        with patch.dict(os.environ, {"CAROUSEL_CHANNEL": "aibrief_jp"}), patch.object(
+            build_article_carousel,
+            "gemini_api_key",
+            return_value="test-key",
+        ), patch.object(
+            build_article_carousel,
+            "gemini_generate_content",
+            side_effect=fake_generate,
+        ):
+            pages = build_article_carousel.gemini_curate_pages(
+                article,
+                candidates,
+                max_pages=1,
+                min_score=1,
+            )
+
+        self.assertEqual(len(pages), 1)
+        self.assertIn("Write every reader-facing field in Japanese", prompts[0])
+        self.assertIn("実力の証拠", prompts[0])
+        self.assertIn("short Japanese curiosity frame", prompts[0])
+        self.assertNotIn("THE CLAIM", prompts[0])
+
+
 class ArticleCoverVoiceTests(unittest.TestCase):
     def test_brand_voice_cover_copy_is_preferred_over_article_title(self) -> None:
         ctx = {"cover_copy": {"headline": "Kahit AI, marunong na ring mag-[budol] sa atin."}}

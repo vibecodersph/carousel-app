@@ -43,7 +43,7 @@
 
 ### SlidesToRevenue (Pre-launch SaaS)
 - **Flow:** URL scrape → brand extraction → 5-slide carousels (~90 sec)
-- **Platforms:** IG/TikTok/LinkedIn + Buffer integration
+- **Platforms:** IG/TikTok/LinkedIn scheduling integrations
 - **Waitlist:** 447/2,000 (June 2026)
 - **Launch:** ~July 2026
 - **Website:** https://www.slidestorevenue.com/waitlist
@@ -116,7 +116,7 @@ carousel-app is the only tool combining:
 - Dark-themed news slide format (matching @technology's style)
 - Multi-story roundup carousels (5-8 stories per post)
 - Source citation footer per slide
-- Later.com or Buffer scheduling integration
+- Direct Instagram publishing hardening
 - Automated competitor analysis for hook extraction
 
 ---

@@ -21,8 +21,6 @@ Publishing helpers:
 
 - `instagram_publish.py` publishes any generated `manifest.json` through the
   Instagram Graph API.
-- `buffer_publish.py` creates Buffer drafts, queued posts, or immediate posts
-  from a generated manifest.
 - `story_scout.py` scans, scores, approves, builds, and optionally publishes
   X/article candidates.
 
@@ -56,8 +54,6 @@ R2_BUCKET=...
 R2_PUBLIC_BASE_URL=https://...
 INSTAGRAM_USER_ID=...
 INSTAGRAM_ACCESS_TOKEN=...
-BUFFER_API_KEY=...
-BUFFER_CHANNEL_ID=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 ```
@@ -324,8 +320,6 @@ uv run python story_scout.py approve x_abc123def0 \
   --publish-instagram \
   --instagram-upload-r2 \
   --instagram-dry-run
-
-uv run python story_scout.py approve x_abc123def0 --publish-buffer
 ```
 
 Telegram approval callbacks are optional:
@@ -335,7 +329,7 @@ export TELEGRAM_BOT_TOKEN=123456:...
 export TELEGRAM_CHAT_ID=123456789
 
 uv run python story_scout.py scan --config story_sources.json --notify
-uv run python story_scout.py telegram-poll --watch --publish-buffer
+uv run python story_scout.py telegram-poll --watch --publish-instagram --instagram-upload-r2
 ```
 
 The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
@@ -388,49 +382,14 @@ uv run python instagram_publish.py out/x_carousel/manifest.json \
 
 The publisher writes `instagram_publish.json` beside the manifest.
 
-### Buffer
-
-```sh
-uv run python buffer_publish.py out/x_carousel/manifest.json --upload-r2 --dry-run
-uv run python buffer_publish.py out/x_carousel/manifest.json --upload-r2 --mode draft
-uv run python buffer_publish.py out/x_carousel/manifest.json --upload-r2 --mode queue
-```
-
-Required:
-
-```sh
-BUFFER_API_KEY=...
-BUFFER_CHANNEL_ID=...
-```
-
-Buffer drafts by default when used through `story_scout.py --publish-buffer`.
-Use `--mode queue` to add to the Buffer queue or `--mode now` to publish
-immediately.
-
-Buffer does not support mixed image/video Instagram carousels reliably. For
-builds with video slides, choose an explicit strategy:
-
-```sh
-uv run python buffer_publish.py out/x_carousel/manifest.json \
-  --upload-r2 \
-  --video-strategy poster
-
-uv run python buffer_publish.py out/x_carousel/manifest.json \
-  --upload-r2 \
-  --video-strategy reel
-```
-
-Use `instagram_publish.py` for true mixed-media Instagram carousels.
-
 ## Manifests And Outputs
 
 Every builder writes a `manifest.json` with the ordered `slides` list, source
 metadata, `channel_id`, and generated `instagram_caption` when available.
-Publishing helpers read that manifest, validate public media URLs, and write a
+The Instagram publisher reads that manifest, validates public media URLs, and writes a
 report next to it:
 
 - `instagram_publish.json`
-- `buffer_publish.json`
 - `run_manifest.json` for weekly verification
 
 Generated files live in `out/` and are safe to delete between runs.

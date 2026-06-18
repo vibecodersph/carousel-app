@@ -1138,7 +1138,7 @@ def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
             return plain
         end = start + len(target)
         return f"{plain[:start]}[{plain[start:end]}]{plain[end:]}"
-    pattern = re.compile(rf"(?<![\w'])({re.escape(target)})(?![\w'])", re.I)
+    pattern = re.compile(rf"(?<![A-Za-z0-9_'])({re.escape(target)})(?![A-Za-z0-9_'])", re.I)
     updated, count = pattern.subn(r"[\1]", plain, count=1)
     return updated if count else plain
 

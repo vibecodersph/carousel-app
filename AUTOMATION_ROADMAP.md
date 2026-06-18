@@ -30,7 +30,7 @@ story_sources.json
   -> one-URL builder in out/automation/builds/<candidate_id>/
   -> manifest.json
   -> optional publish preview or live publish
-  -> instagram_publish.json / buffer_publish.json
+  -> instagram_publish.json
 ```
 
 Weekly roundups use the same candidate queue as source material:
@@ -59,8 +59,7 @@ out/automation/candidates.json or stories.json
 | Weekly roundup carousel | Done | `build_weekly_carousel.py` | Builds cover, story slides, outro, and channel-specific captions/copy. |
 | Weekly copy/source verification | Done | `weekly_verifier.py`, `tests/test_weekly_verifier.py` | `build_weekly_carousel.py --verify` writes `run_manifest.json` and blocks bad claims. |
 | Instagram Graph publishing | Done | `instagram_publish.py` | Supports R2 upload, dry run, live publish, captions, mixed media, and publish reports. |
-| Buffer publishing | Done | `buffer_publish.py` | Supports draft/queue/now modes and explicit video strategies. |
-| Publish orchestration from approval | Done | `story_scout.py` | `--publish-instagram` and `--publish-buffer` can run immediately after build. |
+| Publish orchestration from approval | Done | `story_scout.py` | `--publish-instagram` can run immediately after build. |
 | Manifest/report trail | Partial | builders, publishers | Build manifests and publish reports exist; cross-run metrics are still thin. |
 | Generic visual QA | Missing | planned | Weekly has claim checks, but there is no manifest-wide dimensions/contact-sheet gate yet. |
 | Scheduling/deployment docs | Missing | planned | Commands are ready, but launchd/cron/worker setup is not documented. |
@@ -75,9 +74,6 @@ out/automation/candidates.json or stories.json
 - `built`: carousel built successfully
 - `failed`: build failed
 - `publish_previewed`: Instagram dry run succeeded
-- `buffer_previewed`: Buffer dry run succeeded
-- `buffer_drafted`: Buffer draft created
-- `buffer_queued`: Buffer queue entry created
 - `published`: live publish succeeded
 - `publish_failed`: publish step failed
 
@@ -91,7 +87,7 @@ out/automation/candidates.json or stories.json
 2. **Second approval gate**
    Add an optional "build approved, publish pending" state so generated art,
    videos, and mixed-media builds can require a final human confirmation before
-   live Instagram or Buffer publishing.
+   live Instagram publishing.
 
 3. **Duplicate publish guard**
    Prevent accidental double-publishing by checking canonical source URLs,
@@ -115,7 +111,7 @@ out/automation/candidates.json or stories.json
 1. Build `manifest_qa.py` for generic slide existence, dimensions, media count,
    and contact-sheet generation.
 2. Add a publish-pending approval state and wire it into CLI and Telegram flows.
-3. Add duplicate-publish checks to `instagram_publish.py` and `buffer_publish.py`.
+3. Add duplicate-publish checks to `instagram_publish.py`.
 4. Add scheduling docs with one recommended local setup and one hosted-worker
    setup.
 5. Add an automation status command or report that reads
@@ -127,6 +123,6 @@ out/automation/candidates.json or stories.json
 - `.env` has only the credentials needed for the chosen path.
 - `uv run python story_scout.py scan --config story_sources.json --notify` works.
 - `uv run python story_scout.py telegram-poll --watch` can receive callbacks.
-- A dry-run publish writes `instagram_publish.json` or `buffer_publish.json`.
+- A dry-run publish writes `instagram_publish.json`.
 - Live publish is only enabled after the operator has checked the generated
   manifest and media.

@@ -973,25 +973,67 @@ def gemini_curate_pages(
         return []
 
     model = gemini_text_model()
-    audience = load_channel().audience
+    channel = load_channel()
+    audience = channel.audience
+    language = channel.language_name
+    if language.lower().startswith("japanese"):
+        example_page = {
+            "source_indices": [0],
+            "kicker": "実力の証拠",
+            "headline": "GitHub実務に迫るオープンモデル",
+            "body": "Qwen3-CoderはSWE-Bench Verifiedで71%を記録。実際のプルリク修正に近いタスクで、クローズドモデルとの差を縮めています。",
+            "stat": "71%",
+            "tease": "次は弱点を見る",
+            "why": "具体的なベンチマーク結果",
+        }
+        kicker_rule = (
+            "- kicker: a short Japanese curiosity frame specific to THIS slide's "
+            "tension. Keep it compact, natural, and non-generic; do not use "
+            "English all-caps labels unless the term is a product name."
+        )
+        tease_rule = (
+            "- tease: a short Japanese open loop pointing at what the NEXT slide "
+            "reveals. Use an empty string on the final page."
+        )
+    else:
+        example_page = {
+            "source_indices": [0],
+            "kicker": "THE CLAIM",
+            "headline": "An open model just cracked real GitHub tasks",
+            "body": (
+                "Qwen3-Coder hits 71% on SWE-Bench Verified, resolving actual pull "
+                "requests and narrowing the gap to closed models."
+            ),
+            "stat": "71%",
+            "tease": "next: where it still falls short",
+            "why": "concrete benchmark result",
+        }
+        kicker_rule = (
+            "- kicker: a 1 to 3 word ALL-CAPS curiosity frame specific to THIS "
+            "slide's tension (e.g. THE CATCH, THE REAL COST, THE FIX, WHAT BROKE, "
+            "THE TRADE-OFF, THE CLAIM). Do not reuse the same kicker twice in one "
+            "carousel, and avoid generic table-of-contents labels."
+        )
+        tease_rule = (
+            "- tease: a 4 to 8 word lowercase open loop pointing at what the NEXT "
+            'slide reveals (e.g. "but the price hides a catch", "the number the '
+            'thread left out"). No ending period. Use an empty string on the final page.'
+        )
     prompt = f"""
 You are an editorial producer turning one article into an Instagram carousel for a
 {audience}. Choose only the highest-signal sections: concrete
 technical facts, benchmarks, launches, open-source details, adoption signals,
 pricing, model releases, strategic stakes, or credible quantified claims.
 
+Write every reader-facing field in {language}: kicker, headline, body, tease, and
+why. Keep model names, product names, company names, benchmark names, and units in
+their standard form when translating. Do not leave English prose in these fields
+unless the channel language is English.
+
 Return JSON only with this exact shape:
 {{
   "pages": [
-    {{
-      "source_indices": [0],
-      "kicker": "THE CLAIM",
-      "headline": "An open model just cracked real GitHub tasks",
-      "body": "Qwen3-Coder hits 71% on SWE-Bench Verified, resolving actual pull requests and narrowing the gap to closed models.",
-      "stat": "71%",
-      "tease": "next: where it still falls short",
-      "why": "concrete benchmark result"
-    }}
+    {json.dumps(example_page, ensure_ascii=False)}
   ]
 }}
 
@@ -1000,9 +1042,9 @@ Rules:
 - Order the pages as a retention arc, not a summary. Open on the hook or the contrarian claim, escalate through the evidence and numbers, and land the payoff or stakes last. Each slide should raise a question the next slide answers, so the reader keeps swiping.
 - headline: 3 to 9 words that open a curiosity gap. Pose the tension, the contrarian angle, or the surprising specific so the reader needs the body to resolve it. Do NOT state the flat takeaway or conclusion here. Lead with a concrete noun or number, no ending period, no quotation marks.
 - body: 18 to 38 words that PAY OFF the headline with new information the headline did not already give: the mechanism, the number, the example, or the consequence. Never restate or paraphrase the headline. Tight, active voice, never copy long article wording.
-- tease: a 4 to 8 word lowercase open loop pointing at what the NEXT slide reveals (e.g. "but the price hides a catch", "the number the thread left out"). No ending period. Use an empty string on the final page.
+{tease_rule}
 - stat: one quantity with its unit when the section has a real number (e.g. "72%", "32K tokens", "$2B", "10x", "SWE-Bench 71"). If the section has no genuine number, use an empty string. Never put a phrase, label, or non-numeric word here.
-- kicker: a 1 to 3 word ALL-CAPS curiosity frame specific to THIS slide's tension (e.g. THE CATCH, THE REAL COST, THE FIX, WHAT BROKE, THE TRADE-OFF, THE CLAIM). Do not reuse the same kicker twice in one carousel, and avoid generic table-of-contents labels.
+{kicker_rule}
 - Each page must stand on a specific fact, benchmark, technical detail, or implication.
 - Skip intro fluff, event promos, newsletter language, author bio, generic quotes, and background unless it changes the story.
 - No markdown, citations, extra keys, hashtags, emojis, or quotation marks around the body.
