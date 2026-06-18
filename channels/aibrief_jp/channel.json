@@ -14,15 +14,16 @@
   "brand": {
     "brand_name": "AI Brief JP",
     "handle": "@aibrief.jp",
-    "source_pattern": "Night ink / paper-white type on charcoal",
+    "source_pattern": "Whiteout / ink on light",
+    "_branding_note": "AI Brief JP shares the vibecodersph cream/ink visual branding. Only language, voice, audience, handle, and the JP typography differ per channel; the palette is intentionally the same.",
     "colors": {
-      "bg": "#14161A",
-      "bg_top": "#1C1F25",
-      "fg": "#F4F3EF",
-      "ink_soft": "rgba(244, 243, 239, 0.78)",
-      "primary": "#E0314B",
-      "muted": "rgba(244, 243, 239, 0.55)",
-      "rule": "rgba(244, 243, 239, 0.26)"
+      "bg": "#F4F2EC",
+      "bg_top": "#E9E6DF",
+      "fg": "#16140F",
+      "ink_soft": "rgba(20, 18, 14, 0.78)",
+      "primary": "#C0552E",
+      "muted": "rgba(20, 18, 14, 0.55)",
+      "rule": "rgba(20, 18, 14, 0.28)"
     },
     "typography": {
       "heading_font": "Noto Sans JP, Archivo, sans-serif",

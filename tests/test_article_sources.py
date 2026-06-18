@@ -1,12 +1,15 @@
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import build_article_carousel
+import build_weekly_carousel
 import build_x_article_carousel
 import story_scout
+from channel import load_channel
 
 
 EXPECTED_SOURCE_NAMES = {
@@ -632,6 +635,129 @@ class XArticleParsingTests(unittest.TestCase):
             build_x_article_carousel.derive_title(data, blocks),
             "The Real Cost Of The Box",
         )
+
+
+WEEKLY_STORIES = [
+    {"author": "Anthropic", "handle": "@AnthropicAI", "url": "https://x.com/AnthropicAI/status/1",
+     "text": "Anthropic launches a new policy initiative on AI regulation.", "score": 94,
+     "reasons": ["keywords: ai, policy, launch"]},
+    {"author": "Anthropic", "handle": "@AnthropicAI", "url": "https://x.com/AnthropicAI/status/2",
+     "text": "Anthropic launches Claude Corps, a national fellowship program.", "score": 90,
+     "reasons": ["keywords: ai, launch"]},
+    {"author": "Anthropic", "handle": "@AnthropicAI", "url": "https://x.com/AnthropicAI/status/3",
+     "text": "Anthropic shares a third update for the week.", "score": 88, "reasons": []},
+    {"author": "OpenAI", "handle": "@OpenAI", "url": "https://x.com/OpenAI/status/4",
+     "text": "OpenAI rolls out the ability to save Codex rate limit resets.", "score": 92,
+     "reasons": ["keywords: launch"]},
+    {"author": "Google DeepMind", "handle": "@GoogleDeepMind", "url": "https://x.com/GoogleDeepMind/status/5",
+     "text": "Google DeepMind announces a benchmark for multi-agent research.", "score": 89,
+     "reasons": ["keywords: agent, research, benchmark"]},
+]
+
+
+class WeeklyCarouselTests(unittest.TestCase):
+    def _gather(self, *, max_stories=7, per_source=2):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"stories": WEEKLY_STORIES}, fh)
+            path = Path(fh.name)
+        try:
+            return build_weekly_carousel.gather_top_stories(
+                queue_path=Path("/nonexistent.json"),
+                input_path=path,
+                days=7,
+                max_stories=max_stories,
+                per_source=per_source,
+            )
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ranking_orders_by_score_and_assigns_rank(self) -> None:
+        stories = self._gather(per_source=0)
+        self.assertEqual([s.score for s in stories], sorted((s.score for s in stories), reverse=True))
+        self.assertEqual([s.rank for s in stories], list(range(1, len(stories) + 1)))
+
+    def test_per_source_cap_limits_one_account(self) -> None:
+        # max_stories=3 with 5 inputs: the cap bites before top-up can refill.
+        stories = self._gather(max_stories=3, per_source=2)
+        self.assertEqual(len(stories), 3)
+        anthropic = [s for s in stories if s.handle == "@AnthropicAI"]
+        self.assertEqual(len(anthropic), 2)  # 3rd Anthropic post is capped out
+
+    def test_per_source_top_up_when_sources_are_scarce(self) -> None:
+        # Asking for more stories than distinct sources falls back past the cap.
+        stories = self._gather(max_stories=5, per_source=2)
+        self.assertEqual(len(stories), 5)
+
+    def test_max_stories_clamped_to_instagram_budget(self) -> None:
+        # cover + outro leave at most MAX_STORIES slides for stories.
+        clamp = lambda n: max(
+            build_weekly_carousel.MIN_STORIES,
+            min(n, build_weekly_carousel.MAX_STORIES),
+        )
+        self.assertEqual(clamp(99), build_weekly_carousel.MAX_STORIES)
+        self.assertEqual(clamp(1), build_weekly_carousel.MIN_STORIES)
+        self.assertEqual(
+            build_weekly_carousel.MAX_STORIES + 2, build_weekly_carousel.MAX_TOTAL_SLIDES
+        )
+
+    def test_local_copy_fallback_produces_slide_sized_text(self) -> None:
+        story = build_weekly_carousel.WeeklyStory(
+            rank=1, author="OpenAI", handle="@OpenAI",
+            url="https://x.com/OpenAI/status/4",
+            text="OpenAI rolls out the ability to save Codex rate limit resets for later use.",
+            date="", score=92, source_type="x", reasons=["keywords: launch"],
+        )
+        kicker, headline, summary = build_weekly_carousel.local_story_copy(story)
+        self.assertEqual(kicker, "LAUNCH")
+        self.assertLessEqual(build_article_carousel.count_words(headline), 10)
+        self.assertTrue(summary)
+
+    def test_accent_markup_wraps_one_word(self) -> None:
+        markup, plain = build_weekly_carousel.accent_markup("Ang [pinakamainit] na balita")
+        self.assertIn('<span class="accent">pinakamainit</span>', markup)
+        self.assertEqual(plain, "Ang pinakamainit na balita")
+        # No brackets: text passes through, html-escaped.
+        markup2, plain2 = build_weekly_carousel.accent_markup("a & b")
+        self.assertEqual(plain2, "a & b")
+        self.assertIn("&amp;", markup2)
+
+    def test_channels_share_light_branding(self) -> None:
+        # aibrief_jp intentionally shares vibecodersph's cream/ink palette;
+        # channels differ in language and voice, not visual theme.
+        for cid in ("vibecodersph", "aibrief_jp"):
+            css = build_weekly_carousel.channel_css(load_channel(cid))
+            self.assertIn("#F4F2EC", css)      # shared cream background
+            self.assertIn("#C0552E", css)      # shared rust primary
+            self.assertNotIn("#14161A", css)   # not the old charcoal dark theme
+
+    def test_aibrief_shares_vibecodersph_palette_in_shared_css(self) -> None:
+        # Regression guard: the regular builders read brand_colors() too, so the
+        # JP channel must resolve to the light palette there as well (no dark leak).
+        import build_x_carousel
+
+        prev = os.environ.get("CAROUSEL_CHANNEL")
+        try:
+            os.environ["CAROUSEL_CHANNEL"] = "aibrief_jp"
+            colors = build_x_carousel.brand_colors()
+            self.assertEqual(colors["bg"], "#F4F2EC")
+            self.assertEqual(colors["primary"], "#C0552E")
+            self.assertFalse(build_x_carousel._is_dark_color(colors["bg"]))
+        finally:
+            if prev is None:
+                os.environ.pop("CAROUSEL_CHANNEL", None)
+            else:
+                os.environ["CAROUSEL_CHANNEL"] = prev
+
+    def test_japanese_channel_localizes_structural_labels(self) -> None:
+        from datetime import datetime, timezone
+        labels = build_weekly_carousel.localized_labels(
+            load_channel("aibrief_jp"),
+            start=datetime(2026, 6, 11, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 18, tzinfo=timezone.utc),
+            count=7,
+        )
+        self.assertEqual(labels["section_label"], "今週のAIニュース")
+        self.assertIn("6月11日", labels["week_range"])
 
     def test_single_sentence_section_headline_is_not_a_body_prefix(self) -> None:
         html = """<!doctype html><html><body><article>

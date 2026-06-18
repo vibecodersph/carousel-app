@@ -21,13 +21,13 @@ Channels live under `channels/`:
 channels/
   channels.json            # { "default_channel": "vibecodersph" }  <- the default setting
   vibecodersph/channel.json # cream/ink branding, Taglish, Filipino audience
-  aibrief_jp/channel.json   # charcoal/crimson branding, Japanese audience
+  aibrief_jp/channel.json   # shares the cream/ink branding, Japanese language + audience
   aibrief_jp/voice.md       # AI Brief JP voice guide (Japanese)
 ```
 
 The active channel is resolved in priority order:
 
-1. `--channel <id>` flag on any builder (`build_x_carousel.py`, `build_article_carousel.py`, `generate_cover.py`),
+1. `--channel <id>` flag on any builder (`build_x_carousel.py`, `build_article_carousel.py`, `build_x_article_carousel.py`, `build_weekly_carousel.py`, `generate_cover.py`),
 2. the `CAROUSEL_CHANNEL` environment variable,
 3. `default_channel` in `channels/channels.json`,
 4. the built-in `vibecodersph` fallback (which also reads the legacy root `brand.json` / `brand/VIBECODERS_IG_VOICE.md`, so existing checkouts keep working).
@@ -309,6 +309,39 @@ section selection defaults to a lower threshold than the web-article builder
 (`--min-score 3` vs `6`). Tune with `--max-pages`, `--min-score`,
 `--curation-backend gemini|local|auto`, `--title`, or `--no-title-enrichment`.
 For short tweets (not long-form essays), use `build_x_carousel.py` instead.
+
+## Weekly News Roundup Carousel
+
+`build_weekly_carousel.py` builds a *curated "top AI news of the week"* carousel:
+one cover, one slide per story, then an outro. Instead of deep-diving one URL, it
+ranks the week's highest-signal stories (scored by `story_scout.py`) and turns
+each into a slide.
+
+```sh
+uv run python build_weekly_carousel.py --channel vibecodersph
+uv run python build_weekly_carousel.py --channel aibrief_jp --max-stories 6
+```
+
+It is fully **channel-sensitive** ([Channels](#channels-branding--language--voice)):
+both channels share the cream/ink visual branding, so the same week of news speaks
+witty Taglish through `vibecodersph` and Japanese through `aibrief_jp` (with
+localized labels like `今週のAIニュース`) on the same look. The cover is the regular
+image cover — AI editorial art with up to three portraits of the CEOs whose
+companies are in that week's news. Cover copy and every story's kicker/headline/
+summary are written in the channel's language by Gemini when `GOOGLE_API_KEY` is
+set, with a deterministic local fallback otherwise.
+
+Story source priority: an explicit `--input stories.json` (a list, or
+`{"stories": [...]}`), otherwise the `story_scout` candidate queue
+(`out/automation/candidates.json`) filtered to the last `--days` (default 7). If
+the dated window is too thin, it falls back to the all-time top of the queue.
+
+**Page cap:** Instagram carousels top out at 10 slides. A roundup spends one on
+the cover and one on the outro, so stories are capped at **8** (default **7**);
+`--max-stories` is clamped to 3–8. Use `--per-source` (default 2) to limit how
+many stories one account can contribute, for variety. Outputs (cover, story
+slides, outro, `manifest.json` with the per-story source URLs and the channel's
+`instagram_caption`) go to `out/weekly_carousel`.
 
 ## Instagram Publishing
 

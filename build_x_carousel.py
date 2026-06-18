@@ -1695,11 +1695,31 @@ def default_title_image_prompt(
         person.get("profile_image_path") or person.get("profile_image_url")
         for person in source_people
     )
+    palette = brand_colors()
+    channel = load_channel()
+    is_dark = _is_dark_color(palette["bg"])
+    background_line = (
+        f"Deep charcoal / near-black background ({palette['bg']})."
+        if is_dark
+        else f"Cream/off-white paper background ({palette['bg']})."
+    )
+    ink_line = (
+        f"Paper-white type tones ({palette['fg']}) and a {channel.brand_name} accent color ({palette['primary']})."
+        if is_dark
+        else f"Dark ink ({palette['fg']}) and rust/terracotta accent color ({palette['primary']})."
+    )
+    texture_line = (
+        "Abstract geometric composition, premium dark editorial / night-mode magazine aesthetic, "
+        "subtle grain, moody contrast, editorial gravitas, intellectual but not cold."
+        if is_dark
+        else "Abstract geometric composition, premium print magazine aesthetic, textured paper, "
+        "editorial gravitas, intellectual but not cold."
+    )
     parts = [
         f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
-        "Cream/off-white paper background (#F4F2EC).",
-        "Dark ink (#16140F) and rust/terracotta accent color (#C0552E).",
-        "Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold.",
+        background_line,
+        ink_line,
+        texture_line,
         "The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI.",
     ]
     if source_line:
@@ -2049,18 +2069,76 @@ def title_visual_markup(context: dict[str, object]) -> str:
 """
 
 
+# Light (vibecodersph) palette, used as the fallback for any color a channel
+# leaves unset so existing checkouts render exactly as before.
+LIGHT_COLOR_DEFAULTS = {
+    "bg": "#F4F2EC",
+    "bg_top": "#E9E6DF",
+    "fg": "#16140F",
+    "ink_soft": "rgba(20, 18, 14, 0.78)",
+    "primary": "#C0552E",
+    "muted": "rgba(20, 18, 14, 0.55)",
+    "rule": "rgba(20, 18, 14, 0.28)",
+}
+
+
+def _hex_to_rgb(value: str, fallback_hex: str) -> str:
+    """'#14161A' -> '20, 22, 26' for use inside rgba(var(--bg-rgb), alpha)."""
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", string_value(value))
+    digits = match.group(1) if match else fallback_hex.lstrip("#")
+    return f"{int(digits[0:2], 16)}, {int(digits[2:4], 16)}, {int(digits[4:6], 16)}"
+
+
+def _is_dark_color(value: str) -> bool:
+    """True when a #rrggbb background is dark enough to want light type on it."""
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", string_value(value))
+    if not match:
+        return False
+    digits = match.group(1)
+    r, g, b = (int(digits[i : i + 2], 16) for i in (0, 2, 4))
+    # Rec. 601 luma; < 128 reads as a dark surface.
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
+def brand_colors() -> dict[str, str]:
+    """Active channel's slide colors, backfilled with the light defaults."""
+    merged = dict(LIGHT_COLOR_DEFAULTS)
+    brand = load_channel().brand
+    colors = brand.get("colors") if isinstance(brand, dict) else None
+    if isinstance(colors, dict):
+        for key, value in colors.items():
+            if isinstance(value, str) and value.strip():
+                merged[key] = value.strip()
+    return merged
+
+
+def brand_color_vars() -> str:
+    """:root custom properties for the active channel, incl. rgb triplets.
+
+    The --*-rgb triplets let cover gradients alpha-composite the channel's own
+    background/primary (e.g. rgba(var(--bg-rgb), 0.24)) instead of the hardcoded
+    cream that used to leak the vibecodersph look into every channel.
+    """
+    colors = brand_colors()
+    return f""":root {{
+  --bg: {colors['bg']};
+  --bg-top: {colors['bg_top']};
+  --fg: {colors['fg']};
+  --ink-soft: {colors['ink_soft']};
+  --primary: {colors['primary']};
+  --muted: {colors['muted']};
+  --rule: {colors['rule']};
+  --bg-rgb: {_hex_to_rgb(colors['bg'], '#F4F2EC')};
+  --fg-rgb: {_hex_to_rgb(colors['fg'], '#16140F')};
+  --primary-rgb: {_hex_to_rgb(colors['primary'], '#C0552E')};
+}}"""
+
+
 def shared_css() -> str:
     return f"""
 {FONTS.read_text()}
 
-:root {{
-  --bg: #F4F2EC;
-  --bg-top: #E9E6DF;
-  --fg: #16140F;
-  --ink-soft: rgba(20, 18, 14, 0.78);
-  --primary: #C0552E;
-  --rule: rgba(20, 18, 14, 0.28);
-}}
+{brand_color_vars()}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ margin: 0; background: #555; font-family: 'Archivo', sans-serif; }}
 .slide {{
@@ -2177,7 +2255,7 @@ def render_title_slide(
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(152deg, rgba(192, 85, 46, 0.66) 0%, rgba(22, 20, 15, 0.82) 100%);
+  background: linear-gradient(152deg, rgba(var(--primary-rgb), 0.66) 0%, rgba(22, 20, 15, 0.82) 100%);
   mix-blend-mode: multiply;
 }}
 .visual-card::after {{
@@ -2186,7 +2264,7 @@ def render_title_slide(
   z-index: 2;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(244, 242, 236, 0) 42%, rgba(244, 242, 236, 0.24) 62%, var(--bg) 100%);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.24) 62%, var(--bg) 100%);
   pointer-events: none;
 }}
 .source-avatar {{
@@ -2199,17 +2277,17 @@ def render_title_slide(
   border-radius: 50%;
   padding: 10px;
   background:
-    linear-gradient(135deg, rgba(192, 85, 46, 0.96), rgba(244, 242, 236, 0.86) 54%, rgba(22, 20, 15, 0.9));
+    linear-gradient(135deg, rgba(var(--primary-rgb), 0.96), rgba(var(--bg-rgb), 0.86) 54%, rgba(22, 20, 15, 0.9));
   box-shadow:
     0 28px 70px rgba(22, 20, 15, 0.34),
-    0 0 0 2px rgba(244, 242, 236, 0.72);
+    0 0 0 2px rgba(var(--bg-rgb), 0.72);
 }}
 .source-avatar::before {{
   content: '';
   position: absolute;
   inset: -20px;
   border-radius: 50%;
-  border: 2px solid rgba(192, 85, 46, 0.34);
+  border: 2px solid rgba(var(--primary-rgb), 0.34);
 }}
 .source-avatar img {{
   position: relative;
@@ -2218,13 +2296,13 @@ def render_title_slide(
   display: block;
   border-radius: 50%;
   object-fit: cover;
-  border: 8px solid rgba(244, 242, 236, 0.94);
+  border: 8px solid rgba(var(--bg-rgb), 0.94);
 }}
 .visual-fallback {{
   z-index: 0;
   background:
-    linear-gradient(135deg, rgba(192, 85, 46, 0.74), rgba(22, 20, 15, 0.94)),
-    repeating-linear-gradient(90deg, rgba(244, 242, 236, 0.12) 0 2px, transparent 2px 18px);
+    linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
+    repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
 }}
 .title-cluster {{
   position: absolute;
