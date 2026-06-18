@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -892,6 +893,117 @@ class ArticleNewsPickScoringTests(unittest.TestCase):
         )
         self.assertLess(score, 30)
         self.assertNotIn("named model release", reasons)
+
+
+class StoryScoutPostScoringTests(unittest.TestCase):
+    BASE_CONFIG = {
+        "accounts": ["OpenAI"],
+        "include_keywords": ["ai", "agent", "benchmark", "codex", "launch", "model", "policy"],
+        "exclude_keywords": ["hiring", "webinar"],
+        "lookback_hours": 24,
+        "require_story_signal": True,
+    }
+
+    def _date(self, *, hours_ago: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
+    def _post(self, text: str, *, hours_ago: int = 2, **overrides) -> dict[str, object]:
+        post: dict[str, object] = {
+            "id": "",
+            "text": text,
+            "handle": "@OpenAI",
+            "date": self._date(hours_ago=hours_ago),
+            "likes": 2500,
+            "retweets": 350,
+            "replies": 90,
+            "views": 600000,
+            "has_video": False,
+            "why": "",
+            "url": "https://x.com/OpenAI/status/2065225362544726371",
+        }
+        post.update(overrides)
+        return post
+
+    def test_high_engagement_without_concrete_story_signal_is_blocked(self) -> None:
+        post = self._post(
+            "Really looking forward to working together. Big things coming soon.",
+            likes=90000,
+            retweets=12000,
+            replies=5000,
+            views=15000000,
+        )
+
+        score, reasons, components = story_scout.score_post_breakdown(post, self.BASE_CONFIG)
+
+        self.assertEqual(score, 0)
+        self.assertFalse(components["substance_gate"])
+        self.assertGreater(components["pre_gate_score"], 0)
+        self.assertIn("no concrete story signal", reasons)
+
+    def test_concrete_story_has_separate_quality_components(self) -> None:
+        post = self._post(
+            "OpenAI launches GPT-5 with a new agent benchmark, scoring 72% on SWE-Bench."
+        )
+
+        score, reasons, components = story_scout.score_post_breakdown(post, self.BASE_CONFIG)
+
+        self.assertGreaterEqual(score, 55)
+        self.assertTrue(components["substance_gate"])
+        self.assertGreater(components["story_substance"], 0)
+        self.assertGreater(components["popularity"], 0)
+        self.assertGreater(components["specificity"], 0)
+        self.assertGreater(components["timeliness"], 0)
+        self.assertIn("story signals", "; ".join(reasons))
+
+    def test_x_post_recency_decay_reduces_old_story_score(self) -> None:
+        text = "OpenAI launches GPT-5 with a new benchmark scoring 72% on SWE-Bench."
+        fresh_score, _, fresh_components = story_scout.score_post_breakdown(
+            self._post(text, hours_ago=2),
+            self.BASE_CONFIG,
+        )
+        old_score, _, old_components = story_scout.score_post_breakdown(
+            self._post(text, hours_ago=120),
+            self.BASE_CONFIG,
+        )
+
+        self.assertLess(old_score, fresh_score)
+        self.assertEqual(fresh_components["penalties"].get("recency_decay", 0), 0)
+        self.assertGreater(old_components["penalties"].get("recency_decay", 0), 0)
+
+    def test_prior_outcomes_feed_back_into_post_score(self) -> None:
+        queue = {
+            "version": story_scout.QUEUE_VERSION,
+            "candidates": [
+                {
+                    "id": "x_good",
+                    "status": "published",
+                    "source_account": "@OpenAI",
+                    "post": {
+                        "handle": "@OpenAI",
+                        "text": "OpenAI launches Codex benchmark for agent coding.",
+                        "why": "Published carousel performed well",
+                    },
+                }
+            ],
+        }
+        feedback = story_scout.build_outcome_feedback(queue, self.BASE_CONFIG)
+        post = self._post("OpenAI launches a Codex agent benchmark for coding.")
+
+        _, _, components = story_scout.score_post_breakdown(
+            post,
+            self.BASE_CONFIG,
+            feedback=feedback,
+        )
+
+        self.assertGreater(components["outcome_feedback"], 0)
+
+    def test_outcome_events_are_recorded(self) -> None:
+        candidate = {"id": "x_test", "status": "approved"}
+
+        story_scout.record_outcome_event(candidate, "approved")
+
+        self.assertEqual(candidate["outcome_events"][0]["event"], "approved")
+        self.assertEqual(candidate["outcome_events"][0]["status"], "approved")
 
 
 class ArticleCoverVoiceTests(unittest.TestCase):

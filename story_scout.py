@@ -110,6 +110,57 @@ LOW_SIGNAL_ARTICLE_PATTERNS = [
     r"\bgiveaway\b",
     r"\bhoroscope\b",
 ]
+# Concrete story signals that make an X post worth turning into a carousel.
+# Engagement can amplify these, but should not be enough on its own.
+POST_SUBSTANCE_SIGNAL_PATTERNS = [
+    (
+        "launch/release",
+        r"\b(?:launch(?:es|ed|ing)?|release(?:s|d)?|roll(?:s|ed)? out|ship(?:s|ped)?|"
+        r"introduc(?:es|ed|ing)?|unveil(?:s|ed)?|announce(?:s|d)?|now available|"
+        r"available today|general availability|public beta|open[-\s]?source(?:d)?)\b",
+    ),
+    (
+        "benchmark/research",
+        r"\b(?:benchmark|benchmarks|evals?|evaluation|swe-bench|leaderboard|score(?:d|s)?|"
+        r"outperform|beats?|surpass|paper|research|arxiv|dataset|study)\b",
+    ),
+    (
+        "policy/safety",
+        r"\b(?:policy|regulat(?:ion|ory|e)|safety|security|governance|lawsuit|ban|"
+        r"compliance|copyright|privacy|restricted|restriction)\b",
+    ),
+    (
+        "pricing/access",
+        r"\b(?:pricing|price|free tier|rate limit|limits?|token(?:s)?|subscription|"
+        r"plan|api access|quota)\b",
+    ),
+    (
+        "business/adoption",
+        r"\b(?:funding|raises? \$|series [a-z]|acquir(?:es|ed|ing)|partnership|"
+        r"customer|enterprise|adoption|revenue|valuation|users?|developers?)\b",
+    ),
+    (
+        "incident/controversy",
+        r"\b(?:controversy|dispute|incident|leak(?:ed)?|breach|outage|accus(?:e|ed)|"
+        r"investigat(?:e|ion)|blocked)\b",
+    ),
+]
+LOW_SIGNAL_POST_PATTERNS = [
+    r"\b(?:looking forward|excited to (?:partner|work|join)|big things coming|stay tuned)\b",
+    r"\b(?:congrats|congratulations|proud of the team|great thread|worth reading)\b",
+    r"\b(?:podcast|webinar|livestream|join us|we're hiring|we are hiring|apply now)\b",
+    r"\b(?:giveaway|sponsored|discount|coupon|promo code)\b",
+]
+OUTCOME_STATUS_WEIGHTS = {
+    "approved": 2,
+    "built": 4,
+    "publish_previewed": 4,
+    "buffer_previewed": 4,
+    "buffer_drafted": 5,
+    "buffer_queued": 5,
+    "published": 6,
+    "rejected": -5,
+}
 # A named frontier-model family followed by a version number is a concrete launch
 # signal for the builder audience (e.g. "GPT-5", "Claude 4", "Qwen3", "Gemini 2.5").
 MODEL_RELEASE_PATTERN = (
@@ -232,6 +283,7 @@ def load_config(path: Path) -> dict[str, Any]:
     config["max_articles_per_source"] = int(config.get("max_articles_per_source") or 5)
     config["min_score"] = int(config.get("min_score") or 55)
     config["article_min_score"] = int(config.get("article_min_score") or 45)
+    config["require_story_signal"] = config_bool(config.get("require_story_signal"), True)
     config["include_keywords"] = [
         str(item).lower()
         for item in config.get("include_keywords", [])
@@ -342,6 +394,21 @@ def normalize_path_filters(value: Any) -> list[str]:
     return filters
 
 
+def config_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value).strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return default
+
+
 def infer_article_source_type(source: dict[str, Any], feed_urls: list[str]) -> str:
     raw_type = str(source.get("source_type") or source.get("type") or "").strip().lower()
     raw_type = raw_type.replace("-", "_")
@@ -395,6 +462,22 @@ def save_queue(path: Path, queue: dict[str, Any]) -> None:
     write_json_file(path, queue)
 
 
+def record_outcome_event(
+    candidate: dict[str, Any],
+    event: str,
+    *,
+    detail: str = "",
+) -> None:
+    entry = {
+        "event": event,
+        "status": candidate.get("status"),
+        "at": utc_now(),
+    }
+    if detail:
+        entry["detail"] = detail
+    candidate.setdefault("outcome_events", []).append(entry)
+
+
 def parse_count(value: Any) -> int:
     if isinstance(value, int):
         return max(0, value)
@@ -423,7 +506,146 @@ def weighted_log(value: int, scale: int, cap: int) -> int:
     return min(cap, score)
 
 
-def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[str]]:
+def clamp_int(value: float | int, low: int, high: int) -> int:
+    return max(low, min(high, int(round(value))))
+
+
+def tweet_id_datetime(tweet_id: Any) -> datetime | None:
+    raw = str(tweet_id or "").strip()
+    if not re.fullmatch(r"\d{10,}", raw):
+        return None
+    try:
+        snowflake = int(raw)
+        timestamp_ms = (snowflake >> 22) + 1288834974657
+        return datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def post_datetime(post: dict[str, Any]) -> datetime | None:
+    parsed = parse_feed_datetime(str(post.get("date") or ""))
+    if parsed:
+        return parsed
+    return tweet_id_datetime(post.get("id"))
+
+
+def regex_signal_matches(text: str, patterns: list[tuple[str, str]]) -> list[str]:
+    hits: list[str] = []
+    for label, pattern in patterns:
+        if re.search(pattern, text, re.I):
+            hits.append(label)
+    return hits
+
+
+def post_story_substance_signals(post: dict[str, Any]) -> list[str]:
+    text = str(post.get("text") or "").lower()
+    hits = regex_signal_matches(text, POST_SUBSTANCE_SIGNAL_PATTERNS)
+    if re.search(MODEL_RELEASE_PATTERN, text, re.I):
+        hits.append("named model release")
+    metric_pattern = (
+        r"\b\d+(?:\.\d+)?\s?(?:%(?!\w)|x\b|k\b|m\b|b\b|tokens?\b|parameters?\b|"
+        r"steps?\b|tasks?\b|calls?\b|users?\b|developers?\b)"
+    )
+    if re.search(metric_pattern, text, re.I) and re.search(
+        r"\b(?:benchmark|eval|score(?:d|s)?|beats?|versus|vs\.?|outperform|"
+        r"surpass|faster|cheaper|leaderboard|tokens?|parameters?)\b",
+        text,
+        re.I,
+    ):
+        hits.append("metric claim")
+    return dedupe_lower(hits)
+
+
+def post_specificity_score(post: dict[str, Any]) -> tuple[int, list[str]]:
+    text = str(post.get("text") or "").lower()
+    score = 0
+    reasons: list[str] = []
+    if re.search(
+        r"\b\d+(?:\.\d+)?\s?(?:%(?!\w)|x\b|k\b|m\b|b\b|tokens?\b|parameters?\b|"
+        r"steps?\b|tasks?\b|calls?\b|users?\b|developers?\b|\$)\b",
+        text,
+        re.I,
+    ):
+        score += 5
+        reasons.append("specific numbers")
+    if re.search(r"\b(?:beats?|versus|vs\.?|outperform|surpass|compare|leaderboard)\b", text):
+        score += 4
+        reasons.append("comparison")
+    if re.search(MODEL_RELEASE_PATTERN, text, re.I):
+        score += 4
+        reasons.append("named model")
+    if re.search(r"https?://[^\s]+", str(post.get("text") or "")):
+        score += 2
+        reasons.append("source link")
+    return min(15, score), reasons
+
+
+def post_timeliness_component(
+    post: dict[str, Any],
+    config: dict[str, Any],
+) -> tuple[int, int, list[str], float | None]:
+    dt = post_datetime(post)
+    if not dt:
+        return 3, 0, ["date unavailable"], None
+
+    age_hours = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600)
+    lookback = max(1, int(config.get("lookback_hours") or 24))
+    if age_hours <= 6:
+        freshness = 10
+        reasons = ["fresh <=6h"]
+    elif age_hours <= 12:
+        freshness = 8
+        reasons = ["fresh <=12h"]
+    elif age_hours <= lookback:
+        freshness = 6
+        reasons = [f"fresh <={lookback}h"]
+    elif age_hours <= 48:
+        freshness = 3
+        reasons = ["older than lookback"]
+    elif age_hours <= 72:
+        freshness = 1
+        reasons = ["older than 48h"]
+    else:
+        freshness = 0
+        reasons = ["older than 72h"]
+
+    decay = 0
+    if age_hours > lookback:
+        decay = min(25, 4 + int((age_hours - lookback) // max(6, lookback / 2)) * 4)
+        reasons.append(f"recency decay -{decay}")
+    return freshness, decay, reasons, round(age_hours, 1)
+
+
+def feedback_adjustment_for_post(
+    post: dict[str, Any],
+    config: dict[str, Any],
+    feedback: dict[str, Any] | None,
+) -> tuple[int, list[str]]:
+    if not feedback:
+        return 0, []
+    handle = str(post.get("handle") or "").lower()
+    source_scores = feedback.get("source_scores") if isinstance(feedback.get("source_scores"), dict) else {}
+    term_scores = feedback.get("term_scores") if isinstance(feedback.get("term_scores"), dict) else {}
+    source_adjust = clamp_int(source_scores.get(handle, 0), -6, 6) if handle else 0
+    terms = feedback_terms_for_text(
+        f"{post.get('text', '')} {post.get('why', '')}",
+        config,
+        limit=8,
+    )
+    term_adjust = clamp_int(sum(int(term_scores.get(term, 0)) for term in terms) / 2, -6, 6)
+    adjustment = clamp_int(source_adjust + term_adjust, -10, 10)
+    reasons: list[str] = []
+    if adjustment:
+        reasons.append(f"outcome feedback {adjustment:+d}")
+    return adjustment, reasons
+
+
+def score_post_breakdown(
+    post: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    feedback: dict[str, Any] | None = None,
+) -> tuple[int, list[str], dict[str, Any]]:
     reasons: list[str] = []
     text = str(post.get("text") or "").lower()
     likes = parse_count(post.get("likes"))
@@ -431,12 +653,15 @@ def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[
     replies = parse_count(post.get("replies"))
     views = parse_count(post.get("views"))
 
-    score = 0
-    view_score = weighted_log(views, 6, 28)
-    like_score = weighted_log(likes, 7, 24)
-    repost_score = weighted_log(retweets, 8, 20)
-    reply_score = weighted_log(replies, 5, 10)
-    score += view_score + like_score + repost_score + reply_score
+    components: dict[str, Any] = {}
+    penalties: dict[str, int] = {}
+
+    view_score = weighted_log(views, 4, 18)
+    like_score = weighted_log(likes, 5, 14)
+    repost_score = weighted_log(retweets, 6, 12)
+    reply_score = weighted_log(replies, 3, 6)
+    popularity_score = min(35, view_score + like_score + repost_score + reply_score)
+    components["popularity"] = popularity_score
 
     if view_score:
         reasons.append(f"{views:,} views")
@@ -447,32 +672,103 @@ def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[
     if reply_score:
         reasons.append(f"{replies:,} replies")
 
+    story_signals = post_story_substance_signals(post)
+    components["story_substance"] = min(30, 18 + 4 * (len(story_signals) - 1)) if story_signals else 0
+    components["story_signals"] = story_signals
+    components["substance_gate"] = bool(story_signals)
+    if story_signals:
+        reasons.append("story signals: " + ", ".join(story_signals[:4]))
+
     matched_keywords = matched_terms(text, config.get("include_keywords", []), limit=5)
+    keyword_score = 0
     if matched_keywords:
-        keyword_score = min(18, 4 * len(matched_keywords))
-        score += keyword_score
+        keyword_score = min(12, 3 * len(matched_keywords))
         reasons.append("keywords: " + ", ".join(matched_keywords))
+    components["audience_fit"] = keyword_score
 
-    excluded = matched_terms(text, config.get("exclude_keywords", []))
-    if excluded:
-        score -= 25
-        reasons.append("excluded keyword: " + ", ".join(excluded[:3]))
+    specificity_score, specificity_reasons = post_specificity_score(post)
+    components["specificity"] = specificity_score
+    reasons.extend(specificity_reasons)
 
+    visual_score = 0
     if bool(post.get("has_video")):
-        score += 6
+        visual_score += 4
         reasons.append("has video")
 
     if re.search(r"\bthread\b|(?:^|\s)1/\d+|(?:^|\s)1/", text):
-        score += 5
+        visual_score += 4
         reasons.append("thread/story format")
 
-    if "?" in text and replies >= 50:
-        score += 4
-        reasons.append("discussion momentum")
+    if specificity_score >= 5:
+        visual_score += 2
+        reasons.append("visualizable data point")
+    components["visual_potential"] = min(8, visual_score)
 
-    score = max(0, min(100, score))
+    allowed_handles = {normalize_handle(account).lower() for account in config.get("accounts", [])}
+    handle = str(post.get("handle") or "").lower()
+    components["source_authority"] = 4 if handle and handle in allowed_handles else 0
+
+    timeliness_score, recency_decay, timeliness_reasons, age_hours = post_timeliness_component(post, config)
+    components["timeliness"] = timeliness_score
+    components["age_hours"] = age_hours
+    penalties["recency_decay"] = recency_decay
+    reasons.extend(timeliness_reasons)
+
+    feedback_score, feedback_reasons = feedback_adjustment_for_post(post, config, feedback)
+    components["outcome_feedback"] = feedback_score
+    reasons.extend(feedback_reasons)
+
+    excluded = matched_terms(text, config.get("exclude_keywords", []))
+    if excluded:
+        penalties["excluded_keywords"] = 25
+        reasons.append("excluded keyword: " + ", ".join(excluded[:3]))
+
+    if "?" in text and replies >= 50:
+        components["discussion_momentum"] = 4
+        reasons.append("discussion momentum")
+    else:
+        components["discussion_momentum"] = 0
+
+    low_signal_hits = [
+        pattern
+        for pattern in LOW_SIGNAL_POST_PATTERNS
+        if re.search(pattern, text, re.I)
+    ]
+    if low_signal_hits:
+        penalties["low_signal_format"] = 12
+        reasons.append("low-signal social format")
+
+    score_component_keys = (
+        "popularity",
+        "story_substance",
+        "audience_fit",
+        "specificity",
+        "visual_potential",
+        "source_authority",
+        "timeliness",
+        "discussion_momentum",
+    )
+    raw_score = sum(int(components.get(key) or 0) for key in score_component_keys)
+    raw_score += int(components["outcome_feedback"])
+    raw_score -= sum(penalties.values())
+
+    if bool(config.get("require_story_signal", True)) and not story_signals:
+        components["pre_gate_score"] = clamp_int(raw_score, 0, 100)
+        components["penalties"] = penalties
+        components["final"] = 0
+        reasons.append("no concrete story signal")
+        return 0, reasons, components
+
+    score = clamp_int(raw_score, 0, 100)
+    components["penalties"] = penalties
+    components["final"] = score
     if not reasons:
         reasons.append("low public engagement metadata")
+    return score, reasons, components
+
+
+def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[str]]:
+    score, reasons, _ = score_post_breakdown(post, config)
     return score, reasons
 
 
@@ -636,7 +932,21 @@ def parse_feed_datetime(value: str) -> datetime | None:
         try:
             dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
-            return None
+            dt = None
+            for fmt in (
+                "%b %d, %Y",
+                "%B %d, %Y",
+                "%a %b %d, %Y",
+                "%a %B %d, %Y",
+                "%Y-%m-%d",
+            ):
+                try:
+                    dt = datetime.strptime(value, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -1169,10 +1479,125 @@ def dedupe_lower(values: list[str]) -> list[str]:
     return items
 
 
+def feedback_terms_for_text(
+    text: str,
+    config: dict[str, Any],
+    *,
+    limit: int | None = None,
+) -> list[str]:
+    terms: list[str] = []
+    terms.extend(config.get("include_keywords") or [])
+    terms.extend(ARTICLE_SIGNAL_TERMS)
+    terms.extend(ARTICLE_STRONG_TERMS)
+    terms.extend(WORKFORCE_TERMS)
+    for label, _ in POST_SUBSTANCE_SIGNAL_PATTERNS:
+        terms.append(label)
+    return matched_terms(text.lower(), dedupe_lower(terms), limit=limit)
+
+
+def candidate_feedback_text(candidate: dict[str, Any]) -> str:
+    if candidate_source_type(candidate) == "article":
+        article = candidate.get("article") if isinstance(candidate.get("article"), dict) else {}
+        return f"{article.get('title', '')} {article.get('summary', '')}"
+    post = candidate.get("post") if isinstance(candidate.get("post"), dict) else {}
+    return f"{post.get('text', '')} {post.get('why', '')}"
+
+
+def candidate_feedback_source(candidate: dict[str, Any]) -> str:
+    if candidate_source_type(candidate) == "article":
+        article = candidate.get("article") if isinstance(candidate.get("article"), dict) else {}
+        return str(article.get("source_name") or candidate.get("source_account") or "").lower()
+    post = candidate.get("post") if isinstance(candidate.get("post"), dict) else {}
+    return str(post.get("handle") or candidate.get("source_account") or "").lower()
+
+
+def candidate_outcome_weight(candidate: dict[str, Any]) -> int:
+    status = str(candidate.get("status") or "")
+    return int(OUTCOME_STATUS_WEIGHTS.get(status, 0))
+
+
+def build_outcome_feedback(
+    queue: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    feedback: dict[str, Any] = {
+        "source_scores": {},
+        "term_scores": {},
+        "status_counts": {},
+        "positive_outcomes": 0,
+        "negative_outcomes": 0,
+    }
+    source_scores: dict[str, int] = feedback["source_scores"]
+    term_scores: dict[str, int] = feedback["term_scores"]
+    status_counts: dict[str, int] = feedback["status_counts"]
+
+    for candidate in queue.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        status = str(candidate.get("status") or "")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        weight = candidate_outcome_weight(candidate)
+        if not weight:
+            continue
+        if weight > 0:
+            feedback["positive_outcomes"] += 1
+        else:
+            feedback["negative_outcomes"] += 1
+
+        source = candidate_feedback_source(candidate)
+        if source:
+            source_scores[source] = source_scores.get(source, 0) + weight
+        for term in feedback_terms_for_text(candidate_feedback_text(candidate), config, limit=10):
+            term_scores[term] = term_scores.get(term, 0) + weight
+
+    return feedback
+
+
+def compact_feedback_scores(scores: dict[str, int], *, limit: int = 12) -> list[dict[str, Any]]:
+    ranked = sorted(scores.items(), key=lambda item: (-abs(item[1]), item[0]))
+    return [{"key": key, "score": score} for key, score in ranked[:limit] if score]
+
+
+def summarize_outcome_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
+    source_scores = feedback.get("source_scores") if isinstance(feedback.get("source_scores"), dict) else {}
+    term_scores = feedback.get("term_scores") if isinstance(feedback.get("term_scores"), dict) else {}
+    return {
+        "updated_at": utc_now(),
+        "positive_outcomes": int(feedback.get("positive_outcomes") or 0),
+        "negative_outcomes": int(feedback.get("negative_outcomes") or 0),
+        "status_counts": feedback.get("status_counts") or {},
+        "top_sources": compact_feedback_scores(source_scores),
+        "top_terms": compact_feedback_scores(term_scores),
+    }
+
+
+def feedback_adjustment_for_article(
+    item: dict[str, Any],
+    source: dict[str, Any],
+    config: dict[str, Any],
+    feedback: dict[str, Any] | None,
+) -> tuple[int, list[str]]:
+    if not feedback:
+        return 0, []
+    source_scores = feedback.get("source_scores") if isinstance(feedback.get("source_scores"), dict) else {}
+    term_scores = feedback.get("term_scores") if isinstance(feedback.get("term_scores"), dict) else {}
+    source_name = str(item.get("source_name") or source.get("name") or "").lower()
+    source_adjust = clamp_int(source_scores.get(source_name, 0), -5, 5) if source_name else 0
+    text = f"{item.get('title', '')} {item.get('summary', '')}"
+    terms = feedback_terms_for_text(text, config, limit=8)
+    term_adjust = clamp_int(sum(int(term_scores.get(term, 0)) for term in terms) / 2, -5, 5)
+    adjustment = clamp_int(source_adjust + term_adjust, -8, 8)
+    if not adjustment:
+        return 0, []
+    return adjustment, [f"outcome feedback {adjustment:+d}"]
+
+
 def score_article_item(
     item: dict[str, Any],
     source: dict[str, Any],
     config: dict[str, Any],
+    *,
+    feedback: dict[str, Any] | None = None,
 ) -> tuple[int, list[str]]:
     reasons: list[str] = []
     title_text = str(item.get("title", "")).lower()
@@ -1231,6 +1656,15 @@ def score_article_item(
             reasons.append("fresh")
         elif age_hours <= 72:
             score += 3
+
+    feedback_score, feedback_reasons = feedback_adjustment_for_article(
+        item,
+        source,
+        config,
+        feedback,
+    )
+    score += feedback_score
+    reasons.extend(feedback_reasons)
 
     score = max(0, min(100, score))
     if not reasons:
@@ -1392,6 +1826,7 @@ def merge_candidates(
     config: dict[str, Any],
     *,
     min_score: int,
+    feedback: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     existing_by_id = {
         str(candidate.get("id")): candidate for candidate in queue.get("candidates", [])
@@ -1399,7 +1834,7 @@ def merge_candidates(
     now = utc_now()
     discovered: list[dict[str, Any]] = []
     for post in posts:
-        score, reasons = score_post(post, config)
+        score, reasons, score_components = score_post_breakdown(post, config, feedback=feedback)
         if score < min_score:
             continue
         cid = candidate_id(str(post["url"]))
@@ -1411,6 +1846,7 @@ def merge_candidates(
             "status": previous.get("status") or "candidate",
             "score": score,
             "score_reasons": reasons,
+            "score_components": score_components,
             "source_account": post.get("handle", ""),
             "post": post,
             "created_at": previous.get("created_at") or now,
@@ -1436,6 +1872,7 @@ def merge_article_candidates(
     config: dict[str, Any],
     *,
     min_score: int,
+    feedback: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     existing_by_id = {
         str(candidate.get("id")): candidate for candidate in queue.get("candidates", [])
@@ -1444,7 +1881,7 @@ def merge_article_candidates(
     discovered: list[dict[str, Any]] = []
     for article in articles:
         source_config = article.pop("_source_config", {}) if isinstance(article.get("_source_config"), dict) else {}
-        score, reasons = score_article_item(article, source_config, config)
+        score, reasons = score_article_item(article, source_config, config, feedback=feedback)
         if score < min_score:
             continue
         cid = article_candidate_id(str(article["url"]))
@@ -1910,9 +2347,11 @@ def build_candidate(
     if result.returncode == 0:
         candidate["status"] = "built"
         candidate["manifest_path"] = str(out_dir / "manifest.json")
+        record_outcome_event(candidate, "built")
     else:
         candidate["status"] = "failed"
         candidate["failure"] = f"{builder} exited {result.returncode}"
+        record_outcome_event(candidate, "build_failed", detail=candidate["failure"])
         return result.returncode
 
     rc = 0
@@ -1945,9 +2384,14 @@ def build_candidate(
         candidate["instagram_publish_report_path"] = str(out_dir / "instagram_publish.json")
         if publish_result.returncode == 0:
             candidate["status"] = "publish_previewed" if instagram_dry_run else "published"
+            record_outcome_event(
+                candidate,
+                "instagram_previewed" if instagram_dry_run else "instagram_published",
+            )
         else:
             candidate["status"] = "publish_failed"
             candidate["failure"] = f"instagram_publish.py exited {publish_result.returncode}"
+            record_outcome_event(candidate, "instagram_publish_failed", detail=candidate["failure"])
         rc = publish_result.returncode
 
     if publish_buffer:
@@ -2011,25 +2455,38 @@ def publish_candidate_buffer(
     if result.returncode != 0:
         candidate["status"] = "publish_failed"
         candidate["failure"] = f"buffer_publish.py exited {result.returncode}"
+        record_outcome_event(candidate, "buffer_publish_failed", detail=candidate["failure"])
     elif dry_run:
         candidate["status"] = "buffer_previewed"
+        record_outcome_event(candidate, "buffer_previewed")
     elif mode == "draft":
         candidate["status"] = "buffer_drafted"
+        record_outcome_event(candidate, "buffer_drafted")
     elif mode == "queue":
         candidate["status"] = "buffer_queued"
+        record_outcome_event(candidate, "buffer_queued")
     else:
         candidate["status"] = "published"
+        record_outcome_event(candidate, "buffer_published")
     return result.returncode
 
 
 def scan_command(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     queue = load_queue(args.queue)
+    feedback = build_outcome_feedback(queue, config)
+    queue["scoring_feedback"] = summarize_outcome_feedback(feedback)
     posts: list[dict[str, Any]] = []
     if config.get("accounts"):
         posts = fetch_scout_posts(config, limit=args.limit)
     min_score = args.min_score if args.min_score is not None else config["min_score"]
-    discovered_posts, _ = merge_candidates(queue, posts, config, min_score=min_score)
+    discovered_posts, _ = merge_candidates(
+        queue,
+        posts,
+        config,
+        min_score=min_score,
+        feedback=feedback,
+    )
 
     articles = fetch_article_items(config, limit=args.article_limit)
     article_min_score = (
@@ -2042,6 +2499,7 @@ def scan_command(args: argparse.Namespace) -> int:
         articles,
         config,
         min_score=article_min_score,
+        feedback=feedback,
     )
     discovered = discovered_posts + discovered_articles
 
@@ -2109,6 +2567,7 @@ def approve_command(args: argparse.Namespace) -> int:
     candidate["status"] = "approved"
     candidate["approved_at"] = utc_now()
     candidate["updated_at"] = utc_now()
+    record_outcome_event(candidate, "approved")
     rc = 0
     if args.run:
         rc = build_candidate(candidate, **build_kwargs_from_args(args))
@@ -2122,6 +2581,7 @@ def reject_command(args: argparse.Namespace) -> int:
     candidate["status"] = "rejected"
     candidate["rejected_at"] = utc_now()
     candidate["updated_at"] = utc_now()
+    record_outcome_event(candidate, "rejected")
     save_queue(args.queue, queue)
     print(f"[reject] {candidate['id']} rejected")
     return 0
@@ -2212,6 +2672,7 @@ def process_telegram_updates(args: argparse.Namespace) -> int:
             candidate["status"] = "rejected"
             candidate["rejected_at"] = utc_now()
             candidate["updated_at"] = utc_now()
+            record_outcome_event(candidate, "rejected")
             if callback_id:
                 answer_callback(callback_id, "Rejected")
             processed += 1
@@ -2225,6 +2686,7 @@ def process_telegram_updates(args: argparse.Namespace) -> int:
             candidate["status"] = "approved"
             candidate["approved_at"] = utc_now()
             candidate["updated_at"] = utc_now()
+            record_outcome_event(candidate, "approved")
             if callback_id:
                 answer_callback(callback_id, "Approved; build starting")
             if args.run:
