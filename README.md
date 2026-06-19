@@ -347,6 +347,17 @@ uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2 --dr
 uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2
 ```
 
+Live publishing retries failed pre-publish media container processing twice by
+default. These retries create fresh Instagram containers after errors such as
+`Media upload has failed`, but they stop before retrying a failed
+`media_publish` call to avoid duplicate posts. Tune or disable this with:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json \
+  --upload-r2 \
+  --publish-retries 0
+```
+
 Required for R2 upload:
 
 ```sh

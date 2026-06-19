@@ -42,6 +42,8 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "out" / "x_carousel" / "manifest.json"
 DEFAULT_REPORT_NAME = "instagram_publish.json"
 DEFAULT_GRAPH_API_VERSION = "v23.0"
+DEFAULT_PUBLISH_RETRIES = 2
+DEFAULT_PUBLISH_RETRY_DELAY_SECONDS = 60
 FACEBOOK_GRAPH_API_ROOT = "https://graph.facebook.com"
 INSTAGRAM_GRAPH_API_ROOT = "https://graph.instagram.com"
 PLACEHOLDER_MEDIA_BASE_URL = "https://example.com/instagram-media"
@@ -72,6 +74,10 @@ class R2Config:
     key_prefix: str
 
 
+class InstagramContainerWaitError(RuntimeError):
+    """Raised when an Instagram media container fails before publish."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -96,6 +102,16 @@ def env_value(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def env_int(default: int, *names: str) -> int:
+    value = env_value(*names)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def env_key_suffix(value: str) -> str:
@@ -576,13 +592,13 @@ def wait_for_container(
         if status_code in FINISHED_STATUS_CODES:
             return last
         if status_code in WAIT_STATUS_CODES:
-            raise SystemExit(
+            raise InstagramContainerWaitError(
                 f"Instagram media container {container_id} failed: "
                 f"{status_code} {status}".strip()
             )
         print(f"[instagram] container {container_id} status={status_code or 'pending'}")
         time.sleep(interval_seconds)
-    raise SystemExit(f"Timed out waiting for Instagram media container {container_id}: {last}")
+    raise InstagramContainerWaitError(f"Timed out waiting for Instagram media container {container_id}: {last}")
 
 
 def create_container(
@@ -783,6 +799,46 @@ def publish_to_instagram(
     }
 
 
+def publish_to_instagram_with_retries(
+    items: list[MediaItem],
+    *,
+    caption: str,
+    instagram_user_id: str,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+    wait_timeout: int,
+    wait_interval: int,
+    single_video_media_type: str,
+    publish_retries: int,
+    publish_retry_delay: int,
+) -> dict[str, Any]:
+    attempts = max(0, publish_retries) + 1
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            print(f"[instagram] retry attempt {attempt}/{attempts} with fresh media containers")
+        try:
+            return publish_to_instagram(
+                items,
+                caption=caption,
+                instagram_user_id=instagram_user_id,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+                wait_timeout=wait_timeout,
+                wait_interval=wait_interval,
+                single_video_media_type=single_video_media_type,
+            )
+        except InstagramContainerWaitError as exc:
+            if attempt >= attempts:
+                raise SystemExit(str(exc)) from exc
+            print(f"[instagram] pre-publish container attempt {attempt}/{attempts} failed: {exc}")
+            if publish_retry_delay > 0:
+                print(f"[instagram] retrying in {publish_retry_delay}s")
+                time.sleep(publish_retry_delay)
+    raise SystemExit("Instagram publish retry loop ended unexpectedly")
+
+
 def build_report(
     *,
     manifest_path: Path,
@@ -885,6 +941,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--wait-timeout", type=int, default=600)
     parser.add_argument("--wait-interval", type=int, default=10)
+    parser.add_argument(
+        "--publish-retries",
+        type=int,
+        default=env_int(DEFAULT_PUBLISH_RETRIES, "INSTAGRAM_PUBLISH_RETRIES", "IG_PUBLISH_RETRIES"),
+        help=(
+            "Retry failed pre-publish Instagram media container processing with fresh "
+            f"containers. Default: {DEFAULT_PUBLISH_RETRIES}"
+        ),
+    )
+    parser.add_argument(
+        "--publish-retry-delay",
+        type=int,
+        default=env_int(
+            DEFAULT_PUBLISH_RETRY_DELAY_SECONDS,
+            "INSTAGRAM_PUBLISH_RETRY_DELAY",
+            "IG_PUBLISH_RETRY_DELAY",
+        ),
+        help=(
+            "Seconds to wait between pre-publish retry attempts. "
+            f"Default: {DEFAULT_PUBLISH_RETRY_DELAY_SECONDS}"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate and write a publish plan only")
     parser.add_argument("--out", type=Path, help=f"Write report JSON here (default: {DEFAULT_REPORT_NAME})")
     parser.add_argument("--print-json", action="store_true", help="Print the report JSON to stdout")
@@ -933,7 +1011,7 @@ def main() -> int:
             raise SystemExit("INSTAGRAM_USER_ID or --instagram-user-id is required to publish")
         if not args.access_token:
             raise SystemExit("INSTAGRAM_ACCESS_TOKEN or --access-token is required to publish")
-        result = publish_to_instagram(
+        result = publish_to_instagram_with_retries(
             media_items,
             caption=caption,
             instagram_user_id=instagram_user_id,
@@ -943,6 +1021,8 @@ def main() -> int:
             wait_timeout=args.wait_timeout,
             wait_interval=args.wait_interval,
             single_video_media_type=args.single_video_media_type,
+            publish_retries=args.publish_retries,
+            publish_retry_delay=args.publish_retry_delay,
         )
 
     report = build_report(
