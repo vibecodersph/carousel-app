@@ -355,6 +355,62 @@ class ArticleSourceParserTests(unittest.TestCase):
         self.assertNotIn("app", " ".join(reasons))
 
 
+class ScoutApiUsageCostTests(unittest.TestCase):
+    def test_scan_cost_summary_uses_xai_billed_ticks(self) -> None:
+        usage_log: list[dict[str, object]] = []
+        story_scout.record_api_usage(
+            usage_log,
+            provider="xAI",
+            endpoint="scout_posts",
+            tool_type="x_search",
+            usage={
+                "model": "grok-4.3",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "total_tokens": 1200,
+                "num_server_side_tools_used": 2,
+                "cost_in_usd_ticks": 1_500_000,
+            },
+        )
+
+        [line] = story_scout.format_api_usage_summary(usage_log)
+
+        self.assertIn("[scan-cost] xAI/grok-4.3", line)
+        self.assertIn("input=1,000", line)
+        self.assertIn("output=200", line)
+        self.assertIn("total=1,200", line)
+        self.assertIn("x_search_calls=2", line)
+        self.assertIn("cost=$0.000150", line)
+        self.assertNotIn("est_cost", line)
+
+    def test_scan_cost_summary_estimates_when_ticks_are_missing(self) -> None:
+        usage_log: list[dict[str, object]] = []
+        story_scout.record_api_usage(
+            usage_log,
+            provider="xAI",
+            endpoint="article_x_search",
+            tool_type="x_search",
+            usage={
+                "model": "grok-4.3",
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "total_tokens": 2_000_000,
+                "num_server_side_tools_used": 1,
+            },
+        )
+
+        [line] = story_scout.format_api_usage_summary(usage_log)
+
+        self.assertIn("est_cost=$3.755000", line)
+        self.assertNotIn(" cost=$", line)
+
+    def test_scan_cost_summary_handles_no_billable_api_usage(self) -> None:
+        self.assertEqual(
+            story_scout.format_api_usage_summary([]),
+            ["[scan-cost] no billable API usage reported"],
+        )
+
+
 class TelegramArticleWorkflowTests(unittest.TestCase):
     def test_article_notification_uses_article_callback_and_review_copy(self) -> None:
         url = "https://blogs.nvidia.com/blog/nvidia-blackwell-agentperf-artificial-analysis/"

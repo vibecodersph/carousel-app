@@ -34,7 +34,7 @@ from fetch_tweet_data import (
     load_env_file,
     normalize_post,
     resolve_xai_token,
-    xai_responses_text,
+    xai_responses_with_usage,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -210,6 +210,298 @@ DEFAULT_HUGGINGFACE_MODELS_API = (
     "https://huggingface.co/api/models"
     "?author={org}&sort=lastModified&direction=-1&limit={limit}"
 )
+COST_TICKS_PER_USD = 10_000_000_000
+XAI_SEARCH_TOOL_COST_USD_PER_1K = 5.0
+XAI_MODEL_PRICING_USD = {
+    "grok-build-0.1": {
+        "input_per_m": 1.00,
+        "cached_input_per_m": 0.20,
+        "output_per_m": 2.00,
+    },
+    "grok-4.3": {
+        "input_per_m": 1.25,
+        "cached_input_per_m": 0.20,
+        "output_per_m": 2.50,
+    },
+    "grok-4.20-multi-agent-0309": {
+        "input_per_m": 1.25,
+        "cached_input_per_m": 0.20,
+        "output_per_m": 2.50,
+    },
+    "grok-4.20-0309-reasoning": {
+        "input_per_m": 1.25,
+        "cached_input_per_m": 0.20,
+        "output_per_m": 2.50,
+    },
+    "grok-4.20-0309-non-reasoning": {
+        "input_per_m": 1.25,
+        "cached_input_per_m": 0.20,
+        "output_per_m": 2.50,
+    },
+}
+_MISSING = object()
+
+
+def int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError:
+                return None
+    return None
+
+
+def usage_path(usage: dict[str, Any], path: str) -> Any:
+    current: Any = usage
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
+
+
+def usage_int(usage: dict[str, Any], *paths: str) -> int:
+    for path in paths:
+        value = usage_path(usage, path)
+        if value is _MISSING:
+            continue
+        number = int_or_none(value)
+        if number is not None:
+            return max(0, number)
+    return 0
+
+
+def usage_cost_ticks(usage: dict[str, Any]) -> int | None:
+    value = usage_path(usage, "cost_in_usd_ticks")
+    if value is _MISSING:
+        return None
+    number = int_or_none(value)
+    if number is None:
+        return None
+    return max(0, number)
+
+
+def cached_input_tokens(usage: dict[str, Any]) -> int:
+    return usage_int(
+        usage,
+        "input_tokens_details.cached_tokens",
+        "input_token_details.cached_tokens",
+        "prompt_tokens_details.cached_tokens",
+        "prompt_token_details.cached_tokens",
+        "cached_input_tokens",
+        "input_cached_tokens",
+        "cache_read_input_tokens",
+    )
+
+
+def reasoning_tokens(usage: dict[str, Any]) -> int:
+    return usage_int(
+        usage,
+        "output_tokens_details.reasoning_tokens",
+        "output_token_details.reasoning_tokens",
+        "completion_tokens_details.reasoning_tokens",
+        "reasoning_tokens",
+    )
+
+
+def api_tool_calls(usage: dict[str, Any]) -> int:
+    return usage_int(
+        usage,
+        "num_server_side_tools_used",
+        "server_side_tool_calls",
+        "tool_calls",
+        "x_search_calls",
+    )
+
+
+def xai_pricing_for_model(model: str) -> dict[str, float] | None:
+    normalized = model.lower().strip()
+    if normalized in XAI_MODEL_PRICING_USD:
+        return XAI_MODEL_PRICING_USD[normalized]
+    for known_model, pricing in XAI_MODEL_PRICING_USD.items():
+        if normalized.startswith(f"{known_model}-"):
+            return pricing
+    return None
+
+
+def estimate_api_usage_cost_usd(entry: dict[str, Any]) -> float | None:
+    provider = str(entry.get("provider") or "").lower()
+    if provider != "xai":
+        return None
+    usage = entry.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    model = str(entry.get("model") or usage.get("model") or "")
+    pricing = xai_pricing_for_model(model)
+    if not pricing:
+        return None
+
+    input_tokens = usage_int(usage, "input_tokens", "prompt_tokens")
+    cached_tokens = min(cached_input_tokens(usage), input_tokens)
+    uncached_input_tokens = max(0, input_tokens - cached_tokens)
+    output_tokens = usage_int(usage, "output_tokens", "completion_tokens")
+    billable_output_tokens = output_tokens or reasoning_tokens(usage)
+    tool_calls = api_tool_calls(usage)
+    if input_tokens <= 0 and billable_output_tokens <= 0 and tool_calls <= 0:
+        return None
+
+    input_cost = uncached_input_tokens * pricing["input_per_m"] / 1_000_000
+    cached_cost = cached_tokens * pricing["cached_input_per_m"] / 1_000_000
+    output_cost = billable_output_tokens * pricing["output_per_m"] / 1_000_000
+    tool_cost = 0.0
+    if str(entry.get("tool_type") or "") == "x_search":
+        tool_cost = tool_calls * XAI_SEARCH_TOOL_COST_USD_PER_1K / 1_000
+    return input_cost + cached_cost + output_cost + tool_cost
+
+
+def record_api_usage(
+    api_usage: list[dict[str, Any]] | None,
+    *,
+    provider: str,
+    endpoint: str,
+    tool_type: str = "",
+    usage: dict[str, Any] | None,
+) -> None:
+    if api_usage is None:
+        return
+    usage_data = dict(usage or {})
+    model = str(usage_data.get("model") or "")
+    api_usage.append(
+        {
+            "provider": provider,
+            "endpoint": endpoint,
+            "tool_type": tool_type,
+            "model": model,
+            "usage": usage_data,
+        }
+    )
+
+
+def summarize_api_usage(api_usage: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in api_usage:
+        usage = entry.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        provider = str(entry.get("provider") or "API")
+        model = str(entry.get("model") or usage.get("model") or "unknown")
+        key = (provider, model)
+        group = groups.setdefault(
+            key,
+            {
+                "provider": provider,
+                "model": model,
+                "calls": 0,
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+                "tool_calls": 0,
+                "tool_types": set(),
+                "actual_calls": 0,
+                "actual_cost_ticks": 0,
+                "estimated_calls": 0,
+                "estimated_cost_usd": 0.0,
+            },
+        )
+        group["calls"] += 1
+        input_tokens = usage_int(usage, "input_tokens", "prompt_tokens")
+        output_tokens = usage_int(usage, "output_tokens", "completion_tokens")
+        total_tokens = usage_int(usage, "total_tokens")
+        if total_tokens <= 0:
+            total_tokens = input_tokens + output_tokens
+        group["input_tokens"] += input_tokens
+        group["cached_input_tokens"] += cached_input_tokens(usage)
+        group["output_tokens"] += output_tokens
+        group["reasoning_tokens"] += reasoning_tokens(usage)
+        group["total_tokens"] += total_tokens
+        group["tool_calls"] += api_tool_calls(usage)
+        tool_type = str(entry.get("tool_type") or "")
+        if tool_type:
+            group["tool_types"].add(tool_type)
+
+        cost_ticks = usage_cost_ticks(usage)
+        if cost_ticks is not None:
+            group["actual_calls"] += 1
+            group["actual_cost_ticks"] += cost_ticks
+            continue
+        estimated_cost = estimate_api_usage_cost_usd(entry)
+        if estimated_cost is not None:
+            group["estimated_calls"] += 1
+            group["estimated_cost_usd"] += estimated_cost
+
+    return sorted(groups.values(), key=lambda item: (item["provider"], item["model"]))
+
+
+def format_usd(value: float) -> str:
+    return f"${value:.6f}"
+
+
+def format_api_usage_summary(api_usage: list[dict[str, Any]]) -> list[str]:
+    groups = summarize_api_usage(api_usage)
+    if not groups:
+        return ["[scan-cost] no billable API usage reported"]
+
+    lines: list[str] = []
+    total_calls = 0
+    total_actual_ticks = 0
+    total_actual_calls = 0
+    total_estimated_cost = 0.0
+    total_estimated_calls = 0
+    for group in groups:
+        total_calls += group["calls"]
+        total_actual_ticks += group["actual_cost_ticks"]
+        total_actual_calls += group["actual_calls"]
+        total_estimated_cost += group["estimated_cost_usd"]
+        total_estimated_calls += group["estimated_calls"]
+        parts = [
+            f"[scan-cost] {group['provider']}/{group['model']}",
+            f"calls={group['calls']:,}",
+            f"input={group['input_tokens']:,}",
+            f"output={group['output_tokens']:,}",
+            f"total={group['total_tokens']:,}",
+        ]
+        if group["cached_input_tokens"]:
+            parts.append(f"cached_input={group['cached_input_tokens']:,}")
+        if group["reasoning_tokens"]:
+            parts.append(f"reasoning={group['reasoning_tokens']:,}")
+        if group["tool_calls"]:
+            tool_label = "x_search_calls" if group["tool_types"] == {"x_search"} else "tool_calls"
+            parts.append(f"{tool_label}={group['tool_calls']:,}")
+        if group["actual_calls"]:
+            cost_usd = group["actual_cost_ticks"] / COST_TICKS_PER_USD
+            parts.append(f"cost={format_usd(cost_usd)}")
+        if group["estimated_calls"]:
+            label = "est_missing_cost" if group["actual_calls"] else "est_cost"
+            parts.append(f"{label}={format_usd(group['estimated_cost_usd'])}")
+        if not group["actual_calls"] and not group["estimated_calls"]:
+            parts.append("cost=unavailable")
+        lines.append(" ".join(parts))
+
+    if len(groups) > 1:
+        total_parts = [f"[scan-cost] total calls={total_calls:,}"]
+        if total_actual_calls:
+            total_parts.append(
+                f"cost={format_usd(total_actual_ticks / COST_TICKS_PER_USD)}"
+            )
+        if total_estimated_calls:
+            label = "est_missing_cost" if total_actual_calls else "est_cost"
+            total_parts.append(f"{label}={format_usd(total_estimated_cost)}")
+        lines.append(" ".join(total_parts))
+    return lines
 
 
 def utc_now() -> str:
@@ -818,10 +1110,22 @@ def normalize_scout_post(item: dict[str, Any]) -> dict[str, Any] | None:
     return post
 
 
-def fetch_scout_posts(config: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+def fetch_scout_posts(
+    config: dict[str, Any],
+    *,
+    limit: int,
+    api_usage: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     token = resolve_xai_token(required=True)
     prompt = build_scout_prompt(config, limit)
-    text = xai_responses_text(prompt, token, timeout=120)
+    text, usage = xai_responses_with_usage(prompt, token, timeout=120)
+    record_api_usage(
+        api_usage,
+        provider="xAI",
+        endpoint="scout_posts",
+        tool_type="x_search",
+        usage=usage,
+    )
     data = extract_json_value(text, "[", "]")
     if not isinstance(data, list):
         raise SystemExit("xAI returned JSON that is not an array")
@@ -1419,6 +1723,7 @@ def fetch_x_search_article_items(
     config: dict[str, Any],
     *,
     limit: int,
+    api_usage: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     token = resolve_xai_token(required=False)
     if not token:
@@ -1426,7 +1731,14 @@ def fetch_x_search_article_items(
         return []
     prompt = build_article_x_search_prompt(source, config, limit)
     try:
-        text = xai_responses_text(prompt, token, timeout=120)
+        text, usage = xai_responses_with_usage(prompt, token, timeout=120)
+        record_api_usage(
+            api_usage,
+            provider="xAI",
+            endpoint="article_x_search",
+            tool_type="x_search",
+            usage=usage,
+        )
         data = extract_json_value(text, "[", "]")
     except SystemExit as exc:
         print(f"[article] x_search failed for {source.get('name')}: {exc}", file=sys.stderr)
@@ -1702,6 +2014,7 @@ def fetch_article_source_items(
     config: dict[str, Any],
     *,
     limit: int,
+    api_usage: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     source_type = str(source.get("source_type") or "rss")
     source_items: list[dict[str, Any]] = []
@@ -1725,7 +2038,14 @@ def fetch_article_source_items(
     elif source_type == "huggingface_models":
         source_items.extend(fetch_huggingface_model_entries(source, limit=limit))
     elif source_type == "x_search":
-        source_items.extend(fetch_x_search_article_items(source, config, limit=limit))
+        source_items.extend(
+            fetch_x_search_article_items(
+                source,
+                config,
+                limit=limit,
+                api_usage=api_usage,
+            )
+        )
 
     source_items.extend(direct_url_article_items(source))
     return source_items
@@ -1755,7 +2075,12 @@ def workforce_source_items(
     return items
 
 
-def fetch_article_items(config: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+def fetch_article_items(
+    config: dict[str, Any],
+    *,
+    limit: int,
+    api_usage: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     sources = config.get("article_sources") or []
     if not sources:
         return []
@@ -1801,7 +2126,12 @@ def fetch_article_items(config: dict[str, Any], *, limit: int) -> list[dict[str,
             continue
         keep_source_items(
             source,
-            fetch_article_source_items(source, config, limit=limit),
+            fetch_article_source_items(
+                source,
+                config,
+                limit=limit,
+                api_usage=api_usage,
+            ),
         )
 
     for source in workforce_sources:
@@ -2394,9 +2724,10 @@ def scan_command(args: argparse.Namespace) -> int:
     queue = load_queue(args.queue)
     feedback = build_outcome_feedback(queue, config)
     queue["scoring_feedback"] = summarize_outcome_feedback(feedback)
+    api_usage: list[dict[str, Any]] = []
     posts: list[dict[str, Any]] = []
     if config.get("accounts"):
-        posts = fetch_scout_posts(config, limit=args.limit)
+        posts = fetch_scout_posts(config, limit=args.limit, api_usage=api_usage)
     min_score = args.min_score if args.min_score is not None else config["min_score"]
     discovered_posts, _ = merge_candidates(
         queue,
@@ -2406,7 +2737,7 @@ def scan_command(args: argparse.Namespace) -> int:
         feedback=feedback,
     )
 
-    articles = fetch_article_items(config, limit=args.article_limit)
+    articles = fetch_article_items(config, limit=args.article_limit, api_usage=api_usage)
     article_min_score = (
         args.article_min_score
         if args.article_min_score is not None
@@ -2429,6 +2760,12 @@ def scan_command(args: argparse.Namespace) -> int:
             if notify_telegram(candidate):
                 notified += 1
 
+    api_usage_summary = format_api_usage_summary(api_usage)
+    queue["last_scan_api_usage"] = {
+        "recorded_at": utc_now(),
+        "summary": api_usage_summary,
+        "entries": api_usage,
+    }
     save_queue(args.queue, queue)
     print(
         f"[scan] {len(posts)} posts fetched; {len(articles)} articles fetched; "
@@ -2437,6 +2774,9 @@ def scan_command(args: argparse.Namespace) -> int:
     for candidate in discovered[: args.print_limit]:
         print()
         print(format_candidate(candidate))
+    print()
+    for line in api_usage_summary:
+        print(line)
     return 0
 
 

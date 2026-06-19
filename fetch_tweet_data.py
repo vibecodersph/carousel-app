@@ -105,10 +105,16 @@ def xai_model() -> str:
     return os.environ.get("XAI_TWEET_MODEL") or DEFAULT_XAI_MODEL
 
 
-def xai_responses_text(prompt: str, token: str, *, timeout: int = 90) -> str:
-    """Call the xAI Responses API with x_search and return the output text."""
+def xai_responses_with_usage(
+    prompt: str,
+    token: str,
+    *,
+    timeout: int = 90,
+) -> tuple[str, dict[str, Any]]:
+    """Call the xAI Responses API with x_search and return text plus usage."""
+    model = xai_model()
     payload = {
-        "model": xai_model(),
+        "model": model,
         "input": prompt,
         "tools": [{"type": "x_search"}],
     }
@@ -138,6 +144,18 @@ def xai_responses_text(prompt: str, token: str, *, timeout: int = 90) -> str:
 
     if not text_content:
         raise SystemExit("xAI returned no content")
+    usage = result.get("usage") if isinstance(result, dict) else {}
+    if isinstance(usage, dict):
+        usage = dict(usage)
+    else:
+        usage = {}
+    usage.setdefault("model", model)
+    return text_content, usage
+
+
+def xai_responses_text(prompt: str, token: str, *, timeout: int = 90) -> str:
+    """Call the xAI Responses API with x_search and return the output text."""
+    text_content, _usage = xai_responses_with_usage(prompt, token, timeout=timeout)
     return text_content
 
 
