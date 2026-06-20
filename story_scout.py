@@ -12,6 +12,8 @@ This is the human-in-the-loop front door for the carousel renderer:
 from __future__ import annotations
 
 import argparse
+import email.utils
+import html as html_lib
 import hashlib
 import json
 import math
@@ -21,7 +23,9 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -92,11 +96,19 @@ def load_config(path: Path) -> dict[str, Any]:
         )
     config = load_json_file(path, {})
     accounts = config.get("accounts")
-    if not isinstance(accounts, list) or not accounts:
-        raise SystemExit(f"{path} must contain a non-empty accounts array")
+    article_sources = config.get("article_sources")
+    if not isinstance(accounts, list):
+        accounts = []
+    if not isinstance(article_sources, list):
+        article_sources = []
+    if not accounts and not article_sources:
+        raise SystemExit(f"{path} must contain accounts or article_sources")
     config["accounts"] = [slug_handle(str(account)) for account in accounts if slug_handle(str(account))]
-    if not config["accounts"]:
+    if accounts and not config["accounts"]:
         raise SystemExit(f"{path} must contain at least one usable account handle")
+    config["article_sources"] = [
+        source for source in article_sources if isinstance(source, dict)
+    ]
     config["lookback_hours"] = int(config.get("lookback_hours") or 24)
     config["max_posts_per_account"] = int(config.get("max_posts_per_account") or 5)
     config["min_score"] = int(config.get("min_score") or 55)
@@ -131,6 +143,17 @@ def load_queue(path: Path) -> dict[str, Any]:
 def save_queue(path: Path, queue: dict[str, Any]) -> None:
     queue["updated_at"] = utc_now()
     write_json_file(path, queue)
+
+
+def record_outcome_event(candidate: dict[str, Any], event: str, detail: str = "") -> None:
+    events = candidate.setdefault("events", [])
+    if not isinstance(events, list):
+        events = []
+        candidate["events"] = events
+    row = {"event": str(event), "at": utc_now()}
+    if detail:
+        row["detail"] = str(detail)
+    events.append(row)
 
 
 def parse_count(value: Any) -> int:
@@ -295,6 +318,193 @@ def fetch_scout_posts(config: dict[str, Any], *, limit: int) -> list[dict[str, A
         per_handle[handle] = per_handle.get(handle, 0) + 1
         posts.append(post)
     return posts
+
+
+def article_candidate_id(url: str) -> str:
+    digest = hashlib.sha256(str(url).encode("utf-8")).hexdigest()[:12]
+    return f"article_{digest}"
+
+
+def _strip_markup(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style).*?</\1>", " ", str(value or ""))
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    return re.sub(r"\s+", " ", html_lib.unescape(value)).strip()
+
+
+def feed_item_datetime(item: dict[str, Any]) -> datetime:
+    for key in ("published", "published_at", "updated", "date", "pubDate"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = email.utils.parsedate_to_datetime(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            pass
+        try:
+            normalized = raw.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(0, timezone.utc)
+
+
+def _xml_text(node: ET.Element, names: tuple[str, ...]) -> str:
+    for name in names:
+        found = node.find(name)
+        if found is not None and found.text:
+            return found.text.strip()
+    return ""
+
+
+def _xml_link(node: ET.Element, base_url: str) -> str:
+    link = _xml_text(node, ("link", "guid", "{http://www.w3.org/2005/Atom}id"))
+    atom_link = node.find("{http://www.w3.org/2005/Atom}link")
+    if atom_link is not None:
+        link = atom_link.attrib.get("href") or link
+    return urllib.parse.urljoin(base_url, html_lib.unescape(link.strip()))
+
+
+def _parse_feed_items(feed_xml: bytes, source: dict[str, Any]) -> list[dict[str, Any]]:
+    source_name = str(source.get("name") or source.get("source_name") or "RSS").strip()
+    feed_url = str(source.get("feed_url") or source.get("url") or "").strip()
+    try:
+        root = ET.fromstring(feed_xml)
+    except ET.ParseError:
+        return []
+
+    rss_items = list(root.findall(".//item"))
+    atom_items = list(root.findall(".//{http://www.w3.org/2005/Atom}entry"))
+    nodes = rss_items or atom_items
+    items: list[dict[str, Any]] = []
+    for node in nodes:
+        title = _xml_text(node, ("title", "{http://www.w3.org/2005/Atom}title"))
+        url = _xml_link(node, feed_url)
+        summary = _xml_text(
+            node,
+            (
+                "description",
+                "summary",
+                "content",
+                "{http://www.w3.org/2005/Atom}summary",
+                "{http://www.w3.org/2005/Atom}content",
+            ),
+        )
+        published = _xml_text(
+            node,
+            (
+                "pubDate",
+                "published",
+                "updated",
+                "{http://www.w3.org/2005/Atom}published",
+                "{http://www.w3.org/2005/Atom}updated",
+            ),
+        )
+        title = _strip_markup(title)
+        summary = _strip_markup(summary)
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+        items.append(
+            {
+                "url": url,
+                "title": title,
+                "summary": summary,
+                "desc": summary,
+                "source_name": source_name,
+                "published": published,
+                "published_at": feed_item_datetime({"published": published}).isoformat(),
+                "_source_config": source,
+            }
+        )
+    return items
+
+
+def fetch_article_items(config: dict[str, Any], *, limit: int = 30) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    sources = config.get("article_sources") or []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        feed_url = str(source.get("feed_url") or source.get("url") or "").strip()
+        if not feed_url:
+            continue
+        request = urllib.request.Request(
+            feed_url,
+            headers={"User-Agent": source.get("user_agent") or SCOUT_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                feed_xml = response.read(1_000_000)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"[rss] Could not fetch {feed_url}: {exc}")
+            continue
+        items.extend(_parse_feed_items(feed_xml, source))
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        deduped.setdefault(str(item["url"]), item)
+    ordered = sorted(
+        deduped.values(),
+        key=feed_item_datetime,
+        reverse=True,
+    )
+    return ordered[: max(0, int(limit))]
+
+
+def score_article_item(
+    item: dict[str, Any],
+    source_config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+) -> tuple[int, list[str]]:
+    source_config = source_config or {}
+    config = config or {}
+    text = " ".join(
+        str(item.get(key) or "") for key in ("title", "summary", "desc", "source_name")
+    ).lower()
+    score = int(source_config.get("score_bonus") or 0)
+    reasons: list[str] = []
+
+    include = [str(k).lower() for k in config.get("include_keywords", []) if str(k).strip()]
+    matched = [keyword for keyword in include if keyword in text][:5]
+    if matched:
+        score += min(30, 6 * len(matched))
+        reasons.append("keywords: " + ", ".join(matched))
+
+    exclude = [str(k).lower() for k in config.get("exclude_keywords", []) if str(k).strip()]
+    blocked = [keyword for keyword in exclude if keyword in text][:3]
+    if blocked:
+        score -= 30
+        reasons.append("excluded keyword: " + ", ".join(blocked))
+
+    title = str(item.get("title") or "")
+    summary = str(item.get("summary") or item.get("desc") or "")
+    if re.search(r"\b(agent|ai|model|openai|anthropic|google|microsoft|nvidia|codex|claude|grok)\b", text):
+        score += 25
+        reasons.append("AI topic")
+    if len(title) >= 24:
+        score += 8
+        reasons.append("clear headline")
+    if len(summary) >= 80:
+        score += 8
+        reasons.append("has summary")
+
+    age_hours = (datetime.now(timezone.utc) - feed_item_datetime(item)).total_seconds() / 3600
+    if age_hours <= 24:
+        score += 12
+        reasons.append("fresh")
+    elif age_hours <= 72:
+        score += 5
+        reasons.append("recent")
+
+    score = max(0, min(100, score))
+    if not reasons:
+        reasons.append("baseline RSS article")
+    return score, reasons
 
 
 def merge_candidates(

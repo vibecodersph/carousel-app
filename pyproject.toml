@@ -1,7 +1,7 @@
 [project]
 name = "carousel-app"
 version = "0.1.0"
-description = "LLMAW branded carousel renderer for PNG, PPTX, and video slides."
+description = "Channel-branded carousel renderer for PNG, PPTX, and video slides."
 requires-python = ">=3.9"
 dependencies = [
   "openai>=2.41.0",

@@ -9,12 +9,12 @@ renders multi-slide carousels with images instead of a single magazine cover.
     uv run python build_daily_carousel.py --no-images  # text-only fallback
 
 Slides:
-  1. Cover/hook: VCPH OS Daily Drop magazine cover + carousel swipe cue
+  1. Cover/hook: Daily Drop cover photo background + carousel-owned text/branding
   2..N+1. Story slide: article image (scraped or generated) + headline + body
   Last. CTA: follow @handle
 
-Cover image priority: VCPH OS Daily Drop full-cover generator for 5-story VCPH runs,
-then GPT Image 2.0 compilation fallback.
+Cover image priority: Daily Drop cover-photo generator for 5-story VCPH runs,
+then GPT Image 2.0 text-free compilation fallback.
 Story image priority: scrape og:image from article URL → GPT Image 2.0 fallback.
 """
 
@@ -50,7 +50,6 @@ from build_x_carousel import (  # noqa: E402
     load_env_file,
     parse_json_object,
     phrase_text_markup,
-    render_cta_slide,
     render_html_slide,
     shared_css,
 )
@@ -63,9 +62,10 @@ from vcph_feed_pipeline import (  # noqa: E402
 
 DEFAULT_OUT = ROOT / "out" / "daily_carousel"
 DEFAULT_MAX_STORIES = 5
-COVER_SIZE = "1024x1024"
+COVER_SIZE = "1024x1280"
 STORY_IMAGE_SIZE = "1024x1024"
 BASE_VOICE_GUIDE = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
+DEFAULT_SWIPE_CUE = "Swipe for more →"
 
 # ─────────────────────────── Helpers ───────────────────────────
 
@@ -177,6 +177,156 @@ def _daily_drop_voice_stories(stories, voice):
     return out
 
 
+_TAGLISH_MARKERS = {
+    "ang", "ano", "ba", "bagong", "bakit", "dapat", "dito", "gamit", "gamitin",
+    "hindi", "ito", "iyan", "kasi", "kay", "kung", "lang", "mas", "may",
+    "mga", "mo", "na", "naka", "nasa", "ng", "ni", "pa", "para", "pero",
+    "pwede", "sa", "si", "sila", "tayo", "wala",
+}
+
+
+def _is_taglish_channel(channel) -> bool:
+    return str(getattr(channel, "language_name", "")).lower() == "taglish"
+
+
+def _has_taglish_marker(text: str) -> bool:
+    tokens = re.findall(r"[A-Za-zÀ-ÿ']+", str(text or "").lower())
+    return any(token in _TAGLISH_MARKERS for token in tokens)
+
+
+def _sanitize_daily_voice_data(data: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "cover_headline", "cover_subtitle", "cover_swipe_line",
+        "cover_subject", "cover_style", "instagram_caption",
+    ):
+        if key in data:
+            data[key] = _strip_for_vcph(data[key])
+    story_rows = data.get("stories")
+    if not isinstance(story_rows, list):
+        story_rows = []
+        data["stories"] = story_rows
+    for vs in story_rows:
+        if isinstance(vs, dict):
+            vs["headline"] = _strip_for_vcph(vs.get("headline", ""))
+            vs["body"] = _strip_for_vcph(vs.get("body", ""))
+    return data
+
+
+def _daily_voice_issues(data: dict[str, Any], expected_count: int, channel) -> list[str]:
+    issues: list[str] = []
+    story_rows = data.get("stories") if isinstance(data, dict) else None
+    if not isinstance(story_rows, list):
+        return ["stories is missing"]
+
+    by_n = {
+        row.get("n"): row
+        for row in story_rows
+        if isinstance(row, dict)
+    }
+    for n in range(1, expected_count + 1):
+        row = by_n.get(n)
+        if not row:
+            issues.append(f"story {n} missing")
+            continue
+        headline = str(row.get("headline") or "")
+        if not headline:
+            issues.append(f"story {n} headline missing")
+        if _is_taglish_channel(channel) and not _has_taglish_marker(headline):
+            issues.append(f"story {n} headline is not Taglish enough")
+
+    if _is_taglish_channel(channel):
+        for key in ("cover_headline", "cover_subtitle", "instagram_caption"):
+            value = str(data.get(key) or "")
+            if not value:
+                issues.append(f"{key} missing")
+            elif not _has_taglish_marker(value):
+                issues.append(f"{key} is not Taglish enough")
+    return issues
+
+
+def _repair_daily_voice_with_gemini(
+    data: dict[str, Any],
+    stories,
+    channel,
+    api_key: str,
+    guide: str,
+    channel_voice: str,
+    issues: list[str],
+) -> dict[str, Any] | None:
+    raw_list = [
+        {
+            "n": i + 1,
+            "source": s["source"],
+            "title": s["title"],
+            "desc": s["desc"][:500],
+            "link": s.get("link", ""),
+        }
+        for i, s in enumerate(stories)
+    ]
+    prompt = f"""
+Repair this Instagram carousel JSON so it fully follows the VibeCoders PH Taglish voice.
+
+Return JSON only, with the same schema and the same story order.
+
+Problems found:
+{json.dumps(issues, ensure_ascii=False, indent=2)}
+
+Hard repair rules:
+- Every story headline, including stories 2 to 5, must be Taglish-native, not straight English.
+- Every story headline must contain at least one Filipino connector or phrase such as "may", "sa", "ng", "para", "nasa", "gamit", "ito", "pero", "kasi", "pwede", or "bagong".
+- Keep source facts, product names, company names, dates, amounts, and technical nouns intact.
+- Do not invent claims. Do not add jokes to story bodies.
+- Keep cover_headline with exactly one [accent] word.
+- Keep cover_subject as text-free cover-photo art direction using orange or terracotta, never purple, pink, violet, or magenta.
+- No em dashes.
+
+{channel.brand_name} channel voice block:
+{channel_voice}
+
+Base VibeCodersPH voice guide:
+{guide[:7000]}
+
+Source stories:
+{json.dumps(raw_list, ensure_ascii=False, indent=2)}
+
+Current JSON to repair:
+{json.dumps(data, ensure_ascii=False, indent=2)}
+""".strip()
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+    response = gemini_generate_content(
+        gemini_text_model(),
+        api_key,
+        payload,
+        api_version=os.environ.get("GEMINI_TEXT_API_VERSION") or "v1beta",
+        timeout=90,
+    )
+    repaired = parse_json_object(extract_gemini_text(response))
+    if not isinstance(repaired, dict):
+        return None
+    return _sanitize_daily_voice_data(repaired)
+
+
+def _display_stories_for_render(stories, voice):
+    """Story rows after voice rewrite, used by visible cover/list/story copy."""
+    voice_rows = _daily_drop_voice_stories(stories, voice)
+    display = []
+    for story, row in zip(stories, voice_rows):
+        enriched = dict(story)
+        if row.get("headline"):
+            enriched["headline"] = row["headline"]
+        if row.get("blurb"):
+            enriched["body"] = row["blurb"]
+        display.append(enriched)
+    return display
+
+
 def _generate_daily_drop_magazine_cover(
     stories,
     out_dir,
@@ -185,7 +335,7 @@ def _generate_daily_drop_magazine_cover(
     cover_headline="",
     cover_subtitle="",
 ):
-    """Generate a VCPH OS-style full magazine cover and copy it into out_dir."""
+    """Generate a VCPH Daily Drop cover photo background and copy it into out_dir."""
     if channel.id != "vibecodersph":
         return None
 
@@ -193,7 +343,7 @@ def _generate_daily_drop_magazine_cover(
     if not voice_stories:
         return None
     if len(voice_stories) < 5:
-        print("  [cover] Daily Drop magazine cover needs 5 stories; using montage fallback")
+        print("  [cover] Daily Drop cover photo needs 5 stories; using montage fallback")
         return None
 
     cover_subject = ""
@@ -215,7 +365,7 @@ def _generate_daily_drop_magazine_cover(
     if not cover_subject:
         fallback_title = hero_story.get("title") or hero_cover_line or "today's AI news"
         cover_subject = (
-            "A full VIBECODERSPH Daily Drop magazine cover for the top story: "
+            "A full-bleed VibeCoders PH Daily Drop cover photo for the top story: "
             f"{fallback_title}. "
             "Use a specific editorial metaphor, not a generic tech dashboard."
         )
@@ -227,14 +377,15 @@ def _generate_daily_drop_magazine_cover(
         "cover_subject": cover_subject,
         "cover_style": cover_style,
         "carousel_mode": True,
+        "cover_asset_version": 2,
     }
     digest = hashlib.sha1(
         json.dumps(digest_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:10]
-    img_path = out_dir / "images" / f"magazine-cover-{digest}.jpg"
+    img_path = out_dir / "images" / f"cover-photo-{digest}.jpg"
     img_path.parent.mkdir(parents=True, exist_ok=True)
     if img_path.exists():
-        print(f"  [cover] using cached Daily Drop magazine cover -> {img_path.name}")
+        print(f"  [cover] using cached Daily Drop cover photo -> {img_path.name}")
         return img_path
 
     try:
@@ -250,7 +401,7 @@ def _generate_daily_drop_magazine_cover(
         if generated and Path(str(generated)).exists():
             return img_path
     except Exception as e:
-        print(f"  [cover] Daily Drop magazine cover failed: {e}")
+        print(f"  [cover] Daily Drop cover photo failed: {e}")
     return None
 
 
@@ -311,8 +462,8 @@ def _fetch_article_image(url, out_dir=DEFAULT_OUT):
 def _generate_cover_image(stories, out_dir, channel, voice=None, cover_headline="", cover_subtitle=""):
     """Generate a cover image.
 
-    Preferred path: VCPH OS Daily Drop full magazine cover. Fallback: the older
-    carousel montage background.
+    Preferred path: VCPH Daily Drop cover photo. Fallback: the older carousel
+    montage background.
 
     Returns path to generated PNG, or None.
     """
@@ -352,7 +503,7 @@ def _generate_cover_image(stories, out_dir, channel, voice=None, cover_headline=
     primary_hex = colors.get("primary", "#C0552E")
 
     prompt = (
-        "An editorial magazine cover compilation for an AI/tech news Instagram carousel. "
+        "A text-free editorial cover photo background for an AI/tech news Instagram carousel. "
         "The composition should feel like a Wired or Fast Company cover: a montage or "
         "collage of abstract editorial illustrations representing today's top stories. "
         f"Background: {bg_hex} warm cream paper texture with dark ink accents "
@@ -360,8 +511,9 @@ def _generate_cover_image(stories, out_dir, channel, voice=None, cover_headline=
         "Style: abstract geometric, editorial magazine aesthetic, ink-wash technique, "
         "grain texture, restrained composition. No visible text, no logos, no letters, "
         "no numbers, no words, no UI elements. The carousel typography will be overlaid "
-        "separately. Make it visually striking, a single hero image that represents "
-        "the day's AI news collectively. Square 1:1 format.\n\n"
+        "separately. Keep the lower-left and bottom edge calm enough for overlaid text. "
+        "Make it visually striking, a single hero image that represents the day's AI news "
+        "collectively. Portrait 4:5 Instagram carousel format.\n\n"
         "Today's stories to represent visually:\n"
         f"{stories_text}"
     )
@@ -483,8 +635,8 @@ Return JSON only with this exact shape:
 {{
   "cover_headline": "4 to 8 words, Taglish-native hook about story n=1 only, with exactly one [accent] word in brackets",
   "cover_subtitle": "one short Taglish line explaining today's mix",
-  "cover_swipe_line": "short natural swipe prompt, e.g. swipe mo",
-  "cover_subject": "1 to 3 sentences of VCPH Daily Drop magazine-cover art direction for the hero story",
+  "cover_swipe_line": "use exactly: Swipe for more →",
+  "cover_subject": "1 to 3 sentences of text-free VCPH Daily Drop cover-photo art direction for the hero story",
   "cover_style": "empty string, or one obvious Daily Drop style key only when the story clearly needs it",
   "instagram_caption": "short Taglish caption with one hook, one useful line, one CTA, clean hashtags",
   "stories": [
@@ -494,7 +646,8 @@ Return JSON only with this exact shape:
 
 Voice rules:
 - Use Gemini to write in the VibeCoders PH Instagram voice below, not generic news voice.
-- Taglish-native for the cover, caption, and framing lines. Body slides can lean English for technical precision, but should still sound like a Pinoy builder talking to barkada.
+- Taglish-native for the cover, caption, framing lines, and every story headline. Body slides can lean English for technical precision, but should still sound like a Pinoy builder talking to barkada.
+- Every story headline, including stories n=2 to n=5, must contain at least one Filipino connector or phrase such as "may", "sa", "ng", "para", "nasa", "gamit", "ito", "pero", "kasi", "pwede", or "bagong". Do not return straight-English story headlines.
 - Smart-funny, never clown-funny. Keep jokes mostly on the cover or caption. Story headlines and bodies should be crisp and factual.
 - No em dashes. No en dashes. Use commas, periods, colons, or parentheses.
 - No clickbait phrases, no BREAKING, no MUST READ, no corporate buzzwords, no emoji stacks.
@@ -507,7 +660,8 @@ Voice rules:
 - Keep each story in the same order and preserve its n value.
 - Use exactly one [accent] word in cover_headline only. Do not use brackets in story headlines or bodies.
 - Treat story n=1 as the hero story. cover_headline and cover_subject must be about story n=1 only. Stories n=2 to n=5 are lower cover/list items.
-- cover_subject should think like a Wired or Bloomberg Businessweek art director for story n=1: one specific hero visual metaphor, not a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
+- cover_subject should think like a Wired or Bloomberg Businessweek art director for story n=1: one specific hero visual metaphor for a background photo/illustration. Do not request text, logos, mastheads, screens full of labels, a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
+- cover_subject should use the VibeCoders PH orange/terracotta accent system, not purple, pink, or magenta.
 - cover_style should usually be empty so the VCPH OS style rotation can decide. Only choose a style when the source has an obvious medium match.
 
 {channel.brand_name} channel voice block:
@@ -541,20 +695,27 @@ Stories JSON:
             print("  [warn] Gemini voice rewrite returned no JSON; using raw titles")
             return None
 
-        for key in (
-            "cover_headline", "cover_subtitle", "cover_swipe_line",
-            "cover_subject", "cover_style", "instagram_caption",
-        ):
-            if key in data:
-                data[key] = _strip_for_vcph(data[key])
-        story_rows = data.get("stories")
-        if not isinstance(story_rows, list):
-            story_rows = []
-            data["stories"] = story_rows
-        for vs in story_rows:
-            if isinstance(vs, dict):
-                vs["headline"] = _strip_for_vcph(vs.get("headline", ""))
-                vs["body"] = _strip_for_vcph(vs.get("body", ""))
+        data = _sanitize_daily_voice_data(data)
+        issues = _daily_voice_issues(data, len(stories), channel)
+        if issues:
+            print("  [voice guard] Gemini output missed the channel voice; requesting repair")
+            for issue in issues[:8]:
+                print(f"    - {issue}")
+            repaired = _repair_daily_voice_with_gemini(
+                data, stories, channel, api_key, guide, channel_voice, issues
+            )
+            if repaired:
+                repaired_issues = _daily_voice_issues(repaired, len(stories), channel)
+                if not repaired_issues:
+                    data = repaired
+                else:
+                    print("  [warn] Gemini repair still missed voice requirements")
+                    for issue in repaired_issues[:8]:
+                        print(f"    - {issue}")
+                    if _is_taglish_channel(channel):
+                        return None
+            elif _is_taglish_channel(channel):
+                return None
 
         return data
     except Exception as e:
@@ -610,154 +771,160 @@ def _file_uri(path):
     return path.resolve().as_uri()
 
 
-def _magazine_cover_slide_html(channel, cover_image, swipe_line, total_slides):
-    """Full-bleed magazine cover with carousel chrome and logo overlaid."""
-    cover_uri = _file_uri(cover_image)
-    logo_uri = _file_uri(ROOT / "assets" / "vibecodersph_logo.png")
-    safe_swipe = html.escape(swipe_line or "swipe for more")
+def _brand_logo_html(channel, css_class: str) -> str:
+    if channel.id != "vibecodersph":
+        return ""
+    return (
+        f'<div class="{css_class}" aria-label="{html.escape(channel.brand_name)}">'
+        '<span class="cover-logo-mark">&lt;/&gt;</span>'
+        '<span class="cover-logo-text">VIBE CODERS PH</span>'
+        '</div>'
+    )
+
+
+def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, stories, bg_image=None):
+    story_count = len(stories)
     safe_handle = html.escape(channel.handle)
+    safe_subtitle = html.escape(str(subtitle or "").rstrip(" ."))
+    story_label = f"{story_count} stories" if story_count > 1 else "1 story"
+    font_size = _headline_size(headline_text, cover=True)
+    total_slides = story_count + 2
+    logo_html = _brand_logo_html(channel, "cover-logo")
+    lower_items = []
+    for index, story in enumerate(stories[1:5], start=2):
+        title = story.get("headline") or story.get("title") or ""
+        lower_items.append(
+            f'<li><span>{index:02d}</span><b>{html.escape(_clamp_words(title, 86))}</b></li>'
+        )
+    lower_html = "\n".join(lower_items)
+
+    visual_inner = """<div class="cover-fallback"></div>"""
+    if bg_image and bg_image.exists():
+        bg_uri = _file_uri(bg_image)
+        visual_inner = f"""<div class="cover-bg" style="background-image:url('{bg_uri}')"></div><div class="cover-fallback"></div>"""
+
     return textwrap.dedent(f"""\
     <!doctype html>
     <html><head><meta charset="utf-8"><style>
     {shared_css()}
     .slide {{ background: #0d0b08; }}
-    .mag-bg {{
-      position: absolute; inset: 0; z-index: 0;
-      background: url('{cover_uri}') center/cover no-repeat;
+    .cover-art {{
+      position: absolute; inset: 0; overflow: hidden; background: #151713;
     }}
-    .mag-scrim {{
-      position: absolute; inset: 0; z-index: 1;
-      background: linear-gradient(
-        180deg,
-        rgba(13,11,8,0.55) 0%,
-        rgba(13,11,8,0.08) 28%,
-        rgba(13,11,8,0.06) 72%,
-        rgba(13,11,8,0.58) 100%
-      );
-    }}
-    .mag-handle {{
-      position: absolute; top: 44px; left: 58px; z-index: 4;
-      color: rgba(244,242,236,0.90);
-      font-size: 23px; font-weight: 840; letter-spacing: 0.12em;
-      text-transform: uppercase;
-      text-shadow: 0 2px 12px rgba(0,0,0,0.45);
-    }}
-    .mag-progress {{
-      position: absolute; top: 44px; right: 58px; z-index: 4;
-      color: rgba(244,242,236,0.78);
-      font-size: 23px; font-weight: 840; letter-spacing: 0.06em;
-      text-shadow: 0 2px 12px rgba(0,0,0,0.45);
-    }}
-    .mag-logo {{
-      position: absolute; bottom: 38px; right: 42px; z-index: 4;
-      width: 144px; height: auto; opacity: 0.92;
-      filter: drop-shadow(0 4px 16px rgba(0,0,0,0.35));
-    }}
-    .mag-swipe {{
-      position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
-      z-index: 5;
-      padding: 11px 28px 12px;
-      border-radius: 999px;
-      background: rgba(244,242,236,0.94);
-      color: #C0552E;
-      font-size: 22px;
-      font-weight: 860;
-      letter-spacing: 0.01em;
-      line-height: 1;
-      box-shadow: 0 8px 28px rgba(0,0,0,0.30);
-    }}
-    </style></head>
-    <body>
-    <div class="slide">
-      <div class="mag-bg"></div>
-      <div class="mag-scrim"></div>
-      <div class="mag-handle">{safe_handle}</div>
-      <div class="mag-progress">01 / {total_slides:02d}</div>
-      <img class="mag-logo" src="{logo_uri}" alt="VibeCodersPH">
-      <div class="mag-swipe">{safe_swipe}</div>
-    </div>
-    </body></html>
-    """)
-
-
-def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, story_count, bg_image=None):
-    if bg_image and bg_image.exists() and bg_image.name.startswith("magazine-cover-"):
-        return _magazine_cover_slide_html(channel, bg_image, swipe_line, story_count + 2)
-
-    safe_handle = html.escape(channel.account_name.upper())
-    safe_subtitle = html.escape(str(subtitle or "").rstrip(" ."))
-    story_label = f"{story_count} stories" if story_count > 1 else "1 story"
-    font_size = _headline_size(headline_text, cover=True)
-
-    visual_class = "visual-card"
-    visual_inner = """<div class="visual-fallback"></div>"""
-    if bg_image and bg_image.exists():
-        bg_uri = _file_uri(bg_image)
-        visual_inner = f"""<div class="visual-bg" style="background-image:url('{bg_uri}')"></div><div class="visual-fallback"></div>"""
-
-    return textwrap.dedent(f"""\
-    <!doctype html>
-    <html><head><meta charset="utf-8"><style>
-    {shared_css()}
-    .visual-card {{
-      position: absolute; top: 0; left: 0; width: 100%; height: 790px;
-      overflow: hidden; background: #151713;
-    }}
-    .visual-bg, .visual-fallback {{ position: absolute; inset: 0; }}
-    .visual-bg {{
+    .cover-bg, .cover-fallback {{ position: absolute; inset: 0; }}
+    .cover-bg {{
       z-index: 1; background-position: center; background-size: cover;
-      filter: saturate(0.96) contrast(1.02);
+      filter: saturate(0.98) contrast(1.03);
     }}
-    .visual-card::after {{
+    .cover-art::after {{
       content: ''; position: absolute; z-index: 2; inset: 0;
       background:
-        linear-gradient(180deg, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.24) 62%, var(--bg) 100%);
+        linear-gradient(90deg, rgba(13,11,8,0.78) 0%, rgba(13,11,8,0.48) 48%, rgba(13,11,8,0.16) 100%),
+        linear-gradient(180deg, rgba(13,11,8,0.62) 0%, rgba(13,11,8,0.04) 34%, rgba(13,11,8,0.20) 64%, rgba(13,11,8,0.78) 100%);
       pointer-events: none;
     }}
-    .visual-fallback {{
+    .cover-fallback {{
       z-index: 0;
       background:
-        radial-gradient(circle at 78% 22%, rgba(var(--primary-rgb), 0.46) 0 16%, transparent 17%),
-        radial-gradient(circle at 24% 34%, rgba(var(--primary-rgb), 0.28) 0 12%, transparent 13%),
-        linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
+        radial-gradient(circle at 78% 24%, rgba(var(--primary-rgb), 0.34) 0 16%, transparent 17%),
+        linear-gradient(135deg, rgba(22, 20, 15, 0.98), rgba(var(--primary-rgb), 0.64)),
         repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
     }}
-    .title-cluster {{
-      position: absolute; left: 56px; right: 56px; top: 742px; bottom: 168px;
-      display: flex; flex-direction: column; justify-content: flex-end;
-      text-align: left; z-index: 3;
+    .cover-handle, .cover-progress {{
+      position: absolute; top: 48px; z-index: 4;
+      color: rgba(244,242,236,0.92);
+      font-size: 23px; font-weight: 840; letter-spacing: 0.12em;
+      line-height: 1; text-transform: uppercase;
+      text-shadow: 0 3px 18px rgba(0,0,0,0.52);
     }}
-    .account-rule {{
-      display: flex; align-items: center; gap: 22px; margin-bottom: 30px; color: var(--primary);
+    .cover-handle {{ left: 58px; }}
+    .cover-progress {{ right: 58px; letter-spacing: 0.06em; }}
+    .cover-title {{
+      position: absolute; left: 58px; right: 250px; top: 610px; z-index: 4;
+      color: #fff;
+      text-shadow: 0 4px 24px rgba(0,0,0,0.45);
     }}
-    .account-rule::before, .account-rule::after {{ content: ''; flex: 1; height: 2px; background: var(--rule); }}
-    .account-rule span {{
-      font-size: 24px; font-weight: 820; letter-spacing: 0; line-height: 1;
-      text-transform: uppercase; color: var(--primary);
+    .cover-kicker {{
+      display: flex; align-items: center; gap: 18px; width: 360px;
+      margin-bottom: 18px; color: var(--primary);
+    }}
+    .cover-kicker::before {{ content: ''; width: 68px; height: 4px; background: var(--primary); }}
+    .cover-kicker span {{
+      font-size: 23px; font-weight: 860; letter-spacing: 0.10em;
+      line-height: 1; text-transform: uppercase;
     }}
     .headline {{
       font-size: {font_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.03;
-      color: var(--fg); line-break: strict; overflow-wrap: normal;
+      color: #fff; line-break: strict; overflow-wrap: normal;
       text-wrap: balance; word-break: normal;
     }}
     .headline .accent {{ color: var(--primary); }}
     .headline .jp-phrase {{ display: inline-block; }}
     .headline .term {{ white-space: nowrap; }}
     .cover-subtitle {{
-      margin-top: 28px; max-width: 860px; color: var(--ink-soft);
+      margin-top: 22px; max-width: 760px; color: rgba(244,242,236,0.86);
       font-size: 31px; line-height: 1.26; font-weight: 650;
     }}
-    .dots {{ bottom: 116px; }}
+    .cover-list {{
+      position: absolute; left: 58px; right: 58px; bottom: 84px; z-index: 4;
+      display: grid; grid-template-columns: 1fr; gap: 0;
+      color: rgba(244,242,236,0.72);
+    }}
+    .cover-list-label {{
+      color: var(--primary); font-size: 22px; font-weight: 860;
+      letter-spacing: 0.16em; line-height: 1; text-align: center;
+      text-transform: uppercase; margin-bottom: 18px;
+    }}
+    .cover-list ol {{ list-style: none; display: grid; gap: 0; }}
+    .cover-list li {{
+      display: grid; grid-template-columns: 58px 1fr; align-items: center;
+      min-height: 45px; border-top: 1px solid rgba(244,242,236,0.22);
+      font-size: 21px; line-height: 1.12;
+    }}
+    .cover-list li:last-child {{ border-bottom: 1px solid rgba(244,242,236,0.22); }}
+    .cover-list li span {{ color: rgba(244,242,236,0.42); font-weight: 860; }}
+    .cover-list li b {{
+      color: rgba(244,242,236,0.78); font-weight: 760;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }}
+    .cover-logo {{
+      position: absolute; right: 48px; bottom: 34px; z-index: 5;
+      display: flex; align-items: center; gap: 12px;
+      color: rgba(244,242,236,0.88);
+      filter: drop-shadow(0 5px 18px rgba(0,0,0,0.46));
+    }}
+    .cover-logo-mark {{
+      width: 28px; height: 28px; display: grid; place-items: center;
+      background: var(--primary);
+      color: #0d0b08; font-size: 10px; font-weight: 900; line-height: 1;
+    }}
+    .cover-logo-text {{
+      font-size: 13px; font-weight: 880; letter-spacing: 0.18em;
+      line-height: 1; text-transform: uppercase;
+    }}
+    .dots {{
+      left: 50%; right: auto; bottom: 24px; transform: translateX(-50%);
+      z-index: 6; padding: 11px 28px 12px; border-radius: 999px;
+      background: rgba(244,242,236,0.94); color: var(--primary);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.30);
+    }}
     </style></head>
     <body>
     <div class="slide">
-      <div class="{visual_class}">{visual_inner}</div>
-      <div class="title-cluster">
-        <div class="account-rule"><span>{safe_handle}</span></div>
+      <div class="cover-art">{visual_inner}</div>
+      <div class="cover-handle">{safe_handle}</div>
+      <div class="cover-progress">01 / {total_slides:02d}</div>
+      <section class="cover-title">
+        <div class="cover-kicker"><span>Today's Story</span></div>
         <h1 class="headline">{headline}</h1>
         <div class="cover-subtitle">{safe_subtitle} &middot; {story_label} inside</div>
-      </div>
-      <div class="dots">{dot_markup(1, story_count + 2, swipe_line)}</div>
+      </section>
+      <section class="cover-list">
+        <div class="cover-list-label">Also in this drop</div>
+        <ol>{lower_html}</ol>
+      </section>
+      {logo_html}
+      <div class="dots">{dot_markup(1, total_slides, swipe_line)}</div>
     </div>
     </body></html>
     """)
@@ -765,11 +932,13 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
 
 def _story_slide_html(channel, story, slide_num, total_stories, image_path=None):
     safe_source = html.escape(story.get("source", ""))
+    safe_handle = html.escape(channel.handle)
     headline_text = story.get("headline", story.get("title", ""))
     body_text = story.get("body", story.get("desc", ""))
     headline_markup = phrase_text_markup(headline_text, max_chars=11)
     body_markup = phrase_text_markup(body_text, max_chars=17)
     font_size = _headline_size(headline_text)
+    total_slides = total_stories + 2
 
     img_html = """<div class="visual-fallback"></div>"""
     if image_path and image_path.exists():
@@ -791,10 +960,15 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
       z-index: 1; background-position: center; background-size: cover;
       filter: saturate(0.96) contrast(1.02);
     }}
+    .visual-card::before {{
+      content: ''; position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 132px;
+      background: linear-gradient(180deg, rgba(13,11,8,0.54), rgba(13,11,8,0));
+      pointer-events: none;
+    }}
     .visual-card::after {{
       content: ''; position: absolute; z-index: 2; inset: 0;
       background:
-        linear-gradient(180deg, rgba(var(--bg-rgb), 0) 32%, rgba(var(--bg-rgb), 0.23) 62%, var(--bg) 100%);
+        linear-gradient(180deg, rgba(var(--bg-rgb), 0) 30%, rgba(var(--bg-rgb), 0.30) 66%, var(--bg) 100%);
       pointer-events: none;
     }}
     .visual-fallback {{
@@ -803,8 +977,16 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
         linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
         repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
     }}
+    .story-brand, .story-progress {{
+      position: absolute; top: 48px; z-index: 4;
+      color: rgba(244,242,236,0.94); font-size: 23px; font-weight: 840;
+      letter-spacing: 0.12em; line-height: 1; text-transform: uppercase;
+      text-shadow: 0 3px 18px rgba(0,0,0,0.52);
+    }}
+    .story-brand {{ left: 58px; }}
+    .story-progress {{ right: 58px; letter-spacing: 0.06em; }}
     .story-cluster {{
-      position: absolute; left: 56px; right: 56px; top: 572px; bottom: 138px;
+      position: absolute; left: 56px; right: 56px; top: 572px; bottom: 142px;
       display: flex; flex-direction: column; justify-content: flex-start; z-index: 3;
     }}
     .account-rule {{
@@ -818,13 +1000,14 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-headline {{
       font-size: {font_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.05;
       color: var(--fg); text-wrap: balance; word-break: normal;
+      max-height: 230px; overflow: hidden;
     }}
     .story-headline .jp-phrase, .story-body .jp-phrase {{ display: inline-block; }}
     .story-headline .term, .story-body .term {{ white-space: nowrap; }}
     .story-rule {{ width: 100%; height: 2px; margin: 28px 0 24px; background: var(--rule); }}
     .story-body {{
-      color: var(--ink-soft); font-size: 32px; line-height: 1.34; font-weight: 640;
-      max-height: 176px; overflow: hidden;
+      color: var(--ink-soft); font-size: 31px; line-height: 1.34; font-weight: 640;
+      max-height: 168px; overflow: hidden;
     }}
     .story-source {{
       position: absolute; left: 72px; right: 72px; bottom: 96px; z-index: 3;
@@ -836,6 +1019,8 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     <body>
     <div class="slide">
       <div class="visual-card">{img_html}</div>
+      <div class="story-brand">{safe_handle}</div>
+      <div class="story-progress">{slide_num + 1:02d} / {total_slides:02d}</div>
       <div class="story-cluster">
         <div class="account-rule"><span>{slide_num:02d} / {total_stories:02d}</span></div>
         <h1 class="story-headline">{headline_markup}</h1>
@@ -853,17 +1038,23 @@ def _cta_slide_html(channel, slide_num, total):
     cta = carousel_cta_copy()
     safe_handle = html.escape(channel.handle)
     safe_kicker = html.escape(cta.get("kicker", "FOLLOW"))
-    safe_headline = html.escape(cta.get("headline", "Follow for more"))
+    headline_markup = phrase_text_markup(cta.get("headline", "Follow for more"), max_chars=11)
+    body_markup = phrase_text_markup(cta.get("body", ""), max_chars=17)
     safe_action = html.escape(cta.get("action", "Follow + Save"))
 
     return textwrap.dedent(f"""\
     <!doctype html>
     <html><head><meta charset="utf-8"><style>
     {shared_css()}
+    .cta-progress {{
+      position: absolute; top: 76px; right: 72px;
+      font-size: 23px; font-weight: 820; letter-spacing: 0.04em;
+      color: rgba(20, 18, 14, 0.42);
+    }}
     .cta-shell {{
       position: absolute; inset: 112px 72px 150px;
       display: flex; flex-direction: column;
-      justify-content: center; align-items: center; text-align: center;
+      justify-content: center; text-align: left;
     }}
     .cta-kicker {{
       display: flex; align-items: center; gap: 20px;
@@ -873,35 +1064,39 @@ def _cta_slide_html(channel, slide_num, total):
       content: ''; flex: 1; height: 2px; background: var(--rule);
     }}
     .cta-kicker span {{
-      font-size: 24px; font-weight: 700; letter-spacing: 0.22em;
-      text-transform: uppercase;
+      font-size: 24px; font-weight: 840; letter-spacing: 0.18em;
+      line-height: 1; text-transform: uppercase; white-space: nowrap;
     }}
-    .cta-headline {{
-      font-size: 68px; font-weight: 800; letter-spacing: -0.03em;
-      line-height: 1.1; color: var(--fg); margin-bottom: 40px;
+    .cta-title {{
+      max-width: 900px; font-size: 96px; line-height: 0.98;
+      font-weight: 880; letter-spacing: 0; color: var(--fg);
+      text-wrap: balance;
+    }}
+    .cta-title .jp-phrase, .cta-body .jp-phrase {{ display: inline-block; }}
+    .cta-title .term, .cta-body .term {{ white-space: nowrap; }}
+    .cta-body {{
+      max-width: 850px; margin-top: 42px; color: var(--ink-soft);
+      font-size: 39px; line-height: 1.28; font-weight: 640;
     }}
     .cta-action {{
-      background: var(--primary); color: #fff;
-      font-size: 28px; font-weight: 700; padding: 20px 56px;
-      border-radius: 40px; letter-spacing: 0.04em; text-transform: uppercase;
+      align-self: flex-start; margin-top: 54px; padding: 18px 24px 17px;
+      border: 3px solid var(--primary); color: var(--primary);
+      font-size: 34px; line-height: 1; font-weight: 860; letter-spacing: 0;
     }}
     .cta-handle {{
-      position: absolute; bottom: 80px; left: 0; right: 0;
-      text-align: center; font-size: 26px; font-weight: 700;
-      color: var(--muted); letter-spacing: 0.08em;
-    }}
-    .cta-counter {{
-      position: absolute; top: 76px; right: 72px;
-      font-size: 22px; font-weight: 700; color: var(--muted);
-      letter-spacing: 0.06em;
+      position: absolute; left: 72px; right: 72px; bottom: 86px;
+      color: var(--primary); font-size: 24px; font-weight: 840;
+      letter-spacing: 0.16em; line-height: 1; text-align: center;
+      text-transform: uppercase;
     }}
     </style></head>
     <body>
     <div class="slide" style="width:{SLIDE_W}px;height:{SLIDE_H}px">
-      <div class="cta-counter">{slide_num} / {total}</div>
+      <div class="cta-progress">{slide_num:02d} / {total:02d}</div>
       <div class="cta-shell">
         <div class="cta-kicker"><span>{safe_kicker}</span></div>
-        <div class="cta-headline">{safe_headline}</div>
+        <h1 class="cta-title">{headline_markup}</h1>
+        <div class="cta-body">{body_markup}</div>
         <div class="cta-action">{safe_action}</div>
       </div>
       <div class="cta-handle">{safe_handle}</div>
@@ -917,6 +1112,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     out_dir.mkdir(parents=True, exist_ok=True)
     total_slides = len(stories) + 2
     slides_manifest = []
+    display_stories = _display_stories_for_render(stories, voice)
 
     vmap = {}
     if voice and voice.get("stories"):
@@ -926,12 +1122,12 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     # ── Slide 1: Cover ──
     cover_headline = "AI News Today"
     cover_subtitle = "The latest in AI and tech"
-    cover_swipe_line = "swipe for more"
+    cover_swipe_line = DEFAULT_SWIPE_CUE
 
     if voice:
         cover_headline = voice.get("cover_headline") or cover_headline
         cover_subtitle = voice.get("cover_subtitle") or cover_subtitle
-        cover_swipe_line = voice.get("cover_swipe_line") or cover_swipe_line
+        cover_swipe_line = DEFAULT_SWIPE_CUE
     elif stories:
         top = stories[0]
         cover_headline = "AI News Today"
@@ -940,7 +1136,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     # ── Images: cover ──
     cover_image = None
     if use_images:
-        print("  Generating VCPH OS-style magazine cover via GPT Image 2.0...")
+        print("  Generating VCPH Daily Drop cover photo via GPT Image 2.0...")
         cover_image = _generate_cover_image(
             stories,
             out_dir,
@@ -949,11 +1145,16 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
             cover_headline=cover_headline,
             cover_subtitle=cover_subtitle,
         )
+        if channel.id == "vibecodersph" and not cover_image:
+            raise RuntimeError(
+                "VibeCoders PH image builds require a generated GPT Image 2.0 cover photo. "
+                "Check OPENAI_API_KEY or rerun with --no-images only for diagnostics."
+            )
 
     headline_html, headline_text = _headline_with_accent(cover_headline)
     html_text = _cover_slide_html(
         channel, headline_html, headline_text, cover_subtitle, cover_swipe_line,
-        len(stories), bg_image=cover_image,
+        display_stories, bg_image=cover_image,
     )
     (out_dir / "slide_01.html").write_text(html_text, encoding="utf-8")
     render_html_slide(out_dir / "slide_01.html", out_dir / "slide_01.png")
@@ -969,7 +1170,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     for i, story in enumerate(stories):
         slide_num = i + 2
         vs = vmap.get(i + 1, {})
-        enriched = dict(story)
+        enriched = dict(display_stories[i])
         if vs.get("headline"):
             enriched["headline"] = vs["headline"]
         if vs.get("body"):
@@ -1007,7 +1208,12 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
 
     # ── Last slide: CTA ──
     cta_num = total_slides
-    render_cta_slide(out_dir / f"slide_{cta_num:02d}.png", cta_num, total_slides)
+    cta_html = _cta_slide_html(channel, cta_num, total_slides)
+    (out_dir / f"slide_{cta_num:02d}.html").write_text(cta_html, encoding="utf-8")
+    render_html_slide(
+        out_dir / f"slide_{cta_num:02d}.html",
+        out_dir / f"slide_{cta_num:02d}.png",
+    )
     slides_manifest.append({
         "file": f"slide_{cta_num:02d}.png", "type": "cta",
         "action": "Follow + Save",
@@ -1033,8 +1239,13 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
         "story_count": len(stories),
         "total_slides": total_slides,
         "stories": [
-            {"title": s["title"], "source": s["source"], "link": s.get("link", "")}
-            for s in stories
+            {
+                "title": s["title"],
+                "display_title": display_stories[i].get("headline", s["title"]),
+                "source": s["source"],
+                "link": s.get("link", ""),
+            }
+            for i, s in enumerate(stories)
         ],
         "slides": slides_manifest,
         "instagram_caption": instagram_caption,
@@ -1119,7 +1330,15 @@ def main():
                     if isinstance(vs, dict):
                         print(f"  Story {vs.get('n')}: {str(vs.get('headline', ''))[:60]}")
         else:
-            print("  Voice rewrite skipped/unavailable, using raw titles")
+            print("  Voice rewrite skipped/unavailable.")
+            if channel.language_name.lower() == "taglish":
+                print(
+                    "  Error: Taglish carousel builds require Gemini voice generation. "
+                    "Set GOOGLE_API_KEY/GEMINI_API_KEY or pass --no-voice only for diagnostics.",
+                    file=sys.stderr,
+                )
+                return 1
+            print("  Using raw titles for this non-Taglish channel")
 
     print(f"\nRendering {len(stories) + 2} slides...")
     manifest_path = build_daily_carousel(

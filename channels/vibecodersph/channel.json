@@ -6,10 +6,10 @@
   "language": {
     "name": "Taglish",
     "audience": "Filipino AI builder audience",
-    "voice_doc": "../../brand/VIBECODERS_IG_VOICE.md"
+    "voice_doc": "voice.md"
   },
   "brand": {
-    "brand_name": "vibecodersph",
+    "brand_name": "VibeCoders PH",
     "handle": "@vibecodersph",
     "source_pattern": "Whiteout / ink on light",
     "colors": {

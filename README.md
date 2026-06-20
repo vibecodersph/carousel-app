@@ -251,8 +251,8 @@ uv run python build_daily_carousel.py --channel aibrief_jp --max-stories 5
 Pulls from the same 30+ RSS/sitemap/API feeds as VCPH OS, scores and diversifies
 stories (2 international + 2 PH + 1 workforce). Renders a multi-slide carousel:
 
-- **Cover**: repo-local `daily_drop_cover.py` builds a VibeCodersPH Daily Drop magazine cover for 5-story runs, then slide 1 wraps it in the carousel frame
-- **Voice**: Gemini rewrites the cover, story copy, and caption in channel voice
+- **Cover**: repo-local `daily_drop_cover.py` builds a text-free VibeCoders PH Daily Drop cover photo with `gpt-image-2` for 5-story runs; slide 1 owns the headline, story list, logo, progress, and swipe cue
+- **Voice**: Gemini rewrites the cover, story copy, and caption in channel voice; Taglish channels fail instead of silently falling back when Gemini is unavailable
 - **Story slides**: article image (scraped og:image or AI-generated) + Gemini headline + body
 - **CTA**: follow + save
 
@@ -264,7 +264,7 @@ uv run python build_daily_carousel.py
 # Text-only fallback with Gemini voice
 uv run python build_daily_carousel.py --no-images
 
-# Zero API-key fallback
+# Diagnostic raw-copy fallback only; not for VibeCoders PH publishing
 uv run python build_daily_carousel.py --no-images --no-voice
 
 # Dry run: fetch and score only

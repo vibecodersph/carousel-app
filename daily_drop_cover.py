@@ -166,7 +166,7 @@ def _de_risk_subject(subject: str, hero_line: str, hero_blurb: str) -> str:
     return (
         "A premium symbolic editorial still-life for " + angle + ": separate glass "
         "monoliths and paper artifacts on a clean studio table, split by one precise "
-        "magenta seam of light. No humans, no faces, no hands, no arms, no fingers."
+        "burnt-orange seam of light. No humans, no faces, no hands, no arms, no fingers."
     )
 
 
@@ -256,7 +256,31 @@ def generate_full_cover(
     effective_size = cover_size or os.environ.get("DAILY_DROP_COVER_SIZE") or IMAGE_SIZE
     ratio_label = "portrait 4:5 (Instagram carousel)" if "1280" in effective_size else "portrait 2:3"
 
-    prompt = f"""Create a premium VIBECODERSPH Daily Drop MAGAZINE COVER, {ratio_label} aspect ratio, print-editorial quality.
+    if skip_logo_overlay:
+        prompt = f"""Create a premium VibeCoders PH Daily Drop COVER PHOTO BACKGROUND, {ratio_label} aspect ratio, print-editorial quality.
+
+This is only the photographic / illustrated background asset for an Instagram carousel.
+The app will add all masthead, logo, headline, deck, story list, counters, and swipe text later.
+
+Hero image subject:
+{cover_subject}
+
+Hero image style: {style['label']}
+{style['direction']}
+
+Hard rules:
+- No text of any kind. No masthead, no letters, no numbers, no labels, no captions, no UI, no logos, no brand marks, no watermarks.
+- Do not place OpenAI, Microsoft, Anthropic, school, publication, or fake product logos. Prefer symbolic objects.
+- Keep the lower-left third and bottom edge visually calm enough for overlaid white headline text.
+- Keep the top-left and top-right corners readable for small carousel chrome.
+- Use warm cream, deep ink, and one restrained burnt-orange or terracotta accent so it fits the VibeCoders PH brand.
+- Do not use purple, pink, violet, or magenta accents.
+- Avoid generic glowing dashboards, cute robots, clipart icons, random charts, and screen wallpaper.
+- Make one specific visual metaphor immediately readable from the hero story.
+
+Overall mood: premium Filipino builder media brand, tactile, useful, sharp, modern, never corporate stock art."""
+    else:
+        prompt = f"""Create a premium VIBECODERSPH Daily Drop MAGAZINE COVER, {ratio_label} aspect ratio, print-editorial quality.
 
 Hero image subject:
 {cover_subject}
@@ -268,7 +292,7 @@ Render all typography natively as part of the magazine cover, integrated with th
 
 Hard rules:
 - Masthead must read exactly "VIBECODERSPH" as one continuous wordmark.
-- Render "VIBECODERS" in warm cream #F0E4CD and "PH" in hot magenta #E040FB.
+- Render "VIBECODERS" in warm cream #F0E4CD and "PH" in burnt orange #C0552E.
 - No extra mastheads, no URLs, no barcodes, no watermarks, no fake UI text.
 - No generic glowing dashboards, no cute robots, no clipart icons, no random labels.
 - Keep the bottom-right corner visually quiet for a small logo overlay.
@@ -279,7 +303,7 @@ Top center, huge ultra-condensed all caps: "VIBECODERSPH".
 Directly below it, centered small off-white text: "{issue_str} · {today}".
 
 Kicker:
-Left aligned above the hero line: "TODAY'S STORY" in magenta, small caps, with a short magenta rule above it.
+Left aligned above the hero line: "TODAY'S STORY" in burnt orange, small caps, with a short orange rule above it.
 
 Hero cover line:
 White bold sentence case, 2 to 3 balanced lines, left aligned:
@@ -290,7 +314,7 @@ Off-white regular sans-serif, max 2 lines:
 "{hero_blurb}"
 
 Lower section:
-Centered magenta label: "ALSO IN THIS DROP".
+Centered orange label: "ALSO IN THIS DROP".
 Below it, four numbered cover lines, left aligned, muted grey numbers and white headlines, with thin rules between items:
 {cover_block}
 
@@ -308,13 +332,15 @@ Overall mood: lively, premium, useful, Filipino builder media brand. Sharp and m
         print("  [cover] openai package not installed; skipping magazine cover")
         return None
 
+    image_model = DEFAULT_MODEL
     print(f"  [cover] Art style: {style['key']} - {style['label']}")
+    print(f"  [cover] Image model: {image_model}")
     print(f"  [cover] Prompt length: {len(prompt)} chars")
 
     try:
         client = OpenAI(api_key=key)
         response = client.images.generate(
-            model=os.environ.get("OPENAI_IMAGE_MODEL") or DEFAULT_MODEL,
+            model=image_model,
             prompt=prompt,
             size=effective_size,
             n=1,
