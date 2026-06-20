@@ -1,0 +1,50 @@
+{
+  "id": "vibecodersph",
+  "account_name": "vibecodersph",
+  "brand_name": "VibeCoders PH",
+  "handle": "@vibecodersph",
+  "language": {
+    "name": "Taglish",
+    "audience": "Filipino AI builder audience",
+    "voice_doc": "../../brand/VIBECODERS_IG_VOICE.md"
+  },
+  "brand": {
+    "brand_name": "vibecodersph",
+    "handle": "@vibecodersph",
+    "source_pattern": "Whiteout / ink on light",
+    "colors": {
+      "bg": "#F4F2EC",
+      "bg_top": "#E9E6DF",
+      "fg": "#16140F",
+      "ink_soft": "rgba(20, 18, 14, 0.78)",
+      "primary": "#C0552E",
+      "muted": "rgba(20, 18, 14, 0.55)",
+      "rule": "rgba(20, 18, 14, 0.28)"
+    },
+    "typography": {
+      "heading_font": "Archivo",
+      "heading_weight": 800,
+      "heading_size_px": 90,
+      "heading_letter_spacing": "-0.03em",
+      "body_font": "Archivo",
+      "body_weight": 600,
+      "kicker_weight": 700,
+      "kicker_letter_spacing": "0.22em",
+      "font_source": "assets/archivo.css (variable woff2 embedded as base64, extracted from reference)"
+    },
+    "pattern": {
+      "handle_position": "top-left, icon + uppercase handle",
+      "kicker": "centered uppercase label between two horizontal rules",
+      "headline": "centered, one accent word in primary color",
+      "swipe_cue": "SWIPE FOR MORE + primary chip with chevron",
+      "progress": "primary dash for active slide + muted dots",
+      "edge_affordance": "circled chevron at right edge, headline height (slide 1 only)"
+    },
+    "logo_zones": {
+      "top_right": true,
+      "bottom_handle": true,
+      "page_counter": false
+    },
+    "default_slide_count": 6
+  }
+}

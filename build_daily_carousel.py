@@ -245,6 +245,7 @@ def _generate_daily_drop_magazine_cover(
             cover_style=cover_style,
             output_path=img_path,
             skip_logo_overlay=True,
+            cover_size="1024x1280",
         )
         if generated and Path(str(generated)).exists():
             return img_path

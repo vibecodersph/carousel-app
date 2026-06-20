@@ -1,0 +1,54 @@
+{
+  "id": "aibrief_jp",
+  "account_name": "AIブリーフ",
+  "brand_name": "AI Brief JP",
+  "handle": "@aibrief.jp",
+  "language": {
+    "name": "Japanese",
+    "audience": "Japanese AI builder audience",
+    "voice_doc": "voice.md"
+  },
+  "publishing": {
+    "instagram_user_id": "17841411137200252"
+  },
+  "brand": {
+    "brand_name": "AI Brief JP",
+    "handle": "@aibrief.jp",
+    "source_pattern": "Whiteout / ink on light",
+    "_branding_note": "AI Brief JP shares the vibecodersph cream/ink visual branding. Only language, voice, audience, handle, and the JP typography differ per channel; the palette is intentionally the same.",
+    "colors": {
+      "bg": "#F4F2EC",
+      "bg_top": "#E9E6DF",
+      "fg": "#16140F",
+      "ink_soft": "rgba(20, 18, 14, 0.78)",
+      "primary": "#C0552E",
+      "muted": "rgba(20, 18, 14, 0.55)",
+      "rule": "rgba(20, 18, 14, 0.28)"
+    },
+    "typography": {
+      "heading_font": "Noto Sans JP, Archivo, sans-serif",
+      "heading_weight": 800,
+      "heading_size_px": 78,
+      "heading_letter_spacing": "0.01em",
+      "body_font": "Noto Sans JP, Archivo, sans-serif",
+      "body_weight": 600,
+      "kicker_weight": 700,
+      "kicker_letter_spacing": "0.18em",
+      "font_source": "Noto Sans JP needed for Japanese glyphs; embed a JP woff2 like assets/archivo.css for offline render"
+    },
+    "pattern": {
+      "handle_position": "top-left, icon + lowercase handle",
+      "kicker": "centered uppercase label between two horizontal rules",
+      "headline": "centered, one accent word in primary color",
+      "swipe_cue": "スワイプして続きを + primary chip with chevron",
+      "progress": "primary dash for active slide + muted dots",
+      "edge_affordance": "circled chevron at right edge, headline height (slide 1 only)"
+    },
+    "logo_zones": {
+      "top_right": true,
+      "bottom_handle": true,
+      "page_counter": false
+    },
+    "default_slide_count": 6
+  }
+}

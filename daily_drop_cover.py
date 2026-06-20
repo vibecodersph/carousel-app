@@ -207,6 +207,7 @@ def generate_full_cover(
     cover_style: str = "",
     output_path: str | Path | None = None,
     skip_logo_overlay: bool = False,
+    cover_size: str = "",
 ) -> Path | None:
     """Generate a complete VibeCoders PH Daily Drop magazine cover.
 
@@ -218,6 +219,8 @@ def generate_full_cover(
         output_path: Optional exact JPEG path to write.
         skip_logo_overlay: If True, skip the bottom-right logo overlay
             (the carousel frame already supplies branding).
+        cover_size: Optional gpt-image-2 size string, e.g. "1024x1280"
+            for Instagram 4:5 carousel. Defaults to IMAGE_SIZE (1536x2304).
     """
     key = _load_openai_key()
     if not key:
@@ -250,7 +253,10 @@ def generate_full_cover(
         cover_list.append(f'{index:02d}  "{story["headline"]}"')
     cover_block = "\n".join(cover_list)
 
-    prompt = f"""Create a premium VIBECODERSPH Daily Drop MAGAZINE COVER, portrait 2:3 aspect ratio, print-editorial quality.
+    effective_size = cover_size or os.environ.get("DAILY_DROP_COVER_SIZE") or IMAGE_SIZE
+    ratio_label = "portrait 4:5 (Instagram carousel)" if "1280" in effective_size else "portrait 2:3"
+
+    prompt = f"""Create a premium VIBECODERSPH Daily Drop MAGAZINE COVER, {ratio_label} aspect ratio, print-editorial quality.
 
 Hero image subject:
 {cover_subject}
@@ -310,7 +316,7 @@ Overall mood: lively, premium, useful, Filipino builder media brand. Sharp and m
         response = client.images.generate(
             model=os.environ.get("OPENAI_IMAGE_MODEL") or DEFAULT_MODEL,
             prompt=prompt,
-            size=os.environ.get("DAILY_DROP_COVER_SIZE") or IMAGE_SIZE,
+            size=effective_size,
             n=1,
         )
         if not response.data:
