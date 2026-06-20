@@ -5,21 +5,15 @@ story_sources.json
 __pycache__/
 *.pyc
 
-assets/video_sources/
-out/automation/
-out/_video_frame.html
-out/_build_*.html
-out/video_*.json
-out/video_*.mp4
-out/video_*.png
-out/post_video_*
-out/x_carousel/
-out/*_x_carousel*/
-out/test_*
+/deck.png
+/reference.png
+/slide*.png
 
+assets/cover_*.png
+assets/fable5*.png
+assets/tweet_*.json
+assets/tweet_*.png
+assets/tweet_embed.html
+assets/video_sources/
 # Carousel output samples — keep current files, gitignore future builds
-out/*.png
-out/*.pptx
-out/*.mp4
-out/deepfake_03.json
-out/deepfake_frame_03.png
+/out/

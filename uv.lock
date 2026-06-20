@@ -55,6 +55,8 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "openai" },
+    { name = "pillow", version = "11.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "playwright" },
     { name = "python-pptx" },
     { name = "yt-dlp", version = "2025.10.14", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -64,6 +66,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "openai", specifier = ">=2.41.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
     { name = "playwright", specifier = ">=1.48" },
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "yt-dlp", specifier = ">=2025.6.9" },

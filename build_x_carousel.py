@@ -36,13 +36,19 @@ from build_video_slide import (
     extract_status_url,
     format_post_date,
 )
+from channel import load_channel
 from fetch_tweet_data import fetch_thread, resolve_xai_token
 from generate_cover import DEFAULT_OPENAI_IMAGE_MODEL, generate_openai, openai_api_key
 
 ROOT = Path(__file__).resolve().parent
 FONTS = ROOT / "assets" / "archivo.css"
+# Legacy voice-doc path, kept for the default channel's backward-compatible fallback.
+# The active channel's voice guide is resolved via load_channel(); see channel.py.
+IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
-DEFAULT_ACCOUNT_NAME = "LLMAW"
+# Last-resort account label. The active channel's account_name normally supplies this.
+DEFAULT_ACCOUNT_NAME = "vibecodersph"
+DEFAULT_MAX_CAROUSEL_ITEMS = 20
 PERSON_SOURCE_HANDLES = {
     "sama",
     "karpathy",
@@ -184,6 +190,60 @@ def extract_gemini_text(payload: dict[str, object] | None) -> str:
     ).strip()
 
 
+def gemini_describe_image(image_path: Path, api_key: str | None) -> str:
+    if not api_key or not image_path.exists():
+        return ""
+    import base64
+    try:
+        data = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        ext = image_path.suffix.lower()
+        mime_type = "image/png"
+        if ext in {".jpg", ".jpeg"}:
+            mime_type = "image/jpeg"
+        elif ext == ".webp":
+            mime_type = "image/webp"
+
+        prompt = (
+            "Describe the main visual subjects, layout, style, and composition of this image "
+            "so I can recreate it with a text-to-image prompt. Keep it very concise (under 50 words)."
+        )
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": data
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+            }
+        }
+        
+        model = gemini_text_model()
+        api_version = os.environ.get("GEMINI_TEXT_API_VERSION") or "v1beta"
+        response = gemini_generate_content(
+            model,
+            api_key,
+            payload,
+            api_version=api_version,
+            timeout=30
+        )
+        description = extract_gemini_text(response).strip()
+        if description:
+            print(f"[google] Gemini Vision described the image: {description}")
+            return description
+    except Exception as exc:
+        print(f"[google] Warning: Gemini Vision image description failed ({exc})")
+    return ""
+
+
 def parse_json_object(text: str) -> dict[str, object] | None:
     text = text.strip()
     if text.startswith("```"):
@@ -221,6 +281,11 @@ def compact_topic(text: str, limit: int = 95) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rsplit(" ", 1)[0].strip()
+
+
+def load_ig_voice_prompt() -> str:
+    """Cover-generation voice instruction for the active channel's voice guide."""
+    return load_channel().voice_prompt
 
 
 def kg_search(
@@ -716,7 +781,7 @@ def fetch_embed_post(url: str) -> dict[str, str] | None:
     print(f"[x] reading embed metadata {status_id}")
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(channel="chrome")
+            browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 620, "height": 1600}, device_scale_factor=1)
             page.goto(embed_url, wait_until="networkidle")
             page.wait_for_timeout(1000)
@@ -872,7 +937,7 @@ def discover_thread_posts(url: str, max_posts: int, cookies_from_browser: str | 
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(channel="chrome")
+            browser = p.chromium.launch()
             context = browser.new_context(
                 viewport={"width": 760, "height": 2200},
                 device_scale_factor=1,
@@ -996,7 +1061,7 @@ def capture_embed(status_id: str, out_path: Path, *, width: int = 620) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"[x] capturing embed {status_id} -> {out_path.name}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome")
+        browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": width + 60, "height": 2400}, device_scale_factor=2)
         page.goto(url, wait_until="networkidle")
         page.wait_for_timeout(1500)
@@ -1027,19 +1092,375 @@ def clamp_words(text: str, limit: int) -> str:
     return " ".join(words[:limit])
 
 
+def split_title_for_two_tone(text: str) -> tuple[str, str]:
+    parts = text.split()
+    if not parts:
+        return "", ""
+    if len(parts) < 3:
+        return text, ""
+    accent_count = max(1, round(len(parts) * 0.36))
+    if len(parts) >= 7:
+        accent_count = max(2, accent_count)
+    accent_count = min(accent_count, 5, len(parts) - 1)
+    return " ".join(parts[:-accent_count]), " ".join(parts[-accent_count:])
+
+
+ACCENT_STOPWORDS = {
+    "a",
+    "about",
+    "amid",
+    "an",
+    "and",
+    "ang",
+    "are",
+    "as",
+    "at",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "lang",
+    "may",
+    "mga",
+    "mo",
+    "na",
+    "ng",
+    "nito",
+    "natin",
+    "niyo",
+    "of",
+    "on",
+    "or",
+    "our",
+    "pa",
+    "para",
+    "rin",
+    "sa",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "via",
+    "with",
+    "yung",
+}
+
+
+def accent_word_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in re.finditer(r"[A-Za-z0-9][A-Za-z0-9'._+-]*", text):
+        word = match.group(0).strip("'._+-")
+        if word:
+            candidates.append(word)
+    return candidates
+
+
+def choose_accent_word(text: str) -> str:
+    candidates = accent_word_candidates(text)
+    if not candidates:
+        return ""
+    meaningful = [word for word in candidates if word.lower() not in ACCENT_STOPWORDS]
+    return (meaningful or candidates)[-1]
+
+
+def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
+    headline = headline.replace("\u2014", ",").strip()
+    if not headline:
+        return ""
+
+    bracket_match = re.search(r"\[([^\[\]]+)\]", headline)
+    explicit_accent = (accent_word.strip().strip("[]") if accent_word else "") or (
+        bracket_match.group(1).strip() if bracket_match else ""
+    )
+    target = (
+        choose_accent_word(explicit_accent)
+        or choose_accent_word(headline)
+        or explicit_accent
+    )
+    plain = headline.replace("[", "").replace("]", "")
+    if not target:
+        return plain
+    if not re.search(r"[A-Za-z0-9]", target):
+        start = plain.find(target)
+        if start < 0:
+            return plain
+        end = start + len(target)
+        return f"{plain[:start]}[{plain[start:end]}]{plain[end:]}"
+    pattern = re.compile(rf"(?<![A-Za-z0-9_'])({re.escape(target)})(?![A-Za-z0-9_'])", re.I)
+    updated, count = pattern.subn(r"[\1]", plain, count=1)
+    return updated if count else plain
+
+
 def title_from_post(post: dict[str, str]) -> tuple[str, str]:
     text = post.get("text", "")
     text = re.split(r"[.!?]\s+", text.strip())[0] or text
     words = clamp_words(text, 14)
     if not words:
         return "The Post", ""
-    parts = words.split()
-    if len(parts) >= 3:
-        return " ".join(parts[:-1]), parts[-1]
-    return words, ""
+    return split_title_for_two_tone(words)
+
+
+def with_bracketed_accent(headline: str, accent_word: str) -> str:
+    return bracket_single_accent_word(headline, accent_word)
+
+
+def contains_japanese(text: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+
+
+def is_katakana_char(value: str) -> bool:
+    return bool(value and re.match(r"[\u30a0-\u30ffー]", value))
+
+
+def is_ascii_word_char(value: str) -> bool:
+    return bool(value and re.match(r"[A-Za-z0-9'._+-]", value))
+
+
+def japanese_phrase_chunks(text: str, max_chars: int = 12) -> list[str]:
+    """Create browser-safe Japanese line chunks without splitting terms mid-word."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    soft_suffixes = (
+        "から",
+        "まで",
+        "なら",
+        "では",
+        "には",
+        "にも",
+        "ので",
+        "ため",
+        "こと",
+        "です",
+        "ます",
+    )
+    soft_particles = set("でにをがはへともか")
+    for index, char in enumerate(text):
+        current += char
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if char in "、。！？!?":
+            chunks.append(current)
+            current = ""
+            continue
+        if len(current) >= 5 and (
+            current.endswith(soft_suffixes) or char in soft_particles
+        ):
+            if next_char and next_char not in "、。！？!?":
+                chunks.append(current)
+                current = ""
+                continue
+        if len(current) >= max_chars:
+            if (is_katakana_char(char) and is_katakana_char(next_char)) or (
+                is_ascii_word_char(char) and is_ascii_word_char(next_char)
+            ):
+                continue
+            chunks.append(current)
+            current = ""
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+TERM_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9'._+-]*|[\u3400-\u9fff々〆ヵヶ]{1,6}[\u30a0-\u30ffー]+|[\u30a0-\u30ffー]+"
+)
+
+
+def inline_text_markup(text: str) -> str:
+    pieces: list[str] = []
+    position = 0
+    for match in TERM_RE.finditer(text):
+        pieces.append(html.escape(text[position : match.start()]))
+        pieces.append(f'<span class="term">{html.escape(match.group(0))}</span>')
+        position = match.end()
+    pieces.append(html.escape(text[position:]))
+    return "".join(pieces)
+
+
+def phrase_text_markup(text: str, *, accent: str = "", max_chars: int = 12) -> str:
+    if not contains_japanese(text):
+        if accent and accent in text:
+            before, after = text.split(accent, 1)
+            return (
+                inline_text_markup(before)
+                + f'<span class="accent">{html.escape(accent)}</span>'
+                + inline_text_markup(after)
+            )
+        return inline_text_markup(text)
+    chunks = japanese_phrase_chunks(text, max_chars=max_chars)
+    accent_used = False
+    phrase_markup: list[str] = []
+    for chunk in chunks:
+        if accent and not accent_used and accent in chunk:
+            before, after = chunk.split(accent, 1)
+            inner = (
+                inline_text_markup(before)
+                + f'<span class="accent">{html.escape(accent)}</span>'
+                + inline_text_markup(after)
+            )
+            accent_used = True
+        else:
+            inner = inline_text_markup(chunk)
+        phrase_markup.append(f'<span class="jp-phrase">{inner}</span>')
+    return "".join(phrase_markup)
+
+
+def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
+    if not isinstance(analysis, dict):
+        return {}
+    raw = analysis.get("cover")
+    if not isinstance(raw, dict):
+        raw = analysis.get("cover_copy")
+    if not isinstance(raw, dict):
+        return {}
+    headline = string_value(raw.get("headline"))
+    if not headline:
+        return {}
+    cover = {
+        "kicker": string_value(raw.get("kicker") or raw.get("kicker_line")),
+        "headline": with_bracketed_accent(headline, string_value(raw.get("accent_word"))),
+        "swipe_line": string_value(raw.get("swipe_line") or raw.get("swipe")),
+    }
+    if "\u2014" in cover["headline"]:
+        cover["headline"] = cover["headline"].replace("\u2014", ",")
+    return {key: value for key, value in cover.items() if value}
+
+
+def normalize_instagram_caption(
+    analysis: dict[str, object] | None,
+    *,
+    source_url: str,
+) -> str:
+    if not isinstance(analysis, dict):
+        return ""
+    raw_caption = analysis.get("instagram_caption")
+    caption = str(raw_caption or "").strip() if raw_caption is not None else ""
+    if not caption:
+        return ""
+    caption = caption.replace("\u2014", ",")
+    caption = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in caption.splitlines())
+    caption = re.sub(r"\n{3,}", "\n\n", caption).strip()
+    caption = re.sub(r"\s+(?=#[A-Za-z0-9_])", "\n\n", caption, count=1)
+    caption = re.sub(r"\s+Source:\s*", "\n\nSource: ", caption)
+    if source_url and "source:" not in caption.lower():
+        caption = f"{caption}\n\nSource: {source_url}"
+    if len(caption) > 1200:
+        caption = caption[:1200].rsplit(" ", 1)[0].strip()
+        if source_url and "source:" not in caption.lower():
+            caption = f"{caption}\n\nSource: {source_url}"
+    return caption
+
+
+def fallback_post_explanation(post: dict[str, str], index: int) -> dict[str, str]:
+    channel = load_channel()
+    if channel.language_name.lower().startswith("japanese"):
+        return {
+            "url": post.get("url", ""),
+            "headline": "元投稿の要点",
+            "body": "このあと、元投稿の画面をそのまま確認します。重要なポイントだけ先に押さえておきましょう。",
+        }
+    text = clean_post_text(post.get("text", ""))
+    first_sentence = re.split(r"(?<=[.!?])\s+", text.strip())[0] if text else ""
+    return {
+        "url": post.get("url", ""),
+        "headline": f"Source Note {index}",
+        "body": first_sentence or "Read the original source on the next slide.",
+    }
+
+
+def explainer_kicker_label() -> str:
+    channel = load_channel()
+    if channel.language_name.lower().startswith("japanese"):
+        return "要点"
+    return "KEY POINT"
+
+
+def normalize_post_explanations(
+    analysis: dict[str, object] | None,
+    posts: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    raw_items = analysis.get("post_summaries") if isinstance(analysis, dict) else None
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    explanations: list[dict[str, str]] = []
+    for index, post in enumerate(posts, start=1):
+        raw = raw_items[index - 1] if index - 1 < len(raw_items) else None
+        raw = raw if isinstance(raw, dict) else {}
+        headline = string_value(raw.get("headline") or raw.get("title"))
+        body = string_value(raw.get("body") or raw.get("summary") or raw.get("text"))
+        url = string_value(raw.get("url")) or post.get("url", "")
+        if not headline or not body:
+            fallback = fallback_post_explanation(post, index)
+            headline = headline or fallback["headline"]
+            body = body or fallback["body"]
+            url = url or fallback["url"]
+        body = re.sub(r"\s+", " ", body.replace("\u2014", ",")).strip()
+        explanations.append(
+            {
+                "url": url,
+                "headline": headline.replace("\u2014", ","),
+                "body": body,
+            }
+        )
+    return explanations
+
+
+def manual_cover_copy(
+    *,
+    kicker: str | None,
+    headline: str | None,
+    swipe_line: str | None,
+) -> dict[str, str]:
+    cover: dict[str, str] = {}
+    if kicker:
+        cover["kicker"] = string_value(kicker)
+    if headline:
+        cover["headline"] = bracket_single_accent_word(string_value(headline))
+    if swipe_line:
+        cover["swipe_line"] = string_value(swipe_line)
+    return {key: value for key, value in cover.items() if value}
+
+
+def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
+    headline = re.sub(r"\s+", " ", bracket_single_accent_word(headline)).strip()
+    match = re.search(r"\[([^\[\]]+)\]", headline)
+    if not match:
+        return phrase_text_markup(headline), headline, False
+    before = headline[: match.start()].replace("[", "").replace("]", "")
+    accent = match.group(1).strip()
+    after = headline[match.end() :].replace("[", "").replace("]", "")
+    plain = re.sub(r"\s+", " ", f"{before}{accent}{after}").strip()
+    markup = phrase_text_markup(plain, accent=accent, max_chars=11)
+    return markup, plain, True
+
+
+def fallback_headline_markup(post: dict[str, str], title: str | None) -> tuple[str, str]:
+    headline, accent = split_title_for_two_tone(title) if title else title_from_post(post)
+    title_text = " ".join(part for part in (headline, accent) if part)
+    safe_headline = html.escape(headline)
+    safe_accent = html.escape(accent)
+    accent_markup = f' <span class="accent">{safe_accent}</span>' if safe_accent else ""
+    return f"{safe_headline}{accent_markup}", title_text
 
 
 def title_font_size(text: str) -> int:
+    if contains_japanese(text):
+        if len(text) > 42:
+            return 56
+        if len(text) > 34:
+            return 62
+        if len(text) > 26:
+            return 68
+        if len(text) > 18:
+            return 76
+        return 84
     if len(text) > 110:
         return 58
     if len(text) > 90:
@@ -1052,6 +1473,19 @@ def title_font_size(text: str) -> int:
 def asset_uri(path: object) -> str:
     if isinstance(path, Path) and path.exists():
         return path.resolve().as_uri()
+    return ""
+
+
+def source_profile_asset_uri(context: dict[str, object]) -> str:
+    source_people = context.get("source_people")
+    if not isinstance(source_people, list):
+        return ""
+    for person in source_people:
+        if not isinstance(person, dict):
+            continue
+        uri = asset_uri(person.get("profile_image_path"))
+        if uri:
+            return uri
     return ""
 
 
@@ -1073,36 +1507,87 @@ def gemini_title_analysis(
     posts: list[dict[str, str]],
     fallback_topic: str,
     api_key: str | None,
+    *,
+    source_type: str = "x",
 ) -> dict[str, object] | None:
     if not api_key:
         return None
     model = gemini_text_model()
+    channel = load_channel()
+    lang = channel.language_name
+    brand = channel.brand_name
+    voice_prompt = load_ig_voice_prompt() or channel.default_cover_voice()
+    is_article = source_type == "article"
+    source_description = "an article source" if is_article else "X/Twitter posts"
+    source_payload_label = "Source article JSON" if is_article else "Posts JSON"
     prompt = f"""
-You prepare editorial carousel title-slide metadata from X/Twitter posts.
+You prepare editorial carousel title-slide metadata from {source_description}.
 Use Google Search grounding when available to identify companies and their current CEOs.
 Return JSON only with this exact shape:
 {{
   "topic": "short topic, 4 to 10 words",
+  "cover": {{
+    "kicker": "short section label or handle, 1 to 3 words",
+    "headline": "{lang}-native IG cover line with exactly one [accent] word",
+    "accent_word": "same accent word without brackets",
+    "swipe_line": "short {lang} swipe prompt"
+  }},
+  "instagram_caption": "short {lang} Instagram caption with one CTA, clean hashtags, and source attribution",
+  "post_summaries": [
+    {{
+      "url": "source post URL copied exactly",
+      "headline": "short {lang} explanation-slide headline",
+      "body": "clear, concise {lang} explanation of this post before showing the original source"
+    }}
+  ],
   "companies": [
     {{"name": "Company name", "ceo_name": "Current CEO name"}}
   ]
 }}
 
 Rules:
+- Write cover.kicker, cover.headline, cover.accent_word, cover.swipe_line, and
+  instagram_caption in {lang}.
+- Apply the {brand} Instagram voice guide below when writing cover.kicker,
+  cover.headline, cover.accent_word, and cover.swipe_line.
+- The cover headline must not be a neutral summary of the source. It should be a
+  witty {lang} hook that earns the swipe while staying true to the source.
+- cover.headline must contain exactly one bracketed accent word, like [alam].
+- cover.accent_word must match the bracketed word without brackets.
+- instagram_caption should be 3 to 4 short blocks separated by blank lines:
+  1) one witty {lang} hook,
+  2) one useful true line about what the carousel teaches,
+  3) one CTA only,
+  4) clean hashtags and Source: {posts[0].get("url", "")}
+- Keep instagram_caption under 900 characters.
+- post_summaries must include exactly one item for each source post, in the same
+  order as the input. Copy each source URL exactly from the input.
+- Each post_summaries headline/body pair becomes the translated explanation slide
+  before the original screenshot or video. Keep it clear, concise, and useful.
+- For Japanese, keep post_summaries.body to one or two short sentences. Do not
+  paste a literal line-by-line translation; explain what the viewer needs to know.
+- Avoid generic hype phrases like "completely change," "game-changing,"
+  "ultimate guide," "must-read," "let us know in the comments below," and
+  "stop scrolling."
+- instagram_caption must not use markdown bullets or em dashes.
 - Include at most 3 companies.
 - Include a CEO only when the company is clearly involved in the post or thread.
 - Prefer the current CEO over founders, product leaders, or former CEOs.
 - If no company is clearly involved, return an empty companies array.
 - Do not include markdown, comments, source citations, or extra keys.
+- Do not use em dashes.
+
+{brand} Instagram voice guide:
+{voice_prompt}
 
 Fallback topic: {fallback_topic}
-Posts JSON:
+{source_payload_label}:
 {json.dumps(gemini_post_brief(posts), ensure_ascii=False)}
 """.strip()
     base_payload: dict[str, object] = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": 0.35,
             "responseMimeType": "application/json",
         },
     }
@@ -1189,7 +1674,20 @@ def is_person_source_post(post: dict[str, str]) -> bool:
     handle = normalized_handle(post.get("handle"))
     if not handle or handle in ORGANIZATION_SOURCE_HANDLES:
         return False
-    return handle in PERSON_SOURCE_HANDLES
+    if handle in PERSON_SOURCE_HANDLES:
+        return True
+    return bool(
+        source_profile_candidate_post(post)
+        and normalize_x_profile_image_url(post.get("profile_image_url"))
+    )
+
+
+def source_profile_candidate_post(post: dict[str, str]) -> bool:
+    handle = normalized_handle(post.get("handle"))
+    if not handle or handle in ORGANIZATION_SOURCE_HANDLES:
+        return False
+    author = string_value(post.get("author"))
+    return bool(author and author != "Source post")
 
 
 def source_person_from_post(post: dict[str, str]) -> dict[str, object] | None:
@@ -1248,25 +1746,59 @@ def default_title_image_prompt(
             continue
         ceo_bits.append(f"{ceo_name} of {company_name}" if company_name else ceo_name)
     ceo_line = ", ".join(ceo_bits)
+    has_source_profile_image = any(
+        person.get("profile_image_path") or person.get("profile_image_url")
+        for person in source_people
+    )
+    palette = brand_colors()
+    channel = load_channel()
+    is_dark = _is_dark_color(palette["bg"])
+    background_line = (
+        f"Deep charcoal / near-black background ({palette['bg']})."
+        if is_dark
+        else f"Cream/off-white paper background ({palette['bg']})."
+    )
+    ink_line = (
+        f"Paper-white type tones ({palette['fg']}) and a {channel.brand_name} accent color ({palette['primary']})."
+        if is_dark
+        else f"Dark ink ({palette['fg']}) and rust/terracotta accent color ({palette['primary']})."
+    )
+    texture_line = (
+        "Abstract geometric composition, premium dark editorial / night-mode magazine aesthetic, "
+        "subtle grain, moody contrast, editorial gravitas, intellectual but not cold."
+        if is_dark
+        else "Abstract geometric composition, premium print magazine aesthetic, textured paper, "
+        "editorial gravitas, intellectual but not cold."
+    )
     parts = [
         f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
-        "Cream/off-white paper background (#F4F2EC).",
-        "Dark ink (#16140F) and rust/terracotta accent color (#C0552E).",
-        "Abstract geometric composition, premium print magazine aesthetic, textured paper, editorial gravitas, intellectual but not cold.",
+        background_line,
+        ink_line,
+        texture_line,
         "The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI.",
     ]
     if source_line:
-        parts.append(
-            "The source post is by this person: "
-            f"{source_line}. Make their recognizable public likeness the main portrait element. "
-            "If a reliable face is not known or their public profile is faceless, use their X profile photo/avatar style as the visual reference instead of inventing an unrelated face."
-        )
-    if ceo_line:
+        if has_source_profile_image:
+            parts.append(
+                "The source post is by this person: "
+                f"{source_line}. Do not generate or invent this person's face. "
+                "Their real X profile image will be composited separately on the title slide; create supporting abstract editorial art that leaves room for that avatar."
+            )
+        else:
+            parts.append(
+                "The source post is by this person: "
+                f"{source_line}. Do not invent a portrait or face for them; use symbolic, non-literal editorial imagery instead."
+            )
+    if ceo_line and not has_source_profile_image:
         parts.append(
             f"Add a tasteful editorial portrait element of the CEO: {ceo_line}."
         )
-    if source_line and ceo_line:
-        parts.append("Prioritize the source author portrait over CEO or company context.")
+    elif ceo_line:
+        parts.append(
+            f"Company leadership context: {ceo_line}. Represent this context symbolically; do not add any extra realistic human portraits."
+        )
+    if source_line and ceo_line and not has_source_profile_image:
+        parts.append("Keep any CEO portrait secondary to the source author context.")
     if company_line:
         parts.append(f"Company context: {company_line}. Do not show logos or brand marks.")
     return " ".join(parts)
@@ -1278,16 +1810,31 @@ def title_image_prompt(
     ceos: list[dict[str, object]],
     source_people: list[dict[str, object]],
     analysis: dict[str, object] | None,
+    *,
+    remix_description: str | None = None,
 ) -> str:
     prompt = default_title_image_prompt(topic, companies, ceos, source_people)
+    has_source_profile_image = any(
+        person.get("profile_image_path") or person.get("profile_image_url")
+        for person in source_people
+    )
+    people_style = (
+        "- Do not include human faces, portraits, headshots, silhouettes, or figure studies in the generated artwork; the real X avatar will be composited separately."
+        if has_source_profile_image
+        else "- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots."
+    )
+    remix_line = ""
+    if remix_description:
+        remix_line = f"- Visual concept based on: {remix_description}\n"
+
     return f"""
 {prompt}
 
 Format and style:
 - 16:9 horizontal composition, 2048x1152.
 - Make it feel like the output of generate_cover.py, not a corporate headshot.
-- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots.
-- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.
+{people_style}
+{remix_line}- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.
 - No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.
 - Do not place any graphic or symbol that resembles text.
 - Carousel typography will sit outside the image, not over it.
@@ -1314,10 +1861,25 @@ def generate_openai_topic_image(
     source_people: list[dict[str, object]],
     analysis: dict[str, object] | None,
     out_dir: Path,
+    *,
+    article_image_path: Path | None = None,
 ) -> tuple[Path | None, str]:
     if not openai_api_key():
         return None, ""
-    prompt = title_image_prompt(topic, companies, ceos, source_people, analysis)
+    
+    remix_description = None
+    if article_image_path and article_image_path.exists():
+        api_key = gemini_api_key()
+        remix_description = gemini_describe_image(article_image_path, api_key)
+
+    prompt = title_image_prompt(
+        topic,
+        companies,
+        ceos,
+        source_people,
+        analysis,
+        remix_description=remix_description
+    )
     path = generated_openai_image_path(out_dir, topic, prompt)
     model = openai_title_image_model()
     size = openai_title_image_size()
@@ -1338,6 +1900,11 @@ def build_title_enrichment(
     *,
     title: str | None,
     out_dir: Path,
+    cover_kicker: str | None = None,
+    cover_headline: str | None = None,
+    cover_swipe_line: str | None = None,
+    source_type: str = "x",
+    article_image_path: Path | None = None,
 ) -> dict[str, object]:
     api_key = gemini_api_key()
     kg_api_key = os.environ.get("GOOGLE_KG_API_KEY")
@@ -1349,11 +1916,24 @@ def build_title_enrichment(
     else:
         print("[google] GOOGLE_API_KEY or GEMINI_API_KEY not set; using generated title visual")
 
-    analysis = gemini_title_analysis(posts, topic, api_key)
+    analysis = gemini_title_analysis(posts, topic, api_key, source_type=source_type)
     if isinstance(analysis, dict):
         gemini_topic = compact_topic(string_value(analysis.get("topic")))
         if gemini_topic:
             topic = gemini_topic
+    cover_copy = normalize_cover_copy(analysis)
+    instagram_caption = normalize_instagram_caption(
+        analysis,
+        source_url=posts[0].get("url", ""),
+    )
+    post_explanations = normalize_post_explanations(analysis, posts)
+    cover_override = manual_cover_copy(
+        kicker=cover_kicker,
+        headline=cover_headline,
+        swipe_line=cover_swipe_line,
+    )
+    if cover_override:
+        cover_copy = {**cover_copy, **cover_override}
 
     source_person = source_person_from_post(posts[0])
     source_people = [source_person] if source_person else []
@@ -1383,8 +1963,11 @@ def build_title_enrichment(
         source_people,
         analysis,
         out_dir,
+        article_image_path=article_image_path,
     )
     image_provider = "openai" if topic_image_path else ""
+    if article_image_path and topic_image_path:
+        image_provider = "openai_remix"
     if not generated_prompt:
         generated_prompt = title_image_prompt(topic, companies, ceos, source_people, analysis)
     topic_entity = None
@@ -1524,6 +2107,10 @@ def build_title_enrichment(
         "source_people": source_people,
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
+        "cover_copy": cover_copy,
+        "post_explanations": post_explanations,
+        "instagram_caption": instagram_caption,
+        "brand_voice_doc": load_channel().voice_doc_rel,
         "google_enabled": bool(api_key),
         "provider": "gemini" if api_key else "local",
         "image_provider": image_provider,
@@ -1538,26 +2125,100 @@ def build_title_enrichment(
 def title_visual_markup(context: dict[str, object]) -> str:
     topic_image_uri = asset_uri(context.get("topic_image_path"))
     bg_style = f' style="background-image: url({topic_image_uri})"' if topic_image_uri else ""
+    source_profile_uri = source_profile_asset_uri(context)
+    avatar_markup = ""
+    visual_class = "visual-card"
+    if str(context.get("image_provider") or "") == "article_og_image":
+        # Raw article OG images are usually literal stock photos whose palette
+        # clashes with the cream/terracotta brand. Duotone them so the fallback
+        # cover still reads as a vibecodersph editorial card.
+        visual_class += " is-og-fallback"
+    if source_profile_uri:
+        visual_class += " has-source-avatar"
+        safe_profile_uri = html.escape(source_profile_uri, quote=True)
+        avatar_markup = f"""
+    <div class="source-avatar">
+      <img src="{safe_profile_uri}" alt="">
+    </div>"""
     return f"""
-  <div class="visual-card">
+  <div class="{visual_class}">
     <div class="visual-bg"{bg_style}></div>
     <div class="visual-fallback"></div>
+{avatar_markup}
   </div>
 """
+
+
+# Light (vibecodersph) palette, used as the fallback for any color a channel
+# leaves unset so existing checkouts render exactly as before.
+LIGHT_COLOR_DEFAULTS = {
+    "bg": "#F4F2EC",
+    "bg_top": "#E9E6DF",
+    "fg": "#16140F",
+    "ink_soft": "rgba(20, 18, 14, 0.78)",
+    "primary": "#C0552E",
+    "muted": "rgba(20, 18, 14, 0.55)",
+    "rule": "rgba(20, 18, 14, 0.28)",
+}
+
+
+def _hex_to_rgb(value: str, fallback_hex: str) -> str:
+    """'#14161A' -> '20, 22, 26' for use inside rgba(var(--bg-rgb), alpha)."""
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", string_value(value))
+    digits = match.group(1) if match else fallback_hex.lstrip("#")
+    return f"{int(digits[0:2], 16)}, {int(digits[2:4], 16)}, {int(digits[4:6], 16)}"
+
+
+def _is_dark_color(value: str) -> bool:
+    """True when a #rrggbb background is dark enough to want light type on it."""
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", string_value(value))
+    if not match:
+        return False
+    digits = match.group(1)
+    r, g, b = (int(digits[i : i + 2], 16) for i in (0, 2, 4))
+    # Rec. 601 luma; < 128 reads as a dark surface.
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
+def brand_colors() -> dict[str, str]:
+    """Active channel's slide colors, backfilled with the light defaults."""
+    merged = dict(LIGHT_COLOR_DEFAULTS)
+    brand = load_channel().brand
+    colors = brand.get("colors") if isinstance(brand, dict) else None
+    if isinstance(colors, dict):
+        for key, value in colors.items():
+            if isinstance(value, str) and value.strip():
+                merged[key] = value.strip()
+    return merged
+
+
+def brand_color_vars() -> str:
+    """:root custom properties for the active channel, incl. rgb triplets.
+
+    The --*-rgb triplets let cover gradients alpha-composite the channel's own
+    background/primary (e.g. rgba(var(--bg-rgb), 0.24)) instead of the hardcoded
+    cream that used to leak the vibecodersph look into every channel.
+    """
+    colors = brand_colors()
+    return f""":root {{
+  --bg: {colors['bg']};
+  --bg-top: {colors['bg_top']};
+  --fg: {colors['fg']};
+  --ink-soft: {colors['ink_soft']};
+  --primary: {colors['primary']};
+  --muted: {colors['muted']};
+  --rule: {colors['rule']};
+  --bg-rgb: {_hex_to_rgb(colors['bg'], '#F4F2EC')};
+  --fg-rgb: {_hex_to_rgb(colors['fg'], '#16140F')};
+  --primary-rgb: {_hex_to_rgb(colors['primary'], '#C0552E')};
+}}"""
 
 
 def shared_css() -> str:
     return f"""
 {FONTS.read_text()}
 
-:root {{
-  --bg: #F4F2EC;
-  --bg-top: #E9E6DF;
-  --fg: #16140F;
-  --ink-soft: rgba(20, 18, 14, 0.78);
-  --primary: #C0552E;
-  --rule: rgba(20, 18, 14, 0.28);
-}}
+{brand_color_vars()}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ margin: 0; background: #555; font-family: 'Archivo', sans-serif; }}
 .slide {{
@@ -1609,8 +2270,166 @@ body {{ margin: 0; background: #555; font-family: 'Archivo', sans-serif; }}
 """
 
 
-def dot_markup(active: int, count: int) -> str:
-    return '<span>swipe for more</span>' if active < count else ""
+def dot_markup(active: int, count: int, swipe_line: str = "") -> str:
+    if active >= count:
+        return ""
+    text = string_value(swipe_line)
+    if not text and load_channel().language_name.lower().startswith("japanese"):
+        text = "スワイプで続きへ"
+    text = text or "swipe for more"
+    return f"<span>{html.escape(text)}</span>"
+
+
+def carousel_item_limit() -> int:
+    raw = os.environ.get("INSTAGRAM_MAX_CAROUSEL_ITEMS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CAROUSEL_ITEMS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CAROUSEL_ITEMS
+    return max(2, value)
+
+
+def carousel_cta_copy() -> dict[str, str]:
+    channel = load_channel()
+    handle = channel.handle.strip() or f"@{channel.account_name}"
+    if channel.language_name.lower().startswith("japanese"):
+        return {
+            "kicker": "FOLLOW",
+            "headline": "AIニュースを深く追う",
+            "body": "一次情報ベースで、AIと開発の重要ニュースを整理します。",
+            "action": f"{handle}をフォロー",
+        }
+    return {
+        "kicker": "FOLLOW FOR MORE",
+        "headline": "Na-save mo na ba?",
+        "body": f"Follow {handle} for source-first AI updates, builder context, and tools worth trying.",
+        "action": "Follow + Save",
+    }
+
+
+def render_cta_slide(
+    out_path: Path,
+    active: int,
+    count: int,
+    cta: dict[str, str] | None = None,
+) -> Path:
+    cta = cta or carousel_cta_copy()
+    channel = load_channel()
+    handle = html.escape(channel.handle.strip() or f"@{channel.account_name}")
+    kicker = html.escape(cta.get("kicker") or "FOLLOW")
+    headline_markup = phrase_text_markup(cta.get("headline") or "Follow for more", max_chars=11)
+    body_markup = phrase_text_markup(cta.get("body") or "", max_chars=17)
+    action = html.escape(cta.get("action") or "Follow + Save")
+    html_path = out_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+{shared_css()}
+.cta-progress {{
+  position: absolute;
+  top: 76px;
+  right: 72px;
+  font-size: 23px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  color: rgba(20, 18, 14, 0.42);
+}}
+.cta-shell {{
+  position: absolute;
+  inset: 112px 72px 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}}
+.cta-kicker {{
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 54px;
+  color: var(--primary);
+}}
+.cta-kicker::before,
+.cta-kicker::after {{
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--rule);
+}}
+.cta-kicker span {{
+  font-size: 24px;
+  font-weight: 840;
+  letter-spacing: 0.18em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}}
+.cta-title {{
+  max-width: 900px;
+  font-size: 96px;
+  line-height: 0.98;
+  font-weight: 880;
+  letter-spacing: 0;
+  color: var(--fg);
+  text-wrap: balance;
+}}
+.cta-title .jp-phrase,
+.cta-body .jp-phrase {{
+  display: inline-block;
+}}
+.cta-title .term,
+.cta-body .term {{
+  white-space: nowrap;
+}}
+.cta-body {{
+  max-width: 850px;
+  margin-top: 42px;
+  color: var(--ink-soft);
+  font-size: 39px;
+  line-height: 1.28;
+  font-weight: 640;
+}}
+.cta-action {{
+  align-self: flex-start;
+  margin-top: 54px;
+  padding: 18px 24px 17px;
+  border: 3px solid var(--primary);
+  color: var(--primary);
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 860;
+  letter-spacing: 0;
+}}
+.cta-handle {{
+  position: absolute;
+  left: 72px;
+  right: 72px;
+  bottom: 86px;
+  color: var(--primary);
+  font-size: 24px;
+  font-weight: 840;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}}
+</style></head>
+<body>
+<div class="slide">
+  <div class="cta-progress">{active:02d} / {count:02d}</div>
+  <section class="cta-shell">
+    <div class="cta-kicker"><span>{kicker}</span></div>
+    <h1 class="cta-title">{headline_markup}</h1>
+    <div class="cta-body">{body_markup}</div>
+    <div class="cta-action">{action}</div>
+  </section>
+  <div class="cta-handle">{handle}</div>
+</div>
+</body></html>"""
+    html_path.write_text(html_text)
+    render_html_slide(html_path, out_path)
+    return out_path
 
 
 def render_title_slide(
@@ -1621,18 +2440,23 @@ def render_title_slide(
     title_context: dict[str, object],
     account_name: str,
 ) -> Path:
-    headline, accent = title_from_post(post)
+    cover_copy = title_context.get("cover_copy")
+    cover_copy = cover_copy if isinstance(cover_copy, dict) else {}
     if title:
-        bits = title.rsplit(" ", 1)
-        headline, accent = (bits[0], bits[1]) if len(bits) == 2 else (title, "")
-    title_text = " ".join(part for part in (headline, accent) if part)
+        headline_markup, title_text = fallback_headline_markup(post, title)
+    elif string_value(cover_copy.get("headline")):
+        headline_markup, title_text, has_accent = headline_markup_from_brackets(
+            string_value(cover_copy.get("headline"))
+        )
+        if not has_accent:
+            headline_markup, title_text = fallback_headline_markup(post, title)
+    else:
+        headline_markup, title_text = fallback_headline_markup(post, title)
     font_size = title_font_size(title_text)
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    safe_headline = html.escape(headline)
-    safe_accent = html.escape(accent)
     safe_account_name = html.escape(account_name.strip() or DEFAULT_ACCOUNT_NAME)
-    accent_markup = f' <span class="accent">{safe_accent}</span>' if safe_accent else ""
+    swipe_line = string_value(cover_copy.get("swipe_line")) if not title else ""
     visual = title_visual_markup(title_context)
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -1656,20 +2480,61 @@ def render_title_slide(
   background-size: cover;
   filter: saturate(0.96) contrast(1.02);
 }}
+.visual-card.is-og-fallback .visual-bg {{
+  filter: grayscale(1) contrast(1.06) brightness(1.04);
+}}
+.visual-card.is-og-fallback .visual-bg::after {{
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(152deg, rgba(var(--primary-rgb), 0.66) 0%, rgba(22, 20, 15, 0.82) 100%);
+  mix-blend-mode: multiply;
+}}
 .visual-card::after {{
   content: '';
   position: absolute;
   z-index: 2;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(244, 242, 236, 0) 42%, rgba(244, 242, 236, 0.24) 62%, var(--bg) 100%);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.24) 62%, var(--bg) 100%);
   pointer-events: none;
+}}
+.source-avatar {{
+  position: absolute;
+  z-index: 3;
+  right: 72px;
+  bottom: 86px;
+  width: 316px;
+  height: 316px;
+  border-radius: 50%;
+  padding: 10px;
+  background:
+    linear-gradient(135deg, rgba(var(--primary-rgb), 0.96), rgba(var(--bg-rgb), 0.86) 54%, rgba(22, 20, 15, 0.9));
+  box-shadow:
+    0 28px 70px rgba(22, 20, 15, 0.34),
+    0 0 0 2px rgba(var(--bg-rgb), 0.72);
+}}
+.source-avatar::before {{
+  content: '';
+  position: absolute;
+  inset: -20px;
+  border-radius: 50%;
+  border: 2px solid rgba(var(--primary-rgb), 0.34);
+}}
+.source-avatar img {{
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 8px solid rgba(var(--bg-rgb), 0.94);
 }}
 .visual-fallback {{
   z-index: 0;
   background:
-    linear-gradient(135deg, rgba(192, 85, 46, 0.74), rgba(22, 20, 15, 0.94)),
-    repeating-linear-gradient(90deg, rgba(244, 242, 236, 0.12) 0 2px, transparent 2px 18px);
+    linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
+    repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
 }}
 .title-cluster {{
   position: absolute;
@@ -1710,8 +2575,21 @@ def render_title_slide(
   font-weight: 850;
   letter-spacing: 0;
   line-height: 1.03;
+  color: var(--fg);
+  line-break: strict;
+  overflow-wrap: normal;
+  text-wrap: balance;
+  word-break: normal;
 }}
-.headline .accent {{ color: var(--primary); }}
+.headline .accent {{
+  color: var(--primary);
+}}
+.headline .jp-phrase {{
+  display: inline-block;
+}}
+.headline .term {{
+  white-space: nowrap;
+}}
 .dots {{
   bottom: 116px;
 }}
@@ -1721,9 +2599,145 @@ def render_title_slide(
   {visual}
   <div class="title-cluster">
     <div class="account-rule"><span>{safe_account_name}</span></div>
-    <h1 class="headline">{safe_headline}{accent_markup}</h1>
+    <h1 class="headline">{headline_markup}</h1>
   </div>
-  <div class="dots">{dot_markup(1, count)}</div>
+  <div class="dots">{dot_markup(1, count, swipe_line)}</div>
+</div>
+</body></html>"""
+    html_path.write_text(html_text)
+    render_html_slide(html_path, out_path)
+    return out_path
+
+
+def post_explanation(
+    title_context: dict[str, object],
+    post_index: int,
+    post: dict[str, str],
+) -> dict[str, str]:
+    raw_items = title_context.get("post_explanations")
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    raw = raw_items[post_index] if post_index < len(raw_items) else None
+    if isinstance(raw, dict):
+        headline = string_value(raw.get("headline") or raw.get("title"))
+        body = string_value(raw.get("body") or raw.get("summary") or raw.get("text"))
+        if headline and body:
+            return {
+                "headline": headline,
+                "body": body,
+                "url": string_value(raw.get("url")) or post.get("url", ""),
+            }
+    return fallback_post_explanation(post, post_index + 1)
+
+
+def render_explainer_slide(
+    post: dict[str, str],
+    explanation: dict[str, str],
+    out_path: Path,
+    active: int,
+    count: int,
+) -> Path:
+    html_path = out_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    channel = load_channel()
+    default_headline = "元投稿の要点" if channel.language_name.lower().startswith("japanese") else "Source Note"
+    headline = explanation.get("headline", default_headline)
+    body = explanation.get("body", "")
+    kicker_label = html.escape(explainer_kicker_label())
+    headline_markup = phrase_text_markup(headline, max_chars=10)
+    body_markup = "".join(
+        f"<p>{phrase_text_markup(paragraph, max_chars=17)}</p>"
+        for paragraph in re.split(r"\n{2,}", body)
+        if paragraph.strip()
+    )
+    source = html.escape(f"{post.get('author', 'Source')} {post.get('handle', '')}".strip())
+    html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+{shared_css()}
+.explainer {{
+  position: absolute;
+  inset: 0;
+  padding: 116px 72px 132px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}}
+.explainer-kicker {{
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 54px;
+  color: var(--primary);
+}}
+.explainer-kicker::before,
+.explainer-kicker::after {{
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--rule);
+}}
+.explainer-kicker span {{
+  font-size: 22px;
+  font-weight: 820;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}}
+.explainer-title {{
+  font-size: 74px;
+  font-weight: 860;
+  letter-spacing: 0;
+  line-height: 1.07;
+  margin-bottom: 42px;
+  color: var(--fg);
+  line-break: strict;
+  overflow-wrap: normal;
+  text-wrap: balance;
+  word-break: normal;
+}}
+.explainer-body {{
+  max-width: 924px;
+  color: var(--fg);
+  font-size: 43px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.42;
+}}
+.explainer-body p + p {{
+  margin-top: 28px;
+}}
+.jp-phrase {{
+  display: inline-block;
+}}
+.term {{
+  white-space: nowrap;
+}}
+.source-note {{
+  position: absolute;
+  left: 72px;
+  right: 72px;
+  bottom: 154px;
+  color: var(--primary);
+  font-size: 22px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}}
+.dots {{
+  bottom: 78px;
+}}
+</style></head>
+<body>
+<div class="slide">
+  <section class="explainer">
+    <div class="explainer-kicker"><span>{kicker_label}</span></div>
+    <h1 class="explainer-title">{headline_markup}</h1>
+    <div class="explainer-body">{body_markup}</div>
+  </section>
+  <div class="source-note">{source}</div>
+  <div class="dots">{dot_markup(active, count)}</div>
 </div>
 </body></html>"""
     html_path.write_text(html_text)
@@ -1787,7 +2801,7 @@ def render_html_slide(html_path: Path, out_path: Path) -> None:
     except ModuleNotFoundError as exc:
         raise SystemExit("playwright is required to render carousel slides") from exc
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome")
+        browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": SLIDE_W, "height": SLIDE_H}, device_scale_factor=1)
         page.goto(html_path.resolve().as_uri())
         page.wait_for_load_state("networkidle")
@@ -1827,6 +2841,10 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
     topic_entity = context.get("topic_entity")
     return {
         "topic": context.get("topic", ""),
+        "cover_copy": context.get("cover_copy", {}),
+        "post_explanations": context.get("post_explanations", []),
+        "instagram_caption": context.get("instagram_caption", ""),
+        "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
         "google_enabled": bool(context.get("google_enabled")),
@@ -1860,9 +2878,13 @@ def build_x_carousel(
     out_dir: Path,
     max_thread_posts: int,
     title: str | None,
+    cover_kicker: str | None,
+    cover_headline: str | None,
+    cover_swipe_line: str | None,
     account_name: str,
     no_thread: bool,
     first_page_only: bool,
+    skip_first_explainer: bool,
     cookies_from_browser: str | None,
     thread_source: str = "auto",
 ) -> Path:
@@ -1894,15 +2916,31 @@ def build_x_carousel(
         embed_post = fetch_embed_post(posts[0]["url"])
         if embed_post:
             posts[0] = {**posts[0], **embed_post}
-    if is_person_source_post(posts[0]) and not posts[0].get("profile_image_url"):
+    if source_profile_candidate_post(posts[0]) and not posts[0].get("profile_image_url"):
         embed_post = fetch_embed_post(posts[0]["url"])
         if embed_post and embed_post.get("profile_image_url"):
             posts[0]["profile_image_url"] = embed_post["profile_image_url"]
 
-    total = len(posts) + 1
+    skipped_explainer_count = 1 if skip_first_explainer and not first_page_only and posts else 0
+    content_total = 1 if first_page_only else 1 + (len(posts) * 2) - skipped_explainer_count
+    include_cta = not first_page_only
+    total = content_total + (1 if include_cta else 0)
+    if total > carousel_item_limit():
+        print(
+            f"[x] warning: rendering {total} slides; configured Instagram item limit is "
+            f"{carousel_item_limit()}",
+            file=sys.stderr,
+        )
     slides: list[dict[str, object]] = []
     title_path = out_dir / "slide_01.png"
-    title_context = build_title_enrichment(posts, title=title, out_dir=out_dir)
+    title_context = build_title_enrichment(
+        posts,
+        title=title,
+        out_dir=out_dir,
+        cover_kicker=cover_kicker,
+        cover_headline=cover_headline,
+        cover_swipe_line=cover_swipe_line,
+    )
     render_title_slide(posts[0], title_path, total, title, title_context, account_name)
     slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": posts[0]["url"]})
 
@@ -1911,7 +2949,8 @@ def build_x_carousel(
     else:
         posts_to_render = posts
 
-    for idx, post in enumerate(posts_to_render, start=2):
+    slide_index = 2
+    for post_index, post in enumerate(posts_to_render):
         source_url = post["url"]
         metadata = fetch_metadata(source_url, cookies_from_browser)
         if metadata:
@@ -1921,10 +2960,26 @@ def build_x_carousel(
             if embed_post:
                 post = {**post, **embed_post}
 
+        if not (skip_first_explainer and post_index == 0):
+            explanation = post_explanation(title_context, post_index, post)
+            explainer_path = out_dir / f"slide_{slide_index:02d}.png"
+            render_explainer_slide(post, explanation, explainer_path, slide_index, total)
+            slides.append(
+                {
+                    "index": slide_index,
+                    "type": "post-explanation",
+                    "path": str(explainer_path),
+                    "source_url": source_url,
+                    "headline": explanation.get("headline", ""),
+                    "body": explanation.get("body", ""),
+                }
+            )
+            slide_index += 1
+
         if metadata_has_video(metadata):
-            out_path = out_dir / f"slide_{idx:02d}.mp4"
-            frame_path = out_dir / f"slide_{idx:02d}_frame.png"
-            poster_path = out_dir / f"slide_{idx:02d}_poster.png"
+            out_path = out_dir / f"slide_{slide_index:02d}.mp4"
+            frame_path = out_dir / f"slide_{slide_index:02d}_frame.png"
+            poster_path = out_dir / f"slide_{slide_index:02d}_poster.png"
             build_video_slide(
                 source=source_url,
                 tweet_embed_file=None,
@@ -1934,7 +2989,7 @@ def build_x_carousel(
                 caption="",
                 kicker="",
                 source_label=post.get("handle", ""),
-                active=idx,
+                active=slide_index,
                 count=total,
                 fit="cover",
                 fps=30,
@@ -1948,7 +3003,7 @@ def build_x_carousel(
             )
             slides.append(
                 {
-                    "index": idx,
+                    "index": slide_index,
                     "type": "post-video",
                     "path": str(out_path),
                     "poster": str(poster_path),
@@ -1959,13 +3014,31 @@ def build_x_carousel(
             status_id = post["id"] or extract_status_id(source_url)
             if not status_id:
                 raise SystemExit(f"could not find status id for {source_url}")
-            embed_path = out_dir / f"source_post_{idx:02d}.png"
+            embed_path = out_dir / f"source_post_{slide_index:02d}.png"
             capture_embed(status_id, embed_path)
-            out_path = out_dir / f"slide_{idx:02d}.png"
-            render_post_slide(post, embed_path, out_path, idx, total)
-            slides.append({"index": idx, "type": "post", "path": str(out_path), "source_url": source_url})
+            out_path = out_dir / f"slide_{slide_index:02d}.png"
+            render_post_slide(post, embed_path, out_path, slide_index, total)
+            slides.append({"index": slide_index, "type": "post", "path": str(out_path), "source_url": source_url})
+        slide_index += 1
+
+    if include_cta:
+        cta = carousel_cta_copy()
+        cta_path = out_dir / f"slide_{slide_index:02d}.png"
+        render_cta_slide(cta_path, slide_index, total, cta)
+        slides.append(
+            {
+                "index": slide_index,
+                "type": "cta",
+                "path": str(cta_path),
+                "source_url": url,
+                "headline": cta["headline"],
+                "body": cta["body"],
+                "action": cta["action"],
+            }
+        )
 
     manifest = {
+        "channel_id": load_channel().id,
         "source_url": url,
         "thread_source": used_thread_source,
         "thread_post_count": len(posts),
@@ -1974,6 +3047,7 @@ def build_x_carousel(
         "first_page_only": first_page_only,
         "account_name": account_name,
         "title_context": manifest_title_context(title_context),
+        "instagram_caption": title_context.get("instagram_caption", ""),
         "slides": slides,
     }
     manifest_path = out_dir / "manifest.json"
@@ -1990,15 +3064,38 @@ def main() -> int:
     ap.add_argument("--max-thread-posts", type=int, default=8)
     ap.add_argument("--title", help="Override generated title slide text")
     ap.add_argument(
+        "--cover-kicker",
+        help="Override the generated cover kicker metadata; visible brand line remains account name",
+    )
+    ap.add_argument(
+        "--cover-headline",
+        help="Override the generated cover headline; wrap the accent word in [brackets]",
+    )
+    ap.add_argument("--cover-swipe-line", help="Override the generated cover swipe line")
+    ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id selecting branding + language + voice as one bundle "
+            "(see channels/<id>/channel.json). Defaults to channels.json's "
+            "default_channel; also settable with CAROUSEL_CHANNEL."
+        ),
+    )
+    ap.add_argument(
         "--account-name",
-        default=os.environ.get("X_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
-        help="Account or publisher name displayed in the title slide template",
+        default=os.environ.get("X_CAROUSEL_ACCOUNT_NAME"),
+        help="Override the account/publisher name on the title slide (default: channel account_name)",
     )
     ap.add_argument("--no-thread", action="store_true", help="Only build from the supplied post")
     ap.add_argument(
         "--first-page-only",
         action="store_true",
         help="Render only the title/cover page after metadata is fetched",
+    )
+    ap.add_argument(
+        "--skip-first-explainer",
+        action="store_true",
+        help="Skip the first post explanation card when you want a shorter thread carousel",
     )
     ap.add_argument(
         "--thread-source",
@@ -2020,6 +3117,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # Select the active channel for every load_channel() call in this process.
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
+    channel = load_channel()
+    account_name = args.account_name or channel.account_name
+
     if not shutil.which("ffmpeg"):
         print("warning: ffmpeg not found; video posts will fail to render", file=sys.stderr)
 
@@ -2028,9 +3131,13 @@ def main() -> int:
         out_dir=args.out_dir,
         max_thread_posts=args.max_thread_posts,
         title=args.title,
-        account_name=args.account_name,
+        cover_kicker=args.cover_kicker,
+        cover_headline=args.cover_headline,
+        cover_swipe_line=args.cover_swipe_line,
+        account_name=account_name,
         no_thread=args.no_thread,
         first_page_only=args.first_page_only,
+        skip_first_explainer=args.skip_first_explainer,
         cookies_from_browser=args.cookies_from_browser,
         thread_source=args.thread_source,
     )

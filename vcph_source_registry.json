@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "bucket_labels": {
+    "first_party": "First-party labs / model makers",
+    "builder": "Builder / operator feeds",
+    "ph_moat": "PH moat sources",
+    "global_media": "Global / local media"
+  },
+  "sources": [
+    {
+      "name": "TechCrunch AI",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "The Verge AI",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+      "priority_bonus": 0
+    },
+    {
+      "name": "Ars Technica",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+      "priority_bonus": 0
+    },
+    {
+      "name": "MIT Tech Review",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://www.technologyreview.com/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "VentureBeat AI",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://venturebeat.com/category/ai/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "The Decoder",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://the-decoder.com/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "IEEE Spectrum AI",
+      "bucket": "global_media",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://spectrum.ieee.org/rss/artificial-intelligence/fulltext",
+      "priority_bonus": 0
+    },
+    {
+      "name": "GitHub AI & ML",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://github.blog/ai-and-ml/feed/",
+      "priority_bonus": 8
+    },
+    {
+      "name": "Simon Willison",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://simonwillison.net/atom/everything/",
+      "priority_bonus": 8
+    },
+    {
+      "name": "LangChain Blog",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://blog.langchain.com/rss.xml",
+      "priority_bonus": 8
+    },
+    {
+      "name": "Cloudflare AI",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://blog.cloudflare.com/tag/ai/rss/",
+      "priority_bonus": 8
+    },
+    {
+      "name": "Supabase Blog",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://supabase.com/feed.xml",
+      "priority_bonus": 8
+    },
+    {
+      "name": "Replicate Blog",
+      "bucket": "builder",
+      "input_group": "intl",
+      "kind": "rss",
+      "url": "https://replicate.com/blog/rss",
+      "priority_bonus": 8
+    },
+    {
+      "name": "OpenAI News",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://openai.com/news/rss.xml",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Google DeepMind Blog",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://deepmind.google/blog/rss.xml",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Hugging Face Blog",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://huggingface.co/blog/feed.xml",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Qwen Blog",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://qwenlm.github.io/blog/index.xml",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "GitHub Changelog",
+      "bucket": "builder",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://github.blog/changelog/feed/",
+      "priority_bonus": 8,
+      "official_source": true,
+      "tech_signal_bypass": false
+    },
+    {
+      "name": "NVIDIA Developer AI",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://developer.nvidia.com/blog/tag/generative-ai/feed/",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "NVIDIA Blog",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://blogs.nvidia.com/feed/",
+      "priority_bonus": 8,
+      "official_source": true,
+      "tech_signal_bypass": false
+    },
+    {
+      "name": "Together AI Blog",
+      "bucket": "first_party",
+      "input_group": "first_party_feed",
+      "kind": "rss",
+      "url": "https://www.together.ai/blog/rss.xml",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Anthropic News",
+      "bucket": "first_party",
+      "input_group": "first_party_sitemap",
+      "kind": "sitemap",
+      "url": "https://www.anthropic.com/sitemap.xml",
+      "include_prefixes": ["/news/", "/research/", "/engineering/"],
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Mistral AI News",
+      "bucket": "first_party",
+      "input_group": "first_party_sitemap",
+      "kind": "sitemap",
+      "url": "https://mistral.ai/sitemap.xml",
+      "include_prefixes": ["/news/"],
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Qwen Research",
+      "bucket": "first_party",
+      "input_group": "first_party_api",
+      "kind": "json_api",
+      "url": "https://qwen.ai/api/page_config?code=***",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Qwen HF Models",
+      "bucket": "first_party",
+      "input_group": "first_party_hf_org",
+      "kind": "hf_model_org",
+      "author": "Qwen",
+      "priority_bonus": 18,
+      "official_source": true,
+      "tech_signal_bypass": true
+    },
+    {
+      "name": "Rappler Tech",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://www.rappler.com/technology/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "Rappler Business",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://www.rappler.com/business/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "Philstar Business",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://www.philstar.com/rss/business",
+      "priority_bonus": 0
+    },
+    {
+      "name": "GMA SciTech",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://data.gmanetwork.com/gno/rss/scitech/feed.xml",
+      "priority_bonus": 0
+    },
+    {
+      "name": "GMA Tech",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://data.gmanetwork.com/gno/rss/scitech/technology/feed.xml",
+      "priority_bonus": 0
+    },
+    {
+      "name": "BusinessWorld",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://www.bworldonline.com/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "BusinessMirror",
+      "bucket": "global_media",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://businessmirror.com.ph/feed/",
+      "priority_bonus": 0
+    },
+    {
+      "name": "Newsbytes.ph",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://newsbytes.ph/feed/",
+      "priority_bonus": 10,
+      "user_agent": "curl/8.0"
+    },
+    {
+      "name": "Back End News",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://backendnews.net/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "YugaTech",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://www.yugatech.com/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "BitPinas",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://bitpinas.com/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "Fintech News Philippines",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://fintechnews.ph/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "DOST-ASTI",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://asti.dost.gov.ph/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "PhilSA",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://philsa.gov.ph/feed/",
+      "priority_bonus": 10
+    },
+    {
+      "name": "Inquirer Technology",
+      "bucket": "ph_moat",
+      "input_group": "ph",
+      "kind": "rss",
+      "url": "https://technology.inquirer.net/feed",
+      "priority_bonus": 10,
+      "user_agent": "curl/8.0"
+    }
+  ]
+}

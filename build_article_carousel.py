@@ -6,7 +6,7 @@ The workflow mirrors build_x_carousel.py, but the source is an article:
     uv run python build_article_carousel.py https://example.com/story
 
 Outputs go to out/article_carousel by default. The first slide is the same
-LLMAW title-cover style used by the X workflow. Remaining slides are selected
+vibecodersph title-cover style used by the X workflow. Remaining slides are selected
 from high-signal article sections only: concrete facts, benchmarks, launches,
 technical details, strategy shifts, and business implications.
 """
@@ -28,9 +28,11 @@ from urllib.parse import unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from build_video_slide import clean_post_text
+from channel import load_channel
 from build_x_carousel import (
     DEFAULT_ACCOUNT_NAME,
     build_title_enrichment,
+    carousel_cta_copy,
     dot_markup,
     download_image,
     extract_gemini_text,
@@ -40,6 +42,7 @@ from build_x_carousel import (
     load_env_file,
     parse_json_object,
     render_html_slide,
+    render_cta_slide,
     render_title_slide,
     shared_css,
     string_value,
@@ -93,6 +96,9 @@ BOILERPLATE_PATTERNS = [
     r"\bread more\b",
     r"\brecommended for you\b",
     r"\bregister now\b",
+    r"\bclick to share\b",
+    r"\bopens in new window\b",
+    r"\bshare on (?:facebook|x|twitter|linkedin|reddit|tumblr|pinterest|telegram|whatsapp)\b",
     r"\bshare this\b",
     r"\bsign in\b",
     r"\bsign up\b",
@@ -208,6 +214,9 @@ class CarouselPage:
     source_indices: list[int]
     score: int
     why: str
+    # Open-loop hook teasing the next slide. Empty on the final page (and on the
+    # local fallback path, which has no model to write one).
+    tease: str = ""
 
 
 class ArticleHTMLParser(HTMLParser):
@@ -340,7 +349,9 @@ def is_boilerplate(text: str) -> bool:
     lowered = text.lower()
     if any(re.search(pattern, lowered) for pattern in BOILERPLATE_PATTERNS):
         return True
-    if lowered in {"x", "facebook", "linkedin", "copy link", "email", "print"}:
+    if lowered in {"share", "x", "facebook", "linkedin", "copy link", "email", "print"}:
+        return True
+    if lowered.count("share on ") >= 2:
         return True
     if len(text) < 3:
         return True
@@ -360,6 +371,20 @@ def is_useful_block(text: str, role: str) -> bool:
 
 def count_words(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'._+-]*", text))
+
+
+def term_in_text(text: str, term: str) -> bool:
+    """Whole-word/term match, so 'score' does not match 'underscored' and 'ai'
+    does not match 'training'. Mirrors story_scout.text_has_term."""
+    term = term.strip().lower()
+    if not term:
+        return False
+    escaped = re.sub(r"\\\s+", r"\\s+", re.escape(term))
+    return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", text, re.I) is not None
+
+
+def matched_signal_terms(text: str, terms: set[str]) -> list[str]:
+    return [term for term in terms if term_in_text(text, term)]
 
 
 def first_meta(meta: dict[str, str], *keys: str) -> str:
@@ -588,11 +613,12 @@ def split_sentences(text: str) -> list[str]:
     return sentences or [normalize_space(text)]
 
 
-def clamp_words(text: str, limit: int) -> str:
+def clamp_words(text: str, limit: int, *, ellipsis: bool = True) -> str:
     words = re.findall(r"\S+", text)
     if len(words) <= limit:
         return text
-    return " ".join(words[:limit]).rstrip(" ,;:") + "..."
+    clipped = " ".join(words[:limit]).rstrip(" ,;:")
+    return f"{clipped}..." if ellipsis else clipped
 
 
 def sentence_word_count(text: str) -> int:
@@ -641,7 +667,7 @@ def compact_headline(text: str, limit: int = 9) -> str:
     text = normalize_space(text)
     text = re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.I)
     text = re.sub(r"[:.;,]\s*$", "", text)
-    text = clamp_words(text, limit)
+    text = clamp_words(text, limit, ellipsis=False)
     if text and text[:1].islower():
         text = text[:1].upper() + text[1:]
     return text
@@ -669,12 +695,12 @@ def section_signal_score(title: str, body: str) -> tuple[int, list[str]]:
         score += min(5, 2 + len(number_matches))
         reasons.append("numbers")
 
-    strong_hits = [term for term in STRONG_SIGNAL_TERMS if term in text]
+    strong_hits = matched_signal_terms(text, STRONG_SIGNAL_TERMS)
     if strong_hits:
         score += min(6, 2 * len(strong_hits))
         reasons.append("strong terms")
 
-    signal_hits = [term for term in SIGNAL_TERMS if term in text]
+    signal_hits = matched_signal_terms(text, SIGNAL_TERMS)
     if signal_hits:
         score += min(5, len(signal_hits))
         reasons.append("topic terms")
@@ -697,7 +723,7 @@ def section_signal_score(title: str, body: str) -> tuple[int, list[str]]:
     if re.search(r"\b(?:said|told|according to)\b", text) and not number_matches and len(signal_hits) < 2:
         score -= 1
 
-    if is_boilerplate(body) or is_boilerplate(title):
+    if is_boilerplate(body) or (title.strip() and is_boilerplate(title)):
         score -= 8
         reasons.append("boilerplate")
 
@@ -730,7 +756,10 @@ def build_candidate_sections(article: Article) -> list[CandidateSection]:
         pending_heading = current_heading
 
     for block in article.blocks:
-        if block.role in {"h1", "h2", "h3"}:
+        if block.role == "h1":
+            continue
+
+        if block.role in {"h2", "h3"}:
             flush()
             current_heading = block.text
             pending_heading = current_heading
@@ -742,6 +771,10 @@ def build_candidate_sections(article: Article) -> list[CandidateSection]:
             flush()
             pending_heading = current_heading
         pending.append(block)
+
+        if not current_heading and block.role in {"p", "li"}:
+            flush()
+            continue
 
         if block.role == "blockquote" or count_words(" ".join(item.text for item in pending)) >= 90:
             flush()
@@ -773,17 +806,28 @@ def stat_from_text(text: str) -> str:
     return ""
 
 
+def normalize_stat_chip(value: object) -> str:
+    """Keep a stat chip only when it carries a real quantity. Vague phrases like
+    'Low impact' or 'Digital expansion' add noise and tend to echo the headline,
+    so a chip without a digit is dropped."""
+    text = string_value(value)[:28]
+    if not text or not re.search(r"\d", text):
+        return ""
+    return text
+
+
 def kicker_for_text(text: str) -> str:
     lowered = text.lower()
-    if "benchmark" in lowered or "score" in lowered or "swe" in lowered:
+    has = lambda *terms: any(term_in_text(lowered, term) for term in terms)
+    if has("benchmark", "benchmarks", "score", "scores", "swe-bench", "swe", "leaderboard"):
         return "BENCHMARK"
-    if "open-source" in lowered or "open source" in lowered or "github" in lowered:
+    if has("open-source", "open source", "github", "weights", "apache"):
         return "OPEN SOURCE"
-    if "agent" in lowered or "coding" in lowered or "harness" in lowered:
+    if has("agent", "agentic", "coding", "harness"):
         return "AGENTIC CODING"
-    if "license" in lowered or "pricing" in lowered or "cost" in lowered:
+    if has("license", "pricing", "price", "cost", "funding", "revenue"):
         return "DISTRIBUTION"
-    if re.search(r"\b(?:launch|released|announced|new)\b", lowered):
+    if has("launch", "launched", "released", "release", "announced", "new"):
         return "THE NEWS"
     return "THE SIGNAL"
 
@@ -795,14 +839,54 @@ def sentence_score(sentence: str) -> int:
     return score
 
 
+# Verbs that typically separate a sentence's subject from its predicate. Splitting
+# here lets a single-sentence section render a distinct headline (subject) and body
+# (predicate) instead of repeating the same words in both.
+PRIMARY_VERB_TOKENS = {
+    "has", "have", "had", "is", "are", "was", "were", "will", "would",
+    "can", "could", "announced", "launched", "released", "unveiled",
+    "introduced", "reported", "said", "plans", "aims", "expects", "developed",
+    "raised", "involved", "highlighted", "comes", "became", "becomes",
+    "shows", "showed", "found", "claims", "claimed", "warns", "warned",
+}
+
+
+def subject_predicate_split(sentence: str) -> tuple[str, str]:
+    """Split a declarative sentence into (subject, predicate) at its primary verb.
+    Only returns a split when the subject is contentful enough to stand alone as a
+    headline (>= 3 words) so short-subject sentences keep a punchier lead."""
+    words = sentence.split()
+    for index, word in enumerate(words):
+        token = word.strip(",.;:\"'()").lower()
+        if 2 <= index <= 12 and token in PRIMARY_VERB_TOKENS:
+            subject = " ".join(words[:index]).strip()
+            predicate = " ".join(words[index:]).strip()
+            if count_words(subject) >= 3 and count_words(predicate) >= 4:
+                return subject, predicate
+    return "", ""
+
+
 def local_page_from_candidate(candidate: CandidateSection) -> CarouselPage:
     sentences = split_sentences(candidate.body)
     ranked = sorted(enumerate(sentences), key=lambda item: sentence_score(item[1]), reverse=True)
     fitting_ranked = [item for item in ranked if count_words(item[1]) <= 42]
     selection_pool = fitting_ranked or ranked
+
+    heading = candidate.title
+    has_heading = bool(
+        heading
+        and count_words(heading) >= 2
+        and normalized_text_key(heading) != normalized_text_key(candidate.body[:80])
+    )
+    # With no usable heading, reserve the strongest sentence for the headline so the
+    # body can draw from *other* sentences and avoid duplicating it.
+    headline_sentence_index = selection_pool[0][0] if (not has_heading and selection_pool) else None
+
     chosen_indices: list[int] = []
     chosen_word_count = 0
-    for index, sentence in selection_pool[:4]:
+    for index, sentence in selection_pool[:5]:
+        if index == headline_sentence_index and len(sentences) > 1:
+            continue
         sentence_words = count_words(sentence)
         if chosen_indices and chosen_word_count + sentence_words > 42:
             continue
@@ -819,10 +903,21 @@ def local_page_from_candidate(candidate: CandidateSection) -> CarouselPage:
     if sentence_word_count(body) > 42:
         body = shorten_sentence(body, 42)
     body = clamp_words(body, 42)
-    title = candidate.title
-    if not title or count_words(title) < 2 or normalized_text_key(title) == normalized_text_key(body[:80]):
-        title = sentences[chosen_indices[0]] if chosen_indices else candidate.body
-    headline = compact_headline(title, 8)
+
+    if has_heading:
+        headline = compact_headline(heading, 9)
+    elif headline_sentence_index is not None and headline_sentence_index not in chosen_indices:
+        # Body uses different sentences, so a compact form of the lead is distinct.
+        headline = compact_headline(sentences[headline_sentence_index], 9)
+    else:
+        lead = sentences[headline_sentence_index] if headline_sentence_index is not None else candidate.body
+        subject, predicate = subject_predicate_split(lead)
+        if subject and predicate:
+            headline = compact_headline(subject, 9)
+            body = finish_sentence(clamp_words(predicate, 42))
+        else:
+            headline = compact_headline(lead, 8)
+
     text_for_kicker = f"{headline} {body}"
     return CarouselPage(
         index=candidate.index,
@@ -878,29 +973,83 @@ def gemini_curate_pages(
         return []
 
     model = gemini_text_model()
+    channel = load_channel()
+    audience = channel.audience
+    language = channel.language_name
+    if language.lower().startswith("japanese"):
+        example_page = {
+            "source_indices": [0],
+            "kicker": "実力の証拠",
+            "headline": "GitHub実務に迫るオープンモデル",
+            "body": "Qwen3-CoderはSWE-Bench Verifiedで71%を記録。実際のプルリク修正に近いタスクで、クローズドモデルとの差を縮めています。",
+            "stat": "71%",
+            "tease": "次は弱点を見る",
+            "why": "具体的なベンチマーク結果",
+        }
+        kicker_rule = (
+            "- kicker: a short Japanese curiosity frame specific to THIS slide's "
+            "tension. Keep it compact, natural, and non-generic; do not use "
+            "English all-caps labels unless the term is a product name."
+        )
+        tease_rule = (
+            "- tease: a short Japanese open loop pointing at what the NEXT slide "
+            "reveals. Use an empty string on the final page."
+        )
+    else:
+        example_page = {
+            "source_indices": [0],
+            "kicker": "THE CLAIM",
+            "headline": "An open model just cracked real GitHub tasks",
+            "body": (
+                "Qwen3-Coder hits 71% on SWE-Bench Verified, resolving actual pull "
+                "requests and narrowing the gap to closed models."
+            ),
+            "stat": "71%",
+            "tease": "next: where it still falls short",
+            "why": "concrete benchmark result",
+        }
+        kicker_rule = (
+            "- kicker: a 1 to 3 word ALL-CAPS curiosity frame specific to THIS "
+            "slide's tension (e.g. THE CATCH, THE REAL COST, THE FIX, WHAT BROKE, "
+            "THE TRADE-OFF, THE CLAIM). Do not reuse the same kicker twice in one "
+            "carousel, and avoid generic table-of-contents labels."
+        )
+        tease_rule = (
+            "- tease: a 4 to 8 word lowercase open loop pointing at what the NEXT "
+            'slide reveals (e.g. "but the price hides a catch", "the number the '
+            'thread left out"). No ending period. Use an empty string on the final page.'
+        )
+    voice_prompt = channel.voice_prompt
+    voice_guideline = ""
+    if voice_prompt:
+        voice_guideline = f"\nVoice and Brand Guidelines:\n{voice_prompt}\n"
+
     prompt = f"""
-You are an editorial producer turning one article into an Instagram carousel.
-Choose only the highest-signal article sections: concrete technical facts,
-benchmarks, launches, open-source details, adoption signals, pricing,
-strategic stakes, or credible quantified claims.
+You are an editorial producer turning one article into an Instagram carousel for a
+{audience}. Choose only the highest-signal sections: concrete
+technical facts, benchmarks, launches, open-source details, adoption signals,
+pricing, model releases, strategic stakes, or credible quantified claims.
+{voice_guideline}
+Write every reader-facing field in {language}: kicker, headline, body, tease, and
+why. Keep model names, product names, company names, benchmark names, and units in
+their standard form when translating. Do not leave English prose in these fields
+unless the channel language is English.
 
 Return JSON only with this exact shape:
 {{
   "pages": [
-    {{
-      "source_indices": [0],
-      "kicker": "BENCHMARK",
-      "headline": "short headline, 3 to 8 words",
-      "body": "paraphrased slide copy, 18 to 38 words",
-      "stat": "optional number chip, max 22 chars",
-      "why": "short reason this is high signal"
-    }}
+    {json.dumps(example_page, ensure_ascii=False)}
   ]
 }}
 
 Rules:
-- Pick 2 to {max_pages} pages.
-- Do not copy long article wording. Paraphrase tightly.
+- Pick {max_pages} pages when the article has that many distinct high-signal points; return fewer only when the rest would be filler. Use at least 2.
+- Order the pages as a retention arc, not a summary. Open on the hook or the contrarian claim, escalate through the evidence and numbers, and land the payoff or stakes last. Each slide should raise a question the next slide answers, so the reader keeps swiping.
+- headline: 3 to 9 words that open a curiosity gap. Pose the tension, the contrarian angle, or the surprising specific so the reader needs the body to resolve it. Do NOT state the flat takeaway or conclusion here. Lead with a concrete noun or number, no ending period, no quotation marks.
+- body: 18 to 38 words that PAY OFF the headline with new information the headline did not already give: the mechanism, the number, the example, or the consequence. Never restate or paraphrase the headline. Tight, active voice, never copy long article wording.
+{tease_rule}
+- stat: one quantity with its unit when the section has a real number (e.g. "72%", "32K tokens", "$2B", "10x", "SWE-Bench 71"). If the section has no genuine number, use an empty string. Never put a phrase, label, or non-numeric word here.
+{kicker_rule}
 - Each page must stand on a specific fact, benchmark, technical detail, or implication.
 - Skip intro fluff, event promos, newsletter language, author bio, generic quotes, and background unless it changes the story.
 - No markdown, citations, extra keys, hashtags, emojis, or quotation marks around the body.
@@ -967,15 +1116,20 @@ Candidate sections:
                 kicker=string_value(raw_page.get("kicker"))[:24].upper() or kicker_for_text(body),
                 headline=compact_headline(headline, 9),
                 body=body,
-                stat=string_value(raw_page.get("stat"))[:28],
+                stat=normalize_stat_chip(raw_page.get("stat")),
                 source_heading=source_heading,
                 source_indices=source_indices,
                 score=source_score,
                 why=string_value(raw_page.get("why")),
+                tease=string_value(raw_page.get("tease"))[:80],
             )
         )
         if len(pages) >= max_pages:
             break
+    # The last article slide has nothing to tease, so never leave a dangling hook
+    # even if the model wrote one.
+    if pages:
+        pages[-1].tease = ""
     return pages
 
 
@@ -994,10 +1148,24 @@ def curate_pages(
             max_pages=max_pages,
             min_score=min_score,
         )
+        if not pages:
+            # Gemini curation failures are usually transient (timeout, rate limit,
+            # one malformed JSON response). A silent drop to local scoring yields
+            # verbatim, lower-quality slides, so retry once before giving up.
+            print("[article] Gemini curation returned no pages; retrying once")
+            pages = gemini_curate_pages(
+                article,
+                candidates,
+                max_pages=max_pages,
+                min_score=min_score,
+            )
         if pages:
             return pages, "gemini"
-        if backend == "gemini":
-            print("[article] Gemini curation unavailable or empty; using local scoring fallback")
+        print(
+            "[article] WARNING: Gemini curation unavailable after retry; falling back to "
+            "LOCAL scoring. Slides will use verbatim article copy and may read lower "
+            "quality. Re-run to retry Gemini, or pass --curation-backend gemini to require it."
+        )
     pages = local_curate_pages(candidates, max_pages=max_pages, min_score=min_score)
     return pages, "local"
 
@@ -1059,10 +1227,13 @@ def render_article_slide(
     out_path: Path,
     active: int,
     count: int,
+    *,
+    badge: str = "ARTICLE",
 ) -> Path:
     html_path = out_path.with_suffix(".html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    safe_badge = html.escape(badge or "ARTICLE")
     safe_kicker = html.escape(page.kicker or "THE SIGNAL")
     safe_headline = html.escape(page.headline)
     safe_body = html.escape(page.body)
@@ -1078,9 +1249,14 @@ def render_article_slide(
         and heading_key
         and headline_key
         and heading_key != headline_key
+        and not heading_key.startswith(headline_key)
         and not heading_key.endswith(headline_key)
     )
     heading_markup = f'<div class="source-heading">{safe_heading}</div>' if show_heading else ""
+    progress_label = f"{active:02d} / {count:02d}"
+    # The bottom cue becomes the open-loop tease when we have one; dot_markup falls
+    # back to the generic "swipe for more" otherwise and stays blank on the last slide.
+    swipe_cue = f"{page.tease} →" if page.tease else ""
 
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -1108,11 +1284,24 @@ def render_article_slide(
   text-transform: uppercase;
 }}
 .kicker {{
-  top: 170px;
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+  margin: 0 0 44px;
+}}
+.progress {{
+  position: absolute;
+  top: 78px;
+  right: 72px;
+  font-size: 23px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  color: rgba(20, 18, 14, 0.4);
 }}
 .signal {{
   position: absolute;
-  top: 266px;
+  top: 190px;
   left: 72px;
   right: 72px;
   bottom: 178px;
@@ -1180,9 +1369,10 @@ def render_article_slide(
 </style></head>
 <body>
 <div class="slide">
-  <div class="article-source"><span>ARTICLE</span></div>
-  <div class="kicker"><em>{safe_kicker}</em></div>
+  <div class="article-source"><span>{safe_badge}</span></div>
+  <div class="progress">{progress_label}</div>
   <div class="signal">
+    <div class="kicker"><em>{safe_kicker}</em></div>
     {heading_markup}
     <h1 class="headline">{safe_headline}</h1>
     <div class="rule"></div>
@@ -1190,7 +1380,7 @@ def render_article_slide(
     {stat_markup}
   </div>
   <div class="source-label">{safe_source}</div>
-  <div class="dots">{dot_markup(active, count)}</div>
+  <div class="dots">{dot_markup(active, count, swipe_cue)}</div>
 </div>
 </body></html>"""
     html_path.write_text(html_text)
@@ -1212,6 +1402,7 @@ def page_manifest(page: CarouselPage, slide_path: Path, article: Article, index:
         "source_indices": page.source_indices,
         "score": page.score,
         "why": page.why,
+        "tease": page.tease,
     }
 
 
@@ -1229,10 +1420,38 @@ def manifest_article(article: Article) -> dict[str, Any]:
     }
 
 
+def cover_title_override(
+    title: str | None,
+    article_title: str,
+    title_context: dict[str, Any],
+) -> str | None:
+    """Decide what to pass as render_title_slide's ``title`` argument.
+
+    Returning None lets the cover use the VibeCoders PH brand-voice cover copy
+    (Taglish IG line with one [accent] word). We only force a literal title when
+    the user passed --title, or when enrichment produced no brand headline to fall
+    back on (then keep the article title with a heuristic two-tone accent). This
+    mirrors how the X carousel renders its covers.
+    """
+    if title:
+        return title
+    cover_copy = title_context.get("cover_copy")
+    has_brand_headline = (
+        bool(string_value(cover_copy.get("headline")))
+        if isinstance(cover_copy, dict)
+        else False
+    )
+    return None if has_brand_headline else article_title
+
+
 def manifest_title_context(context: dict[str, Any]) -> dict[str, Any]:
     topic_image_path = context.get("topic_image_path")
+    cover_copy = context.get("cover_copy")
     return {
         "topic": context.get("topic", ""),
+        "cover_copy": cover_copy if isinstance(cover_copy, dict) else {},
+        "instagram_caption": context.get("instagram_caption", ""),
+        "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
         "google_enabled": bool(context.get("google_enabled")),
@@ -1257,15 +1476,50 @@ def build_article_carousel(
     no_title_enrichment: bool,
     timeout: int,
 ) -> Path:
-    out_dir = out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    account_name = account_name.strip() or DEFAULT_ACCOUNT_NAME
-
     print(f"[article] reading {source}")
     html_text, final_url = read_source(source, timeout=timeout)
     article = parse_article(source, html_text, final_url)
     if not article.blocks:
         raise SystemExit("could not extract enough article text to build a carousel")
+
+    return render_carousel_from_article(
+        article,
+        out_dir=out_dir,
+        max_pages=max_pages,
+        min_score=min_score,
+        title=title,
+        account_name=account_name,
+        curation_backend=curation_backend,
+        first_page_only=first_page_only,
+        no_title_enrichment=no_title_enrichment,
+    )
+
+
+def render_carousel_from_article(
+    article: Article,
+    *,
+    out_dir: Path,
+    max_pages: int,
+    min_score: int,
+    title: str | None,
+    account_name: str,
+    curation_backend: str,
+    first_page_only: bool,
+    no_title_enrichment: bool,
+    source_type: str = "article",
+    source_badge: str = "ARTICLE",
+) -> Path:
+    """Curate, render, and write a carousel from an already-parsed Article.
+
+    This is the shared tail of every article-shaped pipeline. build_article_carousel
+    feeds it an Article parsed from web HTML; build_x_article_carousel feeds it an
+    Article assembled from an X long-form post. Everything from candidate sectioning
+    through manifest writing is identical, so source_type / source_badge are the only
+    knobs the X path needs.
+    """
+    out_dir = out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    account_name = account_name.strip() or DEFAULT_ACCOUNT_NAME
 
     candidates = build_candidate_sections(article)
     pages, used_backend = curate_pages(
@@ -1286,8 +1540,14 @@ def build_article_carousel(
     else:
         pages_to_render = pages
 
-    total = len(pages) + 1
+    include_cta = not first_page_only
+    total = (1 if first_page_only else len(pages) + 1 + (1 if include_cta else 0))
     post = article_as_post(article)
+    article_image_path = None
+    if not no_title_enrichment and article.image_url:
+        assets_dir = out_dir / "title_assets"
+        article_image_path = download_image(article.image_url, assets_dir, "article-original-og")
+
     title_text = title or article.title
     if no_title_enrichment:
         title_context: dict[str, Any] = {
@@ -1302,18 +1562,42 @@ def build_article_carousel(
             "topic_image_path": None,
         }
     else:
-        title_context = build_title_enrichment([post], title=title_text, out_dir=out_dir)
+        title_context = build_title_enrichment(
+            [post],
+            title=title_text,
+            out_dir=out_dir,
+            source_type="article",
+            article_image_path=article_image_path,
+        )
     maybe_add_article_image(title_context, article, out_dir)
 
     slides: list[dict[str, Any]] = []
     title_path = out_dir / "slide_01.png"
-    render_title_slide(post, title_path, total, title_text, title_context, account_name)
+    cover_title = cover_title_override(title, article.title, title_context)
+    render_title_slide(post, title_path, total, cover_title, title_context, account_name)
     slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": article.url})
 
     for slide_index, page in enumerate(pages_to_render, start=2):
         slide_path = out_dir / f"slide_{slide_index:02d}.png"
-        render_article_slide(article, page, slide_path, slide_index, total)
+        render_article_slide(article, page, slide_path, slide_index, total, badge=source_badge)
         slides.append(page_manifest(page, slide_path, article, slide_index))
+
+    if include_cta:
+        cta = carousel_cta_copy()
+        cta_index = len(slides) + 1
+        cta_path = out_dir / f"slide_{cta_index:02d}.png"
+        render_cta_slide(cta_path, cta_index, total, cta)
+        slides.append(
+            {
+                "index": cta_index,
+                "type": "cta",
+                "path": str(cta_path),
+                "source_url": article.url,
+                "headline": cta["headline"],
+                "body": cta["body"],
+                "action": cta["action"],
+            }
+        )
 
     article_report_path = out_dir / "source_article.json"
     article_report_path.write_text(
@@ -1342,7 +1626,8 @@ def build_article_carousel(
     )
 
     manifest = {
-        "source_type": "article",
+        "channel_id": load_channel().id,
+        "source_type": source_type,
         "source_url": article.url,
         "article": manifest_article(article),
         "section_count": len(candidates),
@@ -1355,6 +1640,7 @@ def build_article_carousel(
         "min_score": min_score,
         "max_pages": max_pages,
         "source_article_path": str(article_report_path),
+        "instagram_caption": title_context.get("instagram_caption", ""),
         "title_context": manifest_title_context(title_context),
         "slides": slides,
     }
@@ -1367,7 +1653,9 @@ def build_article_carousel(
 
 def main() -> int:
     load_env_file(ROOT / ".env")
-    ap = argparse.ArgumentParser(description="Build an LLMAW carousel from an article URL")
+    ap = argparse.ArgumentParser(
+        description="Build a branded carousel from an article URL (--channel selects branding/language/voice)"
+    )
     ap.add_argument("source", help="Article URL, file:// URL, or local HTML file")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--max-pages", type=int, default=6, help="Maximum article-section slides")
@@ -1379,9 +1667,18 @@ def main() -> int:
     )
     ap.add_argument("--title", help="Override generated title slide text")
     ap.add_argument(
+        "--channel",
+        default=os.environ.get("CAROUSEL_CHANNEL"),
+        help=(
+            "Channel id selecting branding + language + voice as one bundle "
+            "(see channels/<id>/channel.json). Defaults to channels.json's "
+            "default_channel; also settable with CAROUSEL_CHANNEL."
+        ),
+    )
+    ap.add_argument(
         "--account-name",
-        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME),
-        help="Account or publisher name displayed in the title slide template",
+        default=os.environ.get("ARTICLE_CAROUSEL_ACCOUNT_NAME"),
+        help="Override the account/publisher name on the title slide (default: channel account_name)",
     )
     ap.add_argument(
         "--curation-backend",
@@ -1405,13 +1702,18 @@ def main() -> int:
     if args.max_pages < 1:
         raise SystemExit("--max-pages must be at least 1")
 
+    # Select the active channel for every load_channel() call in this process.
+    if args.channel:
+        os.environ["CAROUSEL_CHANNEL"] = args.channel
+    account_name = args.account_name or load_channel().account_name
+
     build_article_carousel(
         args.source,
         out_dir=args.out_dir,
         max_pages=args.max_pages,
         min_score=args.min_score,
         title=args.title,
-        account_name=args.account_name,
+        account_name=account_name,
         curation_backend=args.curation_backend,
         first_page_only=args.first_page_only,
         no_title_enrichment=args.no_title_enrichment,

@@ -1,316 +1,325 @@
-# LLMAW Carousel Automation
+# Carousel Automation
 
-This repo renders LLMAW-branded carousel assets from HTML:
+Render branded Instagram-style carousel assets from X posts, web articles, X
+Articles, weekly story queues, and source videos. The project is channel-based:
+branding, language, audience, handle, and voice all come from one channel config.
 
-- `out/slide_NN.png` for static carousel pages
-- `out/carousel.pptx` for Canva import
-- `out/video_slide_02.mp4` for a branded video page inside a carousel
+Generated media and manifests are written under `out/`, which is ignored by git.
 
-## One-time setup
+## What It Builds
+
+| Workflow | Script | Default output | Use it for |
+| --- | --- | --- | --- |
+| X post/thread | `build_x_carousel.py` | `out/x_carousel/` | One X status URL, with optional same-author thread posts and video slides |
+| Web article | `build_article_carousel.py` | `out/article_carousel/` | One long-form article URL or local HTML file |
+| X Article | `build_x_article_carousel.py` | `out/x_article_carousel/` | Long-form X notes/articles behind a status URL |
+| Weekly roundup | `build_weekly_carousel.py` | `out/weekly_carousel/` | A ranked set of top AI stories from the scout queue or an input JSON |
+| Daily AI news | `build_daily_carousel.py` | `out/daily_carousel/` | 30+ RSS feeds → 5-story carousel (cover + story slides + CTA) |
+| Cover art | `generate_cover.py` | `out/cover_<slug>.png` | Standalone channel-branded cover images |
+| Video slide | `build_video_slide.py` | `out/video_slide_02.mp4` | A local video, remote video, or X video inside the branded carousel frame |
+
+Publishing helpers:
+
+- `instagram_publish.py` publishes any generated `manifest.json` through the
+  Instagram Graph API.
+- `story_scout.py` scans, scores, approves, builds, and optionally publishes
+  X/article candidates.
+
+## Setup
 
 ```sh
-# Core deps (Playwright, python-pptx, yt-dlp, openai)
 uv sync
 uv run python -m playwright install chromium
-
-# Optional: OpenAI GPT Image cover art
-export OPENAI_API_KEY=sk-...
-
-# Optional: xAI Grok Imagine and xAI tweet lookup
-export XAI_API_KEY=xai-...  # cover art API key
-hermes auth add xai-oauth # tweet lookup via Hermes OAuth token
 ```
 
-Create a local `.env` with a Google AI Studio / Gemini API key for title imagery:
+Install `ffmpeg` locally if you need video posts or `build_video_slide.py`.
+
+Most scripts load `.env` from the repo root. Add only the credentials you need:
 
 ```sh
-GOOGLE_API_KEY=your_google_ai_studio_key
+# Gemini text, article curation, captions, and title copy
+GOOGLE_API_KEY=...
+# or GEMINI_API_KEY=...
+
+# OpenAI cover/title image generation
+OPENAI_API_KEY=...
+
+# xAI X search for tweet/thread/X Article lookup
+XAI_API_KEY=...
+
+# Optional publishing
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=...
+R2_PUBLIC_BASE_URL=https://...
+INSTAGRAM_USER_ID=...
+INSTAGRAM_ACCESS_TOKEN=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
 ```
 
-The X carousel workflow uses Gemini to detect the topic and identify involved companies and CEOs. It uses GPT Image 2.0 for the branded first-slide cover; Gemini is not used for image generation in this workflow. You can override the defaults when model names change:
+xAI lookup can also use a Hermes OAuth token:
+
+```sh
+hermes auth add xai-oauth
+```
+
+Useful model overrides:
 
 ```sh
 GEMINI_TEXT_MODEL=gemini-3.5-flash
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_TITLE_IMAGE_SIZE=2048x1152
+GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
+XAI_TWEET_MODEL=grok-4.3
+XAI_ARTICLE_MODEL=grok-4.3
 ```
 
-Generated title images are cached inside the generated output folder. Make sure you have the rights to use generated or downloaded imagery in your final carousel.
+## Channels
 
-## AI Cover Art
+A channel bundles the parts that make output feel native to one account:
 
-Generate LLMAW-branded cover art from a topic using GPT Image 2.0 or Grok Imagine:
+- slide branding and typography
+- account name and handle
+- language and audience
+- voice guide used by cover/caption/copy prompts
+- optional publishing defaults, such as an Instagram user id
+
+Channel files live under `channels/`:
+
+```text
+channels/
+  channels.json
+  vibecodersph/channel.json
+  aibrief_jp/channel.json
+  aibrief_jp/voice.md
+```
+
+The active channel is resolved in this order:
+
+1. `--channel <id>`
+2. `CAROUSEL_CHANNEL`
+3. `default_channel` in `channels/channels.json`
+4. built-in `vibecodersph` fallback
+
+Inspect channels:
 
 ```sh
-# GPT Image 2.0 (default — uses OPENAI_API_KEY)
-uv run python generate_cover.py "Fable 5 changes everything"
-
-# Gemini Nano Banana models (uses GOOGLE_API_KEY or GEMINI_API_KEY)
-uv run python generate_cover.py "Fable 5 changes everything" --provider gemini --model nano-banana-pro
-uv run python generate_cover.py "Fable 5 changes everything" --provider gemini --model nano-banana-2
-
-# Grok Imagine (uses xAI OAuth or XAI_API_KEY)
-uv run python generate_cover.py "Why reasoning models win" --provider xai
-
-# Choose a visual style
-uv run python generate_cover.py "The prompt" --style typographic --out assets/cover.png
-
-# Preview the prompt without generating
-uv run python generate_cover.py "topic" --prompt-only
+uv run python channel.py --list
+uv run python channel.py aibrief_jp
 ```
 
-Styles: `abstract` (default), `typographic`, `minimal`, `illustrative`, `photo`.
-The script reads `brand.json` for the LLMAW color palette (cream paper #F4F2EC, dark ink #16140F, rust accent #C0552E) and builds a prompt that matches.
-
-## Tweet Data via xAI
-
-Fetch structured tweet content + metadata via xAI Responses with X search instead of brittle Playwright screenshots:
+Run any builder against a channel:
 
 ```sh
-# Auth: XAI_API_KEY env var (or .env), falling back to a Hermes xAI OAuth token
-uv run python fetch_tweet_data.py https://x.com/bcherny/status/2064431111154053187
-uv run python fetch_tweet_data.py 2064431111154053187 --out tweet.json
-
-# Fetch the complete same-author thread containing the tweet, in order
-uv run python fetch_tweet_data.py 2064431111154053187 --thread --max-posts 12
+uv run python build_article_carousel.py "https://example.com/story" --channel aibrief_jp
+CAROUSEL_CHANNEL=aibrief_jp uv run python build_x_carousel.py "https://x.com/user/status/123"
 ```
 
-Returns JSON with: id, text, author, handle, date, likes, retweets, replies, views, has_video, formatted counts, and URL. With `--thread` it returns an ordered JSON array, first post to last, restricted to the thread author's own posts.
+To add a channel, copy an existing `channels/<id>/` folder, edit
+`channel.json`, add or point to a voice guide, and set `default_channel` or pass
+`--channel`. Keep the voice guide's `## Copy-Paste Prompt Block For Automation`
+section if you want the pipeline to inject a focused prompt block.
 
-### Thread source decision: xAI API first, Playwright as fallback
+For non-Latin output, make sure the channel typography points at an available
+font and the render path can load it offline. Japanese output, for example,
+needs a Noto Sans JP-style font in addition to `assets/archivo.css`.
 
-The carousel pipeline previously discovered threads only by scrolling the live X page in Playwright. That breaks for anonymous browsers (X hides thread replies behind the login wall), requires `--cookies-from-browser`, and ships no engagement metrics for thread posts. The xAI `x_search` path has none of those problems and returns structured data, so it is now the preferred thread source whenever credentials exist (`XAI_API_KEY` or Hermes OAuth). Playwright remains in two roles:
+## Build Workflows
 
-- **Fallback discovery** when no xAI credentials are configured.
-- **Rendering** — embedded-post screenshots and HTML→PNG slide capture are visual jobs the API cannot do; Playwright keeps them.
-
-The official X API was rejected: read access requires paid developer enrollment and offers no advantage over `x_search` for this workflow.
-
-## Human-in-the-loop Story Scout
-
-The automation front door is `story_scout.py`: it scans configured X accounts, scores high-signal posts, queues candidates for approval, and can hand approved posts into the existing one-URL carousel build.
-
-Create a local source list:
-
-```sh
-cp story_sources.example.json story_sources.json
-```
-
-Run a scan:
-
-```sh
-uv run python story_scout.py scan --config story_sources.json
-uv run python story_scout.py list
-```
-
-Approve and build a queued candidate:
-
-```sh
-uv run python story_scout.py approve x_abc123def0
-```
-
-The build writes to `out/automation/builds/<candidate_id>/` and records the manifest path in `out/automation/candidates.json`.
-
-Preview the build-to-Instagram path after approval:
-
-```sh
-uv run python story_scout.py approve x_abc123def0 \
-  --publish-instagram \
-  --instagram-upload-r2 \
-  --instagram-dry-run
-```
-
-That uploads only the rendered carousel slides listed in `manifest.json`, then writes `instagram_publish.json` next to the manifest with the exact media URL mapping and Instagram API steps. For a real publish:
-
-```sh
-uv run python story_scout.py approve x_abc123def0 \
-  --publish-instagram \
-  --instagram-upload-r2 \
-  --instagram-media-base-url "https://cdn.example.com/llmaw/x_abc123def0"
-```
-
-Prefer Buffer over the direct Meta API? `--publish-buffer` uploads the rendered slides to R2 and creates a Buffer draft on the connected Instagram channel:
-
-```sh
-uv run python story_scout.py approve x_abc123def0 --publish-buffer
-```
-
-The draft waits in the Buffer dashboard for a final review before anything reaches Instagram. Use `--buffer-mode queue` to schedule into the Buffer queue instead, or `--buffer-mode now` to publish immediately. `--buffer-dry-run` writes the payload without calling Buffer, and a `buffer_publish.json` report lands next to the manifest either way. Requires `BUFFER_API_KEY` and `BUFFER_CHANNEL_ID` in `.env`.
-
-Buffer does not support mixed-media Instagram carousels ([their docs](https://support.buffer.com/article/657-scheduling-instagram-posts-and-reels)): their API silently keeps only the video plus the last image, which then publishes as a single reel. Builds that mix video and image slides therefore abort by default when published through Buffer. Choose explicitly with `--buffer-video-strategy`: `poster` swaps each video for its poster still (image-only carousel), `reel` publishes the first video alone as a reel. For true mixed-media carousels use the Meta Graph API path (`instagram_publish.py` / `--publish-instagram`), which supports them.
-
-Telegram approvals are optional. Configure a bot token and chat ID, then scan with notifications:
-
-```sh
-export TELEGRAM_BOT_TOKEN=123456:...
-export TELEGRAM_CHAT_ID=123456789
-uv run python story_scout.py scan --config story_sources.json --notify
-uv run python story_scout.py telegram-poll --watch --publish-buffer
-```
-
-Telegram approval callbacks use the same build path as the CLI, so a poller started with `--publish-buffer` turns each Telegram approval into a built carousel plus a Buffer draft automatically. The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
-
-## Static PNG/PPTX build
-
-```sh
-uv run python build.py
-```
-
-Use retina PNGs when needed:
-
-```sh
-uv run python build.py --scale 2
-```
-
-## One-URL X Carousel
-
-Drop in one X/Twitter status URL:
+### X Post Or Thread
 
 ```sh
 uv run python build_x_carousel.py "https://x.com/OpenAI/status/2061887650391625870"
 ```
 
-The script writes an ordered carousel folder to `out/x_carousel`:
+The builder writes an ordered `manifest.json` plus slides to `out/x_carousel/`.
+The first slide is the channel-branded cover; later slides are the source post,
+thread posts, and any rendered media.
 
-- `slide_01.png`: branded title/hook slide
-- `slide_02.png`: branded post slide for a normal post
-- `slide_02.mp4`: branded post+video slide when the post has video
-- `manifest.json`: ordered slide list and source URLs
-
-By default it tries to detect same-author thread posts and creates one post/media slide for each detected part. Thread discovery uses the xAI `x_search` API when `XAI_API_KEY` or a Hermes OAuth token is configured, and falls back to scraping the live X page with Playwright otherwise; the manifest records which backend produced the posts in `thread_source`. Use `--thread-source xai|playwright|auto` (or `X_THREAD_SOURCE`) to pin a backend, `--no-thread` to force a single-post carousel, `--max-thread-posts` to cap a long thread, or `--title` to override the generated title slide.
-
-X sometimes hides thread replies from anonymous browsers. If a URL is part of a thread but only one post is visible, let the workflow use your logged-in browser cookies:
+Thread discovery defaults to `auto`: xAI `x_search` when `XAI_API_KEY` or Hermes
+OAuth is available, otherwise Playwright. Pin the backend when needed:
 
 ```sh
-uv run python build_x_carousel.py "https://x.com/OpenAI/status/2061887650391625870" \
-  --cookies-from-browser chrome
+uv run python build_x_carousel.py "https://x.com/user/status/123" --thread-source xai
+uv run python build_x_carousel.py "https://x.com/user/status/123" --thread-source playwright
+uv run python build_x_carousel.py "https://x.com/user/status/123" --no-thread
 ```
 
-For automation triggers that should still accept only the URL, set this once in the runtime environment:
+If X hides replies or media from anonymous browsers, pass logged-in browser
+cookies through Playwright/yt-dlp:
 
 ```sh
-export X_COOKIES_FROM_BROWSER=chrome
+uv run python build_x_carousel.py "https://x.com/user/status/123" --cookies-from-browser chrome
 ```
 
-## One-URL Article Carousel
+Use `X_THREAD_SOURCE` or `X_COOKIES_FROM_BROWSER` when automation should apply
+the same defaults without extra CLI flags.
 
-Drop in a long-form article URL to turn only the highest-signal sections into
-LLMAW carousel pages:
+Other useful flags:
+
+```sh
+uv run python build_x_carousel.py "https://x.com/user/status/123" \
+  --max-thread-posts 6 \
+  --cover-headline "Pati yung gumawa, [tinatamad] na mag-type." \
+  --cover-swipe-line "Silipin ang cheat sheet"
+
+uv run python build_x_carousel.py "https://x.com/user/status/123" --first-page-only
+uv run python build_x_carousel.py "https://x.com/user/status/123" --skip-first-explainer
+```
+
+### Web Article
 
 ```sh
 uv run python build_article_carousel.py \
   "https://venturebeat.com/technology/xiaomis-new-open-source-agentic-ai-coding-harness-mimo-code-beats-claude-code-at-ultra-long-200-step-tasks"
 ```
 
-The script writes to `out/article_carousel`:
+The builder writes to `out/article_carousel/`:
 
-- `slide_01.png`: branded title/hook slide, using the same cover system as the X workflow
-- `slide_02.png` and onward: selected article signal pages
-- `manifest.json`: ordered slide list, source article metadata, curation backend, and selected section scores
-- `source_article.json`: extracted blocks and candidate section scores for editorial review
+- `slide_01.png`: channel-branded title/hook slide
+- `slide_02.png` and onward: selected high-signal article sections
+- `manifest.json`: slide order, source metadata, curation backend, selected scores
+- `source_article.json`: extracted blocks and candidate scores for review
 
-By default, curation uses Gemini when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is
-available, and falls back to local scoring otherwise. Both paths filter for
-concrete facts such as benchmarks, releases, open-source details, technical
-claims, quantified comparisons, and strategic implications. Tune selection with
-`--max-pages`, `--min-score`, or force a backend with
-`--curation-backend gemini|local|auto`.
-
-## Instagram Publishing
-
-`instagram_publish.py` publishes any generated carousel manifest through the Instagram Graph API. Instagram requires a professional Instagram account, an access token with content publishing permissions, and media files that Instagram can fetch from public HTTPS URLs. Local files and `localhost` URLs cannot be published directly.
-
-Configure credentials:
+Gemini curation is used when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is available;
+otherwise local scoring is used. Tune the run with:
 
 ```sh
-export R2_ACCOUNT_ID=...
-export R2_ACCESS_KEY_ID=...
-export R2_SECRET_ACCESS_KEY=...
-export R2_BUCKET=llmaw-carousel-media
-export INSTAGRAM_USER_ID=178414...
-export INSTAGRAM_ACCESS_TOKEN=...
-export INSTAGRAM_GRAPH_DOMAIN=instagram
-export INSTAGRAM_MEDIA_BASE_URL="https://pub-010164abaff84929ae890815a7290ca0.r2.dev"
+uv run python build_article_carousel.py "https://example.com/story" \
+  --max-pages 5 \
+  --min-score 6 \
+  --curation-backend gemini
+
+uv run python build_article_carousel.py "file:///absolute/path/story.html" --curation-backend local
+uv run python build_article_carousel.py "https://example.com/story" --no-title-enrichment
 ```
 
-The simplest way to get Instagram credentials is from the Meta app dashboard, not Graph API Explorer:
-
-1. Open the app in Meta for Developers.
-2. Go to **Instagram > API setup with Instagram business login**.
-3. Click **Generate token** next to the Instagram professional account.
-4. Copy the access token into `INSTAGRAM_ACCESS_TOKEN`.
-5. Fetch the Instagram user ID:
+### X Article
 
 ```sh
-curl "https://graph.instagram.com/v25.0/me?fields=user_id,username&access_token=$INSTAGRAM_ACCESS_TOKEN"
+uv run python build_x_article_carousel.py "https://x.com/satyanadella/status/2066182223213293753"
 ```
 
-Use the returned `user_id` as `INSTAGRAM_USER_ID`. App Dashboard tokens are long-lived for about 60 days.
+X Articles and long-form X notes are fetched with xAI `x_search`, rebuilt into
+the same article structure as the web-article pipeline, then rendered with the
+article carousel system. Use `XAI_API_KEY` or Hermes OAuth.
 
-Upload the rendered carousel slides to R2 and preview the publish plan without calling Instagram:
+X Articles default to `--min-score 3`, lower than web articles, because they are
+often essay-style rather than benchmark-dense news. The familiar article flags
+also work:
 
 ```sh
-uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2 --dry-run
+uv run python build_x_article_carousel.py "https://x.com/user/status/123" \
+  --max-pages 6 \
+  --curation-backend auto \
+  --no-title-enrichment
 ```
 
-Publish for real after the same R2 upload step:
+### Weekly Roundup
 
 ```sh
-uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2
+uv run python build_weekly_carousel.py --channel vibecodersph
+uv run python build_weekly_carousel.py --channel aibrief_jp --max-stories 6
 ```
 
-Use `--caption` or `--caption-file` to override the default caption. Use repeated `--media-url` flags for per-slide URLs when the files do not share one base URL:
+The weekly builder creates a cover, one slide per story, and an outro. It reads
+an explicit `--input stories.json` first; otherwise it ranks recent candidates
+from `out/automation/candidates.json`.
 
 ```sh
-uv run python instagram_publish.py out/x_carousel/manifest.json --dry-run \
-  --media-url 1=https://cdn.example.com/slide_01.png \
-  --media-url slide_02.png=https://cdn.example.com/slide_02.png
+uv run python build_weekly_carousel.py --input stories.json --max-stories 8
+uv run python build_weekly_carousel.py --days 7 --per-source 2
+uv run python build_weekly_carousel.py --verify
+uv run python build_weekly_carousel.py --reuse-cover
 ```
 
-The publisher writes `instagram_publish.json` beside the manifest. In dry-run mode it contains the validated media list and planned API calls; after a real publish it also records the returned Instagram media IDs and permalink lookup result.
+Instagram supports up to 20 carousel slides. The weekly builder reserves one
+for the cover and one for the outro, so story slides are clamped to 3-18.
 
-## Branded Video Slide
+`--verify` runs the source/copy verifier and writes `run_manifest.json` without
+rendering slides.
 
-Use a local video:
+### Daily AI News
+
+```sh
+uv run python build_daily_carousel.py
+uv run python build_daily_carousel.py --channel aibrief_jp --max-stories 5
+```
+
+Pulls from the same 30+ RSS/sitemap/API feeds as VCPH OS, scores and diversifies
+stories (2 international + 2 PH + 1 workforce). Renders a multi-slide carousel:
+
+- **Cover**: repo-local `daily_drop_cover.py` builds a VibeCodersPH Daily Drop magazine cover for 5-story runs, then slide 1 wraps it in the carousel frame
+- **Voice**: Gemini rewrites the cover, story copy, and caption in channel voice
+- **Story slides**: article image (scraped og:image or AI-generated) + Gemini headline + body
+- **CTA**: follow + save
+
+```sh
+# Full build with Gemini voice + images
+# Needs GOOGLE_API_KEY or GEMINI_API_KEY for voice, OPENAI_API_KEY for images
+uv run python build_daily_carousel.py
+
+# Text-only fallback with Gemini voice
+uv run python build_daily_carousel.py --no-images
+
+# Zero API-key fallback
+uv run python build_daily_carousel.py --no-images --no-voice
+
+# Dry run: fetch and score only
+uv run python build_daily_carousel.py --dry-run
+
+# Quick smoke test
+uv run python build_daily_carousel.py --max-stories 2 --no-voice --no-x-trending
+
+# Without X trending slot
+uv run python build_daily_carousel.py --no-x-trending
+
+# Custom source registry or dedupe DB
+uv run python build_daily_carousel.py --registry custom_feeds.json --db-path custom.db
+```
+
+Output lands in `out/daily_carousel/`: `slide_01.png` through `slide_N.png`,
+`manifest.json`, and `posted.db` (deduplication). The manifest is compatible
+with `instagram_publish.py`.
+
+The daily workflow is self-contained in this repo. The feed pipeline is
+`vcph_feed_pipeline.py`, the cover engine is `daily_drop_cover.py`, the source
+registry is `vcph_source_registry.json`, and the VibeCodersPH logo asset is
+`assets/vibecodersph_logo.png`. Team members only need their own repo-local
+`.env` credentials for Gemini/OpenAI/xAI.
+
+### Cover Art
+
+```sh
+# OpenAI image generation, default provider
+uv run python generate_cover.py "Fable 5 changes everything"
+
+# Gemini image generation
+uv run python generate_cover.py "Fable 5 changes everything" --provider gemini --model nano-banana-pro
+
+# xAI Grok Imagine
+uv run python generate_cover.py "Why reasoning models win" --provider xai
+
+# Preview the prompt without generating
+uv run python generate_cover.py "topic" --prompt-only
+```
+
+Styles: `abstract` (default), `typographic`, `minimal`, `illustrative`, `photo`.
+The prompt uses the active channel's brand palette and falls back to `brand.json`
+only when needed.
+
+### Video Slide
 
 ```sh
 uv run python build_video_slide.py \
   --source assets/video_sources/example.mp4 \
   --source-label "SOURCE VIDEO" \
-  --caption "The source clip stays inside the LLMAW carousel frame."
+  --caption "The source clip stays inside the carousel frame."
 ```
 
-Use an X/Twitter embed snippet as the full post context plus the video:
-
-```sh
-uv run python build_video_slide.py \
-  --tweet-embed-file assets/tweet_embed.html \
-  --layout post-video \
-  --source-label "@claudeai on X" \
-  --kicker "The post"
-```
-
-The embed file can contain the raw code copied from X's embed-post feature:
-
-```html
-<blockquote class="twitter-tweet">
-  <p lang="en" dir="ltr">Post text... <a href="https://t.co/example">pic.twitter.com/example</a></p>
-  &mdash; Claude (@claudeai)
-  <a href="https://x.com/claudeai/status/2064394146916229443">June 9, 2026</a>
-</blockquote>
-<script async src="https://platform.x.com/widgets.js" charset="utf-8"></script>
-```
-
-Use an X/Twitter post URL:
-
-```sh
-uv run python build_video_slide.py \
-  --source "https://x.com/claudeai/status/2064394146916229443" \
-  --source-label "@claudeai on X" \
-  --caption "Claude's launch video, framed as a carousel receipt."
-```
-
-If X gates the media, pass browser cookies through to `yt-dlp`:
+An X post URL can also be the source:
 
 ```sh
 uv run python build_video_slide.py \
@@ -320,23 +329,128 @@ uv run python build_video_slide.py \
   --caption "Claude's launch video, framed as a carousel receipt."
 ```
 
-## Full Build Plus Video
+Outputs:
 
-`build.py` keeps the static PNG/PPTX path and can also emit the MP4 slide in one command:
+- `out/video_frame_02.png`
+- `out/video_slide_02.mp4`
+- `out/video_slide_02_poster.png`
+- `out/video_slide_02.json`
+
+Use `--fit contain` to preserve the full source clip, or `--fit cover` to crop
+into the media well.
+
+## Story Scout Automation
+
+`story_scout.py` is the human-in-the-loop front door. It scans configured X
+accounts and article feeds, scores candidates, queues them for approval, and
+hands approved items to the matching one-URL builder.
+
+Create a local source list:
 
 ```sh
-uv run python build.py \
-  --video-tweet-embed-file assets/tweet_embed.html \
-  --video-layout post-video \
-  --video-source-label "@claudeai on X" \
-  --video-kicker "The post"
+cp story_sources.example.json story_sources.json
 ```
 
-Video outputs:
+Scan, inspect, approve:
 
-- `out/video_frame_02.png`: the LLMAW frame used behind the clip
-- `out/video_slide_02.mp4`: the carousel-ready MP4
-- `out/video_slide_02_poster.png`: first-frame poster for previews
-- `out/video_slide_02.json`: source and render manifest
+```sh
+uv run python story_scout.py scan --config story_sources.json
+uv run python story_scout.py list
+uv run python story_scout.py approve x_abc123def0
+uv run python story_scout.py approve article_abc123def0 --article-curation-backend local
+```
 
-The default video fit is `contain`, preserving the full source clip inside the branded media well. Use `--fit cover` or `--video-fit cover` when you want the clip to fill the well by cropping.
+Approved builds go under `out/automation/builds/<candidate_id>/`, and the queue
+records the resulting manifest path in `out/automation/candidates.json`.
+
+Publish previews can be attached to approval:
+
+```sh
+uv run python story_scout.py approve x_abc123def0 \
+  --publish-instagram \
+  --instagram-upload-r2 \
+  --instagram-dry-run
+```
+
+Telegram approval callbacks are optional:
+
+```sh
+export TELEGRAM_BOT_TOKEN=123456:...
+export TELEGRAM_CHAT_ID=123456789
+
+uv run python story_scout.py scan --config story_sources.json --notify
+uv run python story_scout.py telegram-poll --watch --publish-instagram --instagram-upload-r2
+```
+
+The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
+
+## Publishing
+
+### Instagram Graph API
+
+`instagram_publish.py` publishes a generated manifest. Instagram needs public
+HTTPS URLs for every media item, so the helper can upload local slides to
+Cloudflare R2 first.
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2 --dry-run
+uv run python instagram_publish.py out/x_carousel/manifest.json --upload-r2
+```
+
+Live publishing retries failed pre-publish media container processing twice by
+default. These retries create fresh Instagram containers after errors such as
+`Media upload has failed`, but they stop before retrying a failed
+`media_publish` call to avoid duplicate posts. Tune or disable this with:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json \
+  --upload-r2 \
+  --publish-retries 0
+```
+
+Required for R2 upload:
+
+```sh
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=...
+R2_PUBLIC_BASE_URL=https://...
+```
+
+Required for live Instagram publishing:
+
+```sh
+INSTAGRAM_USER_ID=178414...
+INSTAGRAM_ACCESS_TOKEN=...
+INSTAGRAM_GRAPH_DOMAIN=instagram
+```
+
+`INSTAGRAM_USER_ID` can also come from the manifest channel's
+`publishing.instagram_user_id`. `META_SYSTEM_USER_ACCESS_TOKEN` is preferred over
+`INSTAGRAM_ACCESS_TOKEN` when both are set.
+
+Captions default to `instagram_caption` from the manifest, then to topic plus
+source URL. Override when needed:
+
+```sh
+uv run python instagram_publish.py out/x_carousel/manifest.json \
+  --dry-run \
+  --media-url 1=https://cdn.example.com/slide_01.png \
+  --media-url slide_02.png=https://cdn.example.com/slide_02.png \
+  --caption-file caption.txt
+```
+
+The publisher writes `instagram_publish.json` beside the manifest.
+
+## Manifests And Outputs
+
+Every builder writes a `manifest.json` with the ordered `slides` list, source
+metadata, `channel_id`, and generated `instagram_caption` when available.
+The Instagram publisher reads that manifest, validates public media URLs, and writes a
+report next to it:
+
+- `instagram_publish.json`
+- `run_manifest.json` for weekly verification
+
+Generated files live in `out/` and are safe to delete between runs.
