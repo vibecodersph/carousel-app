@@ -235,7 +235,12 @@ def build_media_items(
 
 def default_r2_key_prefix(manifest_path: Path) -> str:
     name = manifest_path.parent.name.strip()
-    return name if name and name != "." else "carousel"
+    if not name or name == ".":
+        return "carousel"
+    # Append a short timestamp so every publish gets unique URLs.
+    # Instagram caches media by URL; identical keys = stale posts.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{name}/{stamp}"
 
 
 def clean_r2_key_prefix(value: str) -> str:
