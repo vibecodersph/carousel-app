@@ -359,15 +359,20 @@ def _generate_daily_drop_magazine_cover(
         hero_cover_line = voice_stories[0].get("headline", hero_cover_line)
 
     if hero_story and cover_subject and not _text_matches_story(cover_subject, hero_story):
-        print("  [cover guard] cover subject did not match story #1; rebuilding from story #1")
-        cover_subject = ""
+        # cover_subject now describes all 5 stories as a montage; check if it
+        # references ANY story, not just story #1
+        matches_any = any(_text_matches_story(cover_subject, s) for s in stories)
+        if not matches_any:
+            print("  [cover guard] cover subject did not match any story; rebuilding from stories")
+            cover_subject = ""
 
     if not cover_subject:
-        fallback_title = hero_story.get("title") or hero_cover_line or "today's AI news"
+        story_summaries = "; ".join(s.get("title", "")[:60] for s in stories)
         cover_subject = (
-            "A full-bleed VibeCoders PH Daily Drop cover photo for the top story: "
-            f"{fallback_title}. "
-            "Use a specific editorial metaphor, not a generic tech dashboard."
+            "A hyperrealistic editorial montage for a VibeCoders PH Daily Drop cover photo "
+            f"combining these stories into one unified image: {story_summaries}. "
+            "Place subjects side-by-side in a shared environment with warm cream, deep ink, "
+            "and burnt orange accents. No text, no logos."
         )
 
     digest_payload = {
@@ -634,9 +639,9 @@ written for {channel.audience}. Write every public-facing word in {channel.langu
 Return JSON only with this exact shape:
 {{
   "cover_headline": "4 to 8 words, Taglish-native hook about story n=1 only, with exactly one [accent] word in brackets",
-  "cover_subtitle": "one short Taglish line explaining today's mix",
+  "cover_subtitle": "one short Taglish sentence that is a blurb ONLY about story n=1, 12 to 18 words. This is a subtitle for the hero story headline. Do NOT mention other stories, do not say 'plus', do not list anything. Just summarize what story n=1 is about.",
   "cover_swipe_line": "use exactly: Swipe for more →",
-  "cover_subject": "1 to 3 sentences of text-free VCPH Daily Drop cover-photo art direction for the hero story",
+  "cover_subject": "2 to 4 sentences describing a HYPERREALISTIC EDITORIAL MONTAGE cover photo that combines ALL 5 stories into ONE unified image. Describe the scene: characters, objects, settings from each story placed side-by-side or in a shared environment. Think magazine cover illustration where every story has a visual presence.",
   "cover_style": "empty string, or one obvious Daily Drop style key only when the story clearly needs it",
   "instagram_caption": "short Taglish caption with one hook, one useful line, one CTA, clean hashtags",
   "stories": [
@@ -659,8 +664,9 @@ Voice rules:
 - Any number or factual claim in body copy must appear in the source title/description.
 - Keep each story in the same order and preserve its n value.
 - Use exactly one [accent] word in cover_headline only. Do not use brackets in story headlines or bodies.
-- Treat story n=1 as the hero story. cover_headline and cover_subject must be about story n=1 only. Stories n=2 to n=5 are lower cover/list items.
-- cover_subject should think like a Wired or Bloomberg Businessweek art director for story n=1: one specific hero visual metaphor for a background photo/illustration. Do not request text, logos, mastheads, screens full of labels, a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
+- Treat story n=1 as the hero story. cover_headline AND cover_subtitle must be about story n=1 ONLY. cover_subject must combine ALL 5 stories into one montage scene.
+- cover_subtitle is a SUBTITLE for the hero headline. It expands on story n=1 with one additional sentence of context. Do NOT mention stories 2-5 in the subtitle. Do NOT write a table of contents or use the word \"plus\".
+- cover_subject should think like a magazine cover illustrator: place subjects, characters, objects, or settings from each of the 5 stories into ONE shared hyperrealistic editorial image. Use side-by-side composition, a shared environment, or a surreal editorial tableau. Every story must have a recognizable visual element in the scene. Do not request text, logos, mastheads, screens full of labels, a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
 - cover_subject should use the VibeCoders PH orange/terracotta accent system, not purple, pink, or magenta.
 - cover_style should usually be empty so the VCPH OS style rotation can decide. Only choose a style when the source has an obvious medium match.
 
@@ -788,7 +794,6 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     story_count = len(stories)
     safe_handle = html.escape(channel.handle)
     safe_subtitle = html.escape(str(subtitle or "").rstrip(" ."))
-    story_label = f"{story_count} stories" if story_count > 1 else "1 story"
     font_size = _headline_size(headline_text, cover=True)
     total_slides = story_count + 2
     logo_html = _brand_logo_html(channel, "cover-logo")
@@ -909,7 +914,7 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
       <section class="cover-title">
         <div class="cover-kicker"><span>Today's Story</span></div>
         <h1 class="headline">{headline}</h1>
-        <div class="cover-subtitle">{safe_subtitle} &middot; {story_label} inside</div>
+        <div class="cover-subtitle">{safe_subtitle}</div>
       </section>
       <section class="cover-list">
         <div class="cover-list-label">Also in this drop</div>

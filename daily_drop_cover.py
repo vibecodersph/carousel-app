@@ -262,13 +262,16 @@ def generate_full_cover(
 This is only the photographic / illustrated background asset for an Instagram carousel.
 The app will add all masthead, logo, headline, deck, story list, counters, and swipe text later.
 
-Hero image subject:
+Hero image subject (HYPERREALISTIC MONTAGE combining ALL stories):
 {cover_subject}
 
 Hero image style: {style['label']}
 {style['direction']}
 
 Hard rules:
+- This must be a HYPERREALISTIC EDITORIAL MONTAGE that combines multiple subjects into ONE unified image.
+- Every story mentioned in the subject must have a recognizable visual presence in the scene.
+- Place subjects side-by-side, in a shared environment, or as a surreal editorial tableau.
 - No text of any kind. No masthead, no letters, no numbers, no labels, no captions, no UI, no logos, no brand marks, no watermarks.
 - Do not place OpenAI, Microsoft, Anthropic, school, publication, or fake product logos. Prefer symbolic objects.
 - Keep the lower-left third and bottom edge visually calm enough for overlaid white headline text.
@@ -276,7 +279,6 @@ Hard rules:
 - Use warm cream, deep ink, and one restrained burnt-orange or terracotta accent so it fits the VibeCoders PH brand.
 - Do not use purple, pink, violet, or magenta accents.
 - Avoid generic glowing dashboards, cute robots, clipart icons, random charts, and screen wallpaper.
-- Make one specific visual metaphor immediately readable from the hero story.
 
 Overall mood: premium Filipino builder media brand, tactile, useful, sharp, modern, never corporate stock art."""
     else:
