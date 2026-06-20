@@ -873,7 +873,7 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
       font-size: 31px; line-height: 1.26; font-weight: 650;
     }}
     .cover-list {{
-      position: absolute; left: 58px; right: 58px; bottom: 84px; z-index: 4;
+      position: absolute; left: 58px; right: 58px; bottom: 130px; z-index: 4;
       display: grid; grid-template-columns: 1fr; gap: 0;
       color: rgba(244,242,236,0.72);
     }}
