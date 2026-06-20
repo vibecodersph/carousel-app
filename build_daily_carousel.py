@@ -1157,6 +1157,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     render_html_slide(out_dir / "slide_01.html", out_dir / "slide_01.png")
     slides_manifest.append({
         "file": "slide_01.png", "type": "cover",
+        "path": str(out_dir / "slide_01.png"),
         "headline": cover_headline, "subtitle": cover_subtitle,
         "cover_image": str(cover_image) if cover_image else None,
     })
@@ -1195,6 +1196,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
         img_note = " [img]" if story_image else ""
         slides_manifest.append({
             "file": f"slide_{slide_num:02d}.png", "type": "story",
+            "path": str(out_dir / f"slide_{slide_num:02d}.png"),
             "source": story.get("source", ""),
             "headline": headline,
             "body": enriched.get("body", enriched.get("desc", ""))[:200],
@@ -1213,6 +1215,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     )
     slides_manifest.append({
         "file": f"slide_{cta_num:02d}.png", "type": "cta",
+        "path": str(out_dir / f"slide_{cta_num:02d}.png"),
         "action": "Follow + Save",
     })
     print(f"  [{cta_num}/{total_slides}] CTA: Follow {channel.handle}")
