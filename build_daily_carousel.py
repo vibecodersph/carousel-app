@@ -954,7 +954,8 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     }}
     .visual-bg, .visual-fallback {{ position: absolute; inset: 0; }}
     .visual-bg {{
-      z-index: 1; background-position: center; background-size: cover;
+      z-index: 1; background-position: center; background-size: contain;
+      background-repeat: no-repeat; background-color: #151713;
       filter: saturate(0.96) contrast(1.02);
     }}
     .visual-card::before {{
@@ -985,6 +986,7 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-cluster {{
       position: absolute; left: 56px; right: 56px; top: 900px; bottom: 138px;
       display: flex; flex-direction: column; justify-content: flex-start; z-index: 3;
+      overflow: hidden;
     }}
     .account-rule {{
       display: flex; align-items: center; gap: 22px; margin-bottom: 28px; color: var(--primary);
@@ -997,14 +999,12 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-headline {{
       font-size: {font_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.05;
       color: var(--fg); text-wrap: balance; word-break: normal;
-      max-height: 190px; overflow: hidden;
     }}
     .story-headline .jp-phrase, .story-body .jp-phrase {{ display: inline-block; }}
     .story-headline .term, .story-body .term {{ white-space: nowrap; }}
     .story-rule {{ width: 100%; height: 2px; margin: 22px 0 18px; background: var(--rule); }}
     .story-body {{
       color: var(--ink-soft); font-size: 28px; line-height: 1.32; font-weight: 640;
-      max-height: 100px; overflow: hidden;
     }}
     .story-source {{
       position: absolute; left: 72px; right: 72px; bottom: 96px; z-index: 3;
