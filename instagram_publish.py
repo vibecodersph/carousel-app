@@ -391,6 +391,10 @@ def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
         return args.caption_file.read_text().strip()
     if args.caption is not None:
         return args.caption.strip()
+    # Daily carousel manifest carries an instagram_caption from Gemini voice rewrite
+    ig_caption = str(manifest.get("instagram_caption") or "").strip()
+    if ig_caption:
+        return ig_caption
     context = manifest.get("title_context") if isinstance(manifest.get("title_context"), dict) else {}
     topic = str(context.get("topic") or "").strip()
     source_url = str(manifest.get("source_url") or "").strip()
