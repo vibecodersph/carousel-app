@@ -949,7 +949,7 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     <html><head><meta charset="utf-8"><style>
     {shared_css()}
     .visual-card {{
-      position: absolute; top: 0; left: 0; width: 100%; height: 620px;
+      position: absolute; top: 0; left: 0; width: 100%; height: 1012px;
       overflow: hidden; background: #151713;
     }}
     .visual-bg, .visual-fallback {{ position: absolute; inset: 0; }}
@@ -958,14 +958,14 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
       filter: saturate(0.96) contrast(1.02);
     }}
     .visual-card::before {{
-      content: ''; position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 132px;
-      background: linear-gradient(180deg, rgba(13,11,8,0.54), rgba(13,11,8,0));
+      content: ''; position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 100px;
+      background: linear-gradient(180deg, rgba(13,11,8,0.52), rgba(13,11,8,0));
       pointer-events: none;
     }}
     .visual-card::after {{
       content: ''; position: absolute; z-index: 2; inset: 0;
       background:
-        linear-gradient(180deg, rgba(var(--bg-rgb), 0) 30%, rgba(var(--bg-rgb), 0.30) 66%, var(--bg) 100%);
+        linear-gradient(180deg, rgba(var(--bg-rgb), 0) 56%, rgba(var(--bg-rgb), 0.34) 76%, var(--bg) 100%);
       pointer-events: none;
     }}
     .visual-fallback {{
@@ -983,7 +983,7 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-brand {{ left: 58px; }}
     .story-progress {{ right: 58px; letter-spacing: 0.06em; }}
     .story-cluster {{
-      position: absolute; left: 56px; right: 56px; top: 572px; bottom: 142px;
+      position: absolute; left: 56px; right: 56px; top: 900px; bottom: 138px;
       display: flex; flex-direction: column; justify-content: flex-start; z-index: 3;
     }}
     .account-rule {{
@@ -997,14 +997,14 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-headline {{
       font-size: {font_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.05;
       color: var(--fg); text-wrap: balance; word-break: normal;
-      max-height: 230px; overflow: hidden;
+      max-height: 190px; overflow: hidden;
     }}
     .story-headline .jp-phrase, .story-body .jp-phrase {{ display: inline-block; }}
     .story-headline .term, .story-body .term {{ white-space: nowrap; }}
-    .story-rule {{ width: 100%; height: 2px; margin: 28px 0 24px; background: var(--rule); }}
+    .story-rule {{ width: 100%; height: 2px; margin: 22px 0 18px; background: var(--rule); }}
     .story-body {{
-      color: var(--ink-soft); font-size: 31px; line-height: 1.34; font-weight: 640;
-      max-height: 168px; overflow: hidden;
+      color: var(--ink-soft); font-size: 28px; line-height: 1.32; font-weight: 640;
+      max-height: 100px; overflow: hidden;
     }}
     .story-source {{
       position: absolute; left: 72px; right: 72px; bottom: 96px; z-index: 3;
