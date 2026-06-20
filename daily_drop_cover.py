@@ -29,43 +29,190 @@ STYLE_ROTATION = [
         "key": "editorial_photo",
         "label": "premium editorial photography",
         "direction": (
-            "Real editorial magazine photography, tactile materials, controlled "
-            "studio or practical light, subtle grain, clean hierarchy, premium "
-            "print finish. Avoid generic neon dashboards and fake screens."
+            "Shot as real editorial magazine photography. Hasselblad X2D, 80mm f/2.8, "
+            "natural window light or single key light, subtle film grain, desaturated "
+            "color grade. Tactile materials, real textures, shallow depth of field. "
+            "Reference: Wired magazine feature openers, Bloomberg Businessweek."
+        ),
+    },
+    {
+        "key": "cinematic_film",
+        "label": "cinematic film still",
+        "direction": (
+            "Cinematic film still, ARRI Alexa 35, anamorphic lens, 2.39:1 letterbox "
+            "within frame. Moody directional lighting, atmospheric haze, practical "
+            "sources. Color grade: muted teal and amber or cold blue dawn. "
+            "Reference: Deakins, Lubezki, Villeneuve. One frame from a movie."
         ),
     },
     {
         "key": "editorial_collage",
         "label": "editorial collage",
         "direction": (
-            "Layered editorial collage with torn paper, scanned textures, cutout "
-            "objects, magazine feature energy, one clear visual idea, not clutter."
+            "Physical cut-paper editorial collage. Torn edges, scanned textures, "
+            "photocopy grain, layered archival fragments, visible tape and glue marks. "
+            "Surprising juxtapositions, one clear visual idea, not digital clutter. "
+            "Reference: Bloomberg Businessweek collage covers, New York Magazine."
         ),
     },
     {
         "key": "product_showcase",
         "label": "high-end product showcase",
         "direction": (
-            "A premium product launch style hero object, dramatic negative space, "
-            "precise materials, clean set design, no generic tablet nameplate."
+            "Premium product launch hero image. Apple-keynote-level product photography. "
+            "One designed object dominates the frame on a clean set. Precise materials, "
+            "controlled studio lighting, macro detail, dramatic negative space. "
+            "Reference: Nike product films, Nothing phone campaigns."
         ),
     },
     {
         "key": "surreal_poster",
         "label": "surreal conceptual poster",
         "direction": (
-            "A clean surreal visual metaphor, strange but legible, one hero idea, "
-            "magazine-poster composition, restrained palette."
+            "Surreal conceptual poster art. Rene Magritte logic meets modern editorial. "
+            "One impossible idea made visually clean and striking. Minimal, strange, "
+            "memorable. Clean composition, negative space, strong single focal point."
         ),
     },
     {
-        "key": "infographic_poster",
-        "label": "editorial infographic poster",
+        "key": "oil_painting",
+        "label": "oil painting / fine art",
         "direction": (
-            "One bold editorial information-design idea, max three colors plus "
-            "white, no dashboard wallpaper, no tiny fake labels, no icon clutter."
+            "Oil on canvas painting. Visible brushwork, impasto highlights, slightly "
+            "cracked varnish. Real painted texture, canvas weave visible. "
+            "Reference: Edward Hopper (lonely interiors), Andrew Wyeth (rural drama), "
+            "Jeremy Mann (moody urban nocturnes). Not a digital filter."
         ),
     },
+    {
+        "key": "anime_keyframe",
+        "label": "anime production keyframe",
+        "direction": (
+            "Hand-drawn anime production keyframe. Painterly skies, volumetric light, "
+            "cel-shaded foreground, soft anime palette, visible brushwork on backgrounds. "
+            "Crisp clean lines on foreground, impressionistic backgrounds. "
+            "Reference: Makoto Shinkai, Studio Ghibli backgrounds (Kazuo Oga)."
+        ),
+    },
+    {
+        "key": "comic_book",
+        "label": "graphic novel / comic book",
+        "direction": (
+            "Graphic novel page art. Heavy ink blacks, bold brush strokes, limited "
+            "3-color palette (black + one warm accent + one cool accent), visible "
+            "halftone dots, crosshatching for midtones. "
+            "Reference: Frank Miller Sin City, Mike Mignola Hellboy."
+        ),
+    },
+    {
+        "key": "claymation",
+        "label": "stop-motion claymation",
+        "direction": (
+            "Stop-motion claymation. Visible fingerprints in clay, slight asymmetry, "
+            "real studio lighting on a miniature set, handmade felt and wood props, "
+            "shallow depth of field. Reference: Aardman, Laika, Wes Anderson Isle of Dogs."
+        ),
+    },
+    {
+        "key": "watercolor_storybook",
+        "label": "watercolor storybook illustration",
+        "direction": (
+            "Watercolor illustration on textured cold-press paper. Soft wet-on-wet "
+            "bleeds, visible paper grain, gentle pencil underdrawing showing through. "
+            "Limited earth-tone palette with one bright accent. "
+            "Reference: Quentin Blake, Beatrice Alemagna, Jon Klassen."
+        ),
+    },
+    {
+        "key": "retro_airbrush",
+        "label": "1980s retro airbrush sci-fi",
+        "direction": (
+            "1980s airbrush illustration. Chrome highlights, soft airbrush gradients, "
+            "slight CRT scanlines. Palette: magenta, cyan, deep purple, black, grid "
+            "floor or starfield. Reference: Syd Mead, Hajime Sorayama, Drew Struzan."
+        ),
+    },
+    {
+        "key": "pixel_art",
+        "label": "high-end pixel art",
+        "direction": (
+            "Hand-crafted pixel art illustration. Limited 32-color palette, deliberate "
+            "dithering for gradients, crisp per-pixel placement, nearest-neighbor scaling. "
+            "Reference: Octopath Traveler HD-2D, Celeste backgrounds, Eastward."
+        ),
+    },
+    {
+        "key": "low_poly_3d",
+        "label": "low-poly stylized 3D",
+        "direction": (
+            "Low-polygon stylized 3D illustration. Flat-shaded triangular facets, no "
+            "smoothing, limited palette of 8-12 flat colors, single directional light, "
+            "soft ambient occlusion. Reference: Monument Valley, Alto's Odyssey."
+        ),
+    },
+    {
+        "key": "blueprint_diagram",
+        "label": "blueprint / technical diagram",
+        "direction": (
+            "Technical blueprint poster. Patent-drawing style, exploded-view diagram, "
+            "architecture plan. Fine linework, precise grids, vellum paper texture, "
+            "cyanotype or black-and-white drafting table feel. Use shapes and systems."
+        ),
+    },
+    {
+        "key": "luxury_packshot",
+        "label": "luxury packshot / perfume ad",
+        "direction": (
+            "Luxury packshot. Perfume-ad or watch-ad level product photography. One "
+            "symbolic object on a premium material surface, dramatic reflection, "
+            "immaculate lighting, sensual materiality. Dark and glossy, not flat."
+        ),
+    },
+    {
+        "key": "isometric_tech",
+        "label": "isometric editorial illustration",
+        "direction": (
+            "Isometric 3/4 perspective illustration. Flat shading with subtle gradients, "
+            "clean vector-inspired shapes, limited palette. The New York Times tech "
+            "section or Wired feature opener style. Clean, intentional, not clip-art."
+        ),
+    },
+    {
+        "key": "toy_photography",
+        "label": "toy photography / miniature scene",
+        "direction": (
+            "Practical miniature scene photographed with macro lens. Action figures, "
+            "model buildings, tiny props, tabletop set, real shadows, visible dust, "
+            "shallow depth of field. Slinkachu-style street miniatures. Handmade feel."
+        ),
+    },
+    {
+        "key": "hyperreal_multiverse",
+        "label": "hyperreal cinematic multiverse",
+        "direction": (
+            "Hyperreal cinematic spectacle. Blend real photography with high-end 3D "
+            "finish. Dimensional portals, volumetric light, impossible architecture, "
+            "expressive motion, wonder, humor, bright discovery. Dramatic foreground "
+            "and background storytelling, Easter-egg details, tactile materials. "
+            "Marvel multiverse poster energy meets Disney/Pixar polish."
+        ),
+    },
+]
+
+# Color palette rotation: the accent color that appears as a restrained note
+# in the generated image. VibeCoders PH brand uses burnt orange (#C0552E),
+# but the cover photo can feature varied accent colors for visual freshness.
+COLOR_ROTATION = [
+    {"name": "burnt orange + warm cream + deep ink", "hex": "#C0552E"},
+    {"name": "terracotta + sand + charcoal", "hex": "#D4724A"},
+    {"name": "amber gold + off-white + espresso", "hex": "#C8922A"},
+    {"name": "copper rust + bone + midnight blue", "hex": "#B87333"},
+    {"name": "deep crimson + cream + slate", "hex": "#A03030"},
+    {"name": "olive + warm ivory + dark brown", "hex": "#7A8B3E"},
+    {"name": "teal + warm white + ink black", "hex": "#2A7A7A"},
+    {"name": "mustard + eggshell + dark walnut", "hex": "#D4A020"},
+    {"name": "rose gold + cream + charcoal", "hex": "#B87878"},
+    {"name": "sienna + bone + espresso", "hex": "#A0522D"},
 ]
 
 
@@ -152,6 +299,10 @@ def _style_for_issue(issue_number: int, override_style: str = "") -> dict[str, s
     return STYLE_ROTATION[(max(issue_number, 1) - 1) % len(STYLE_ROTATION)]
 
 
+def _color_for_issue(issue_number: int) -> dict[str, str]:
+    return COLOR_ROTATION[(max(issue_number, 1) - 1) % len(COLOR_ROTATION)]
+
+
 def _de_risk_subject(subject: str, hero_line: str, hero_blurb: str) -> str:
     lower = subject.lower()
     risky_terms = [
@@ -236,13 +387,14 @@ def generate_full_cover(
     issue_str = f"ISSUE {issue_number:03d}"
     today = datetime.now().strftime("%b %d, %Y").upper()
     style = _style_for_issue(issue_number, cover_style)
+    color = _color_for_issue(issue_number)
 
     hero = rows[0]
     hero_line = cover_safe_text(hero_cover_line or hero["headline"], max_words=14, max_chars=100)
     hero_blurb = cover_safe_text(hero["blurb"], max_words=26, max_chars=160)
     if not cover_subject:
         cover_subject = (
-            "A fresh premium editorial-magazine visual metaphor for the hero story: "
+            "A fresh premium editorial visual metaphor for the hero story: "
             + hero_line
             + ". Make it specific and immediately recognizable, not generic AI wallpaper."
         )
@@ -257,30 +409,45 @@ def generate_full_cover(
     ratio_label = "portrait 4:5 (Instagram carousel)" if "1280" in effective_size else "portrait 2:3"
 
     if skip_logo_overlay:
-        prompt = f"""Create a premium VibeCoders PH Daily Drop COVER PHOTO BACKGROUND, {ratio_label} aspect ratio, print-editorial quality.
+        prompt = f"""Create a visually striking COVER PHOTO BACKGROUND, {ratio_label} aspect ratio.
 
-This is only the photographic / illustrated background asset for an Instagram carousel.
-The app will add all masthead, logo, headline, deck, story list, counters, and swipe text later.
+This is the hero image for an Instagram carousel cover. The app will overlay all
+branding, headlines, and UI elements later. Focus entirely on the visual scene.
 
-Hero image subject (HYPERREALISTIC MONTAGE combining ALL stories):
+SUBJECT (HYPERREALISTIC MONTAGE combining ALL stories):
 {cover_subject}
 
-Hero image style: {style['label']}
+ART STYLE: {style['label']}
 {style['direction']}
 
-Hard rules:
-- This must be a HYPERREALISTIC EDITORIAL MONTAGE that combines multiple subjects into ONE unified image.
-- Every story mentioned in the subject must have a recognizable visual presence in the scene.
-- Place subjects side-by-side, in a shared environment, or as a surreal editorial tableau.
-- No text of any kind. No masthead, no letters, no numbers, no labels, no captions, no UI, no logos, no brand marks, no watermarks.
-- Do not place OpenAI, Microsoft, Anthropic, school, publication, or fake product logos. Prefer symbolic objects.
-- Keep the lower-left third and bottom edge visually calm enough for overlaid white headline text.
-- Keep the top-left and top-right corners readable for small carousel chrome.
-- Use warm cream, deep ink, and one restrained burnt-orange or terracotta accent so it fits the VibeCoders PH brand.
-- Do not use purple, pink, violet, or magenta accents.
-- Avoid generic glowing dashboards, cute robots, clipart icons, random charts, and screen wallpaper.
+COLOR PALETTE: {color['name']}
+Use these as your primary colors. The accent color ({color['hex']}) should appear
+as a restrained note in the composition. No other accent colors.
 
-Overall mood: premium Filipino builder media brand, tactile, useful, sharp, modern, never corporate stock art."""
+LIGHTING: Cinematic, sculpted, directional. Real shadows, real falloff, real
+specular highlights. Embrace imperfection: dust, fingerprints, wrinkles, slight
+motion blur, uneven wear. If skin: natural texture with pores and fine hair, not
+plastic AI-smooth. If objects: real material qualities. Slight 35mm film grain.
+Color grade: editorial, slightly desaturated, rich blacks, clean whites.
+
+COMPOSITION: Rule of thirds. Asymmetrical framing. One clear focal point with
+supporting context. The lower-left third should be calm enough for overlaid text.
+Top corners should be readable for small UI chrome. Generous negative space.
+
+HARD RULES:
+- HYPERREALISTIC MONTAGE: combine multiple subjects into ONE unified scene.
+  Every story mentioned in the subject must have a recognizable visual presence.
+- NO text, letters, numbers, labels, captions, UI, logos, brand marks, watermarks.
+- NO corporate logos (OpenAI, Microsoft, Anthropic, etc.). Use symbolic objects.
+- NO generic glowing dashboards, cute robots, clipart icons, chart wallpaper.
+- NO neon cyberpunk, no purple/pink/magenta/violet accents.
+- NO device nameplates (tablet/laptop/phone with model name on screen).
+- NO handshakes, high-fives, close-up hands, two people touching, visible fingers.
+
+AVOID AI SLOP: Do not produce the default AI-generated look. No interchangeable
+tech scene, no label-swap concept, no smooth plastic renders. Make it look like a
+deliberate art-directed concept, not a generic prompt output. The image should
+provoke curiosity, not recognition fatigue."""
     else:
         prompt = f"""Create a premium VIBECODERSPH Daily Drop MAGAZINE COVER, {ratio_label} aspect ratio, print-editorial quality.
 
