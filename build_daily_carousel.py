@@ -774,11 +774,13 @@ def _file_uri(path):
 def _brand_logo_html(channel, css_class: str) -> str:
     if channel.id != "vibecodersph":
         return ""
+    logo_path = ROOT / "assets" / "vibecodersph_logo.png"
+    if not logo_path.exists():
+        return ""
+    logo_uri = _file_uri(logo_path)
     return (
-        f'<div class="{css_class}" aria-label="{html.escape(channel.brand_name)}">'
-        '<span class="cover-logo-mark">&lt;/&gt;</span>'
-        '<span class="cover-logo-text">VIBE CODERS PH</span>'
-        '</div>'
+        f'<img class="{css_class}" src="{logo_uri}" '
+        f'alt="{html.escape(channel.brand_name)}">'
     )
 
 
@@ -889,18 +891,8 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     }}
     .cover-logo {{
       position: absolute; right: 48px; bottom: 34px; z-index: 5;
-      display: flex; align-items: center; gap: 12px;
-      color: rgba(244,242,236,0.88);
+      width: 148px; height: auto; opacity: 0.92;
       filter: drop-shadow(0 5px 18px rgba(0,0,0,0.46));
-    }}
-    .cover-logo-mark {{
-      width: 28px; height: 28px; display: grid; place-items: center;
-      background: var(--primary);
-      color: #0d0b08; font-size: 10px; font-weight: 900; line-height: 1;
-    }}
-    .cover-logo-text {{
-      font-size: 13px; font-weight: 880; letter-spacing: 0.18em;
-      line-height: 1; text-transform: uppercase;
     }}
     .dots {{
       left: 50%; right: auto; bottom: 24px; transform: translateX(-50%);
