@@ -847,7 +847,7 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     .cover-handle {{ left: 58px; }}
     .cover-progress {{ right: 58px; letter-spacing: 0.06em; }}
     .cover-title {{
-      position: absolute; left: 58px; right: 250px; top: 610px; z-index: 4;
+      position: absolute; left: 58px; right: 250px; top: 400px; z-index: 4;
       color: #fff;
       text-shadow: 0 4px 24px rgba(0,0,0,0.45);
     }}
