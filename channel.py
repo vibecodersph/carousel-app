@@ -55,6 +55,7 @@ class Channel:
     brand: dict[str, Any] = field(default_factory=dict)  # colors / type / pattern (was brand.json)
     publishing: dict[str, Any] = field(default_factory=dict)
     voice_doc: Path | None = None  # markdown voice guide for this channel
+    logo_path: Path | None = None  # brand logo asset for this channel (avatar/mark)
     config_path: Path | None = None
 
     @property
@@ -73,6 +74,16 @@ class Channel:
             return str(self.voice_doc.resolve().relative_to(ROOT))
         except ValueError:
             return str(self.voice_doc)
+
+    @property
+    def logo_doc_rel(self) -> str:
+        """Repo-relative path to the logo asset, for recording in manifests."""
+        if self.logo_path is None or not self.logo_path.exists():
+            return ""
+        try:
+            return str(self.logo_path.resolve().relative_to(ROOT))
+        except ValueError:
+            return str(self.logo_path)
 
     def default_cover_voice(self) -> str:
         """Channel-aware fallback used when the voice guide can't be read."""
@@ -141,15 +152,23 @@ def load_channel(channel_id: str | None = None) -> Channel:
     )
 
 
+def _resolve_asset(base_dir: Path, rel: str | None) -> Path | None:
+    """Resolve a channel asset path relative to the channel dir, then the repo root."""
+    if not rel:
+        return None
+    candidate = (base_dir / rel).resolve()
+    if candidate.exists():
+        return candidate
+    alt = (ROOT / rel).resolve()
+    return alt if alt.exists() else candidate
+
+
 def _channel_from_config(channel_id: str, data: dict[str, Any], config_path: Path) -> Channel:
     brand = data.get("brand") or {}
     language = data.get("language") or {}
     voice_rel = data.get("voice_doc") or language.get("voice_doc") or "voice.md"
-    voice_doc = (config_path.parent / voice_rel).resolve()
-    if not voice_doc.exists():
-        alt = (ROOT / voice_rel).resolve()
-        if alt.exists():
-            voice_doc = alt
+    voice_doc = _resolve_asset(config_path.parent, voice_rel)
+    logo_path = _resolve_asset(config_path.parent, data.get("logo") or brand.get("logo"))
     return Channel(
         id=channel_id,
         account_name=str(data.get("account_name") or channel_id),
@@ -160,6 +179,7 @@ def _channel_from_config(channel_id: str, data: dict[str, Any], config_path: Pat
         brand=brand,
         publishing=data.get("publishing") if isinstance(data.get("publishing"), dict) else {},
         voice_doc=voice_doc,
+        logo_path=logo_path,
         config_path=config_path,
     )
 
@@ -183,6 +203,7 @@ def _legacy_vibecodersph() -> Channel:
         brand=brand,
         publishing={},
         voice_doc=ROOT / "brand" / "VIBECODERS_IG_VOICE.md",
+        logo_path=_resolve_asset(CHANNELS_DIR / FALLBACK_CHANNEL_ID, "logo.png"),
         config_path=brand_path if brand_path.exists() else None,
     )
 
@@ -209,6 +230,7 @@ if __name__ == "__main__":
                 "language_name": ch.language_name,
                 "audience": ch.audience,
                 "voice_doc": ch.voice_doc_rel,
+                "logo": ch.logo_doc_rel,
                 "voice_prompt_chars": len(ch.voice_prompt),
             },
             indent=2,

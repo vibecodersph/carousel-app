@@ -8,6 +8,7 @@
     "audience": "Japanese AI builder audience",
     "voice_doc": "voice.md"
   },
+  "logo": "logo.png",
   "publishing": {
     "instagram_user_id": "17841411137200252"
   },
@@ -48,6 +49,14 @@
       "top_right": true,
       "bottom_handle": true,
       "page_counter": false
+    },
+    "reel": {
+      "background": "#0B0B0C",
+      "surface": "#16140F",
+      "text": "#FFFFFF",
+      "muted": "#8B98A5",
+      "verified": "#1D9BF0",
+      "accent": "#C0552E"
     },
     "default_slide_count": 6
   }

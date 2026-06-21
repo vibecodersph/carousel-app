@@ -16,6 +16,7 @@ Generated media and manifests are written under `out/`, which is ignored by git.
 | Weekly roundup | `build_weekly_carousel.py` | `out/weekly_carousel/` | A ranked set of top AI stories from the scout queue or an input JSON |
 | Cover art | `generate_cover.py` | `out/cover_<slug>.png` | Standalone channel-branded cover images |
 | Video slide | `build_video_slide.py` | `out/video_slide_02.mp4` | A local video, remote video, or X video inside the branded carousel frame |
+| Reel | `build_reel.py` | `out/reels/` | A video post turned into a full-bleed, branded 9:16 Instagram reel (render only) |
 
 Publishing helpers:
 
@@ -288,6 +289,42 @@ Outputs:
 
 Use `--fit contain` to preserve the full source clip, or `--fit cover` to crop
 into the media well.
+
+### Reel
+
+Turns a video post into a branded, Instagram-ready 9:16 reel for one channel, using
+a "tech-news card" layout: the channel logo + name + handle on top, a
+channel-language headline, the source video *contained* on the channel's themed
+surface (so nothing is ever cropped), and a view-count chip. This is render-only: it
+downloads and composes, it never publishes.
+
+```sh
+uv run python build_reel.py \
+  --source "https://x.com/HighSignal_AI/status/2068287838328959444" \
+  --channel aibrief_jp
+```
+
+Everything is channel-driven (nothing hardcoded):
+
+- **Logo** — `channels/<id>/logo.png`, the `logo` field in `channel.json` (see
+  `make_channel_logos.py` to regenerate, or drop in your own PNG).
+- **Headline** — written in the channel's language with xAI (Japanese for
+  `aibrief_jp`, Taglish/English for `vibecodersph`). Pass `--headline "..."` to
+  override; falls back to the post text when no xAI credential is present.
+- **Theme** — the `brand.reel` block in `channel.json` (background/text/accent),
+  with a dark default.
+
+The source is scaled to fit the media window and centred, so landscape, portrait,
+and square all keep the whole subject visible. Pass `--cookies-from-browser chrome`
+when X gates the media.
+
+Each run writes to `out/reels/<channel>_<handle>_<status_id>/`:
+
+- `reel.mp4` — the finished 9:16 reel
+- `overlay.png` — the transparent brand/design layer
+- `poster.png` — first-frame poster
+- `qa_frame_10.png`, `qa_frame_50.png`, `qa_frame_90.png` — sample frames for review
+- `reel.json` — manifest
 
 ## Story Scout Automation
 
