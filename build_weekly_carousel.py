@@ -271,7 +271,7 @@ def localized_labels(channel: Channel, *, start: datetime, end: datetime, count:
             "cover_headline_fallback": "今週のAI、[まとめ]ました。",
             "swipe_fallback": "スワイプして続きを",
             "source_prefix": "出典",
-            "outro_headline": "AIニュースを毎週、深く",
+            "outro_headline": "AIニュースを毎週整理",
             "outro_body": "企業AIの重要ニュースだけを、一次情報ベースで整理します。",
             "outro_cta": "フォローする",
         }

@@ -1,0 +1,63 @@
+{
+  "stories": [
+    {
+      "category": "MEDICAL AI",
+      "headline": "OpenAIが希少疾患診断で18件の新結果",
+      "body": "OpenAIの推論モデルを使い、未解決の小児希少疾患で18件の新規診断を特定。",
+      "source_name": "OPENAI",
+      "source_handle": "@OpenAI",
+      "source_url": "https://openai.com/index/diagnose-rare-childhood-diseases",
+      "source_type": "primary",
+      "hero_metric": "18件",
+      "hero_label": "RARE DISEASE DIAGNOSES",
+      "source_text": "OpenAI News: Using AI to help physicians diagnose rare genetic diseases affecting children. Researchers used an OpenAI reasoning model to help diagnose rare diseases, identifying 18 new diagnoses in previously unsolved cases. JP evidence: OpenAI 推論モデル 未解決の小児希少疾患 18件の新規診断。"
+    },
+    {
+      "category": "ENTERPRISE",
+      "headline": "OpenAIがCodexの支出管理を企業向けに追加",
+      "body": "6月19日、グローバル管理コンソールでクレジット使用分析と支出管理を提供開始。",
+      "source_name": "OPENAI",
+      "source_handle": "@gdb",
+      "source_url": "https://x.com/gdb/status/2067844731539751010",
+      "source_type": "primary_x",
+      "hero_metric": "",
+      "hero_label": "",
+      "source_text": "OpenAI president Greg Brockman posted on June 19, 2026: Launching credit usage analytics and updated spend controls for enterprises, available in our global admin console. Candidate reason: Enterprise product launch for Codex spend controls and analytics. JP evidence: OpenAI Codex 6月19日 グローバル管理コンソール クレジット使用分析 支出管理 提供開始。"
+    },
+    {
+      "category": "POLICY",
+      "headline": "Sakana AIがAI主権の論点を整理",
+      "body": "Ren Ito氏は、AI主権を国産ChatGPTではなくモデル選択の自由と位置づけた。",
+      "source_name": "SAKANA AI",
+      "source_handle": "@SakanaAILabs",
+      "source_url": "https://x.com/SakanaAILabs/status/2067737249354305654",
+      "source_type": "primary_x",
+      "hero_metric": "",
+      "hero_label": "",
+      "source_text": "Sakana AI posted: When the US restricted foreign access to some of Anthropic's most advanced models last week, it underscored a new reality: AI is now a geopolitical issue. Sakana AI Co-Founder Ren Ito argues that AI sovereignty is not about building a national ChatGPT. It is about maintaining access to frontier AI and preserving the freedom to choose among multiple models. JP evidence: Sakana AI Ren Ito AI主権 国産ChatGPTではなく モデル選択の自由。"
+    },
+    {
+      "category": "DEPRECATION",
+      "headline": "GitHubがOpus 4.6 fastの廃止日を予告",
+      "body": "GitHub Copilot全体でOpus 4.6 fastを6月29日に廃止予定。",
+      "source_name": "GITHUB",
+      "source_handle": "@github",
+      "source_url": "https://github.blog/changelog/2026-06-18-upcoming-deprecation-of-opus-4-6-fast",
+      "source_type": "primary",
+      "hero_metric": "6月29日",
+      "hero_label": "DEPRECATION DATE",
+      "source_text": "GitHub Changelog: Upcoming deprecation of Opus 4.6 (fast). We will deprecate Opus 4.6 (fast) across all GitHub Copilot experiences including Copilot Chat, inline edits, ask and agent modes, and code completions, on June 29th, 2026. JP evidence: GitHub Copilot全体 Opus 4.6 fast 6月29日に廃止予定。"
+    },
+    {
+      "category": "FUNDING",
+      "headline": "Basetenが15億ドル調達に近づく報道",
+      "body": "TechCrunchは、Basetenが評価額130億ドルで15億ドル調達間近と報じた。",
+      "source_name": "TECHCRUNCH",
+      "source_url": "https://techcrunch.com/2026/06/18/ai-inference-startup-baseten-reportedly-raising-1-5b-months-after-its-last-mega-round/",
+      "source_type": "secondary",
+      "hero_metric": "15億ドル",
+      "hero_label": "REPORTED ROUND",
+      "source_text": "TechCrunch AI: AI inference startup Baseten reportedly raising $1.5B months after its last mega-round. Startup Baseten is reportedly close to finalizing a $1.5 billion round at a $13 billion valuation as the inference gold rush marches on. JP evidence: TechCrunch Baseten 評価額130億ドル 15億ドル調達間近と報じた。"
+    }
+  ]
+}
