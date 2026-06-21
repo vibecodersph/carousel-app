@@ -169,6 +169,15 @@ def channel_instagram_user_id(channel_id: str) -> str:
     return ""
 
 
+def channel_instagram_access_token(channel_id: str) -> str:
+    return channel_env_value(
+        channel_id,
+        "META_SYSTEM_USER_ACCESS_TOKEN",
+        "INSTAGRAM_ACCESS_TOKEN",
+        "IG_ACCESS_TOKEN",
+    )
+
+
 def resolve_instagram_user_id(explicit: str, manifest: dict[str, Any], manifest_path: Path) -> tuple[str, str]:
     if explicit.strip():
         return explicit.strip(), "cli"
@@ -178,6 +187,21 @@ def resolve_instagram_user_id(explicit: str, manifest: dict[str, Any], manifest_
         return channel_value, f"channel:{channel_id}"
     fallback = env_value("INSTAGRAM_USER_ID", "IG_USER_ID")
     return fallback, "env:INSTAGRAM_USER_ID"
+
+
+def resolve_instagram_access_token(
+    explicit: str,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+) -> tuple[str, str]:
+    if explicit.strip():
+        return explicit.strip(), "cli"
+    channel_id = manifest_channel_id(manifest, manifest_path)
+    channel_value = channel_instagram_access_token(channel_id)
+    if channel_value:
+        return channel_value, f"channel:{channel_id}"
+    fallback = env_value("META_SYSTEM_USER_ACCESS_TOKEN", "INSTAGRAM_ACCESS_TOKEN", "IG_ACCESS_TOKEN")
+    return fallback, "env:META_SYSTEM_USER_ACCESS_TOKEN"
 
 
 def graph_api_version() -> str:
@@ -850,6 +874,7 @@ def build_report(
     graph_api_root: str,
     instagram_user_id: str,
     instagram_user_id_source: str,
+    access_token_source: str,
     single_video_media_type: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
@@ -862,6 +887,7 @@ def build_report(
         "account_name": manifest.get("account_name"),
         "instagram_user_id": instagram_user_id,
         "instagram_user_id_source": instagram_user_id_source,
+        "access_token_source": access_token_source,
         "graph_api_version": graph_version,
         "graph_api_root": graph_api_root,
         "caption": caption,
@@ -921,8 +947,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--access-token",
-        default=env_value("META_SYSTEM_USER_ACCESS_TOKEN", "INSTAGRAM_ACCESS_TOKEN", "IG_ACCESS_TOKEN"),
-        help="Instagram Graph API access token; META_SYSTEM_USER_ACCESS_TOKEN is preferred when present",
+        default="",
+        help=(
+            "Instagram Graph API access token. Defaults to channel-specific "
+            "META_SYSTEM_USER_ACCESS_TOKEN_<CHANNEL>, then global "
+            "META_SYSTEM_USER_ACCESS_TOKEN / INSTAGRAM_ACCESS_TOKEN / IG_ACCESS_TOKEN."
+        ),
     )
     parser.add_argument("--graph-api-version", default=graph_api_version())
     parser.add_argument(
@@ -981,6 +1011,11 @@ def main() -> int:
         manifest,
         manifest_path,
     )
+    access_token, access_token_source = resolve_instagram_access_token(
+        args.access_token,
+        manifest,
+        manifest_path,
+    )
 
     graph_version = normalize_graph_version(args.graph_api_version)
     graph_root = args.graph_api_root.rstrip("/")
@@ -1009,13 +1044,13 @@ def main() -> int:
     else:
         if not instagram_user_id:
             raise SystemExit("INSTAGRAM_USER_ID or --instagram-user-id is required to publish")
-        if not args.access_token:
+        if not access_token:
             raise SystemExit("INSTAGRAM_ACCESS_TOKEN or --access-token is required to publish")
         result = publish_to_instagram_with_retries(
             media_items,
             caption=caption,
             instagram_user_id=instagram_user_id,
-            access_token=args.access_token,
+            access_token=access_token,
             graph_version=graph_version,
             graph_api_root=graph_root,
             wait_timeout=args.wait_timeout,
@@ -1035,6 +1070,7 @@ def main() -> int:
         graph_api_root=graph_root,
         instagram_user_id=instagram_user_id,
         instagram_user_id_source=instagram_user_id_source,
+        access_token_source=access_token_source,
         single_video_media_type=args.single_video_media_type,
         uploads=uploads,
         result=result,

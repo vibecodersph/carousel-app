@@ -16,6 +16,39 @@ def image_item(index: int) -> instagram_publish.MediaItem:
     )
 
 
+class InstagramPublishCredentialTests(unittest.TestCase):
+    def test_resolves_channel_specific_access_token_before_global_token(self) -> None:
+        manifest = {"channel_id": "vibecodersph"}
+        env = {
+            "META_SYSTEM_USER_ACCESS_TOKEN": "global-token",
+            "META_SYSTEM_USER_ACCESS_TOKEN_VIBECODERSPH": "channel-token",
+        }
+
+        with patch.dict(instagram_publish.os.environ, env, clear=True):
+            token, source = instagram_publish.resolve_instagram_access_token(
+                "",
+                manifest,
+                instagram_publish.ROOT / "out" / "manifest.json",
+            )
+
+        self.assertEqual(token, "channel-token")
+        self.assertEqual(source, "channel:vibecodersph")
+
+    def test_resolves_access_token_from_cli_before_channel_token(self) -> None:
+        manifest = {"channel_id": "vibecodersph"}
+        env = {"META_SYSTEM_USER_ACCESS_TOKEN_VIBECODERSPH": "channel-token"}
+
+        with patch.dict(instagram_publish.os.environ, env, clear=True):
+            token, source = instagram_publish.resolve_instagram_access_token(
+                "cli-token",
+                manifest,
+                instagram_publish.ROOT / "out" / "manifest.json",
+            )
+
+        self.assertEqual(token, "cli-token")
+        self.assertEqual(source, "cli")
+
+
 class InstagramPublishRetryTests(unittest.TestCase):
     def test_retries_failed_pre_publish_container_with_fresh_containers(self) -> None:
         items = [image_item(1), image_item(2)]
