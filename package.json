@@ -1,0 +1,12 @@
+{
+  "type": "module",
+  "scripts": {
+    "source:ai": "node sourcing/cli.ts source",
+    "rank:ai": "node sourcing/cli.ts rank",
+    "pipeline:ai": "node sourcing/cli.ts run",
+    "test:ts-pipeline": "node --test tests/ts-pipeline/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

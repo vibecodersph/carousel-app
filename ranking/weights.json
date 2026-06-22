@@ -1,0 +1,9 @@
+{
+  "velocity": 0.22,
+  "engagement": 0.12,
+  "recency": 0.12,
+  "authority": 0.12,
+  "hasVideo": 0.15,
+  "spectacle": 0.2,
+  "novelty": 0.07
+}

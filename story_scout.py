@@ -2263,6 +2263,27 @@ def format_candidate(candidate: dict[str, Any]) -> str:
             f"Why: {reasons}"
         ).strip()
 
+    if candidate_source_type(candidate) in {"source_item", "reel_candidate", "reel"}:
+        source_item = candidate.get("source_item") if isinstance(candidate.get("source_item"), dict) else {}
+        reasons = "; ".join(candidate.get("score_reasons") or [])
+        routing = candidate.get("routing") if isinstance(candidate.get("routing"), dict) else {}
+        route = routing.get("primary") or (
+            "reel" if candidate_source_type(candidate) != "source_item" else "carousel"
+        )
+        source_name = (
+            candidate.get("source_account")
+            or source_item.get("subreddit")
+            or source_item.get("source")
+            or "source"
+        )
+        return (
+            f"{candidate.get('id')} [{candidate.get('status')}] "
+            f"score={candidate.get('score')} {str(route).upper()} {source_name}\n"
+            f"{compact_text(str(source_item.get('title') or ''), 240)}\n"
+            f"{source_item.get('url', '')}\n"
+            f"Why: {reasons}"
+        ).strip()
+
     post = candidate.get("post") or {}
     reasons = "; ".join(candidate.get("score_reasons") or [])
     return (
@@ -2639,6 +2660,50 @@ def build_candidate(
         ]
         if article_no_title_enrichment:
             cmd.append("--no-title-enrichment")
+    elif source_type in {"source_item", "reel_candidate", "reel"}:
+        source_item = candidate.get("source_item") or {}
+        if not isinstance(source_item, dict):
+            raise SystemExit(f"Candidate {candidate.get('id')} has no source item")
+        media = source_item.get("media") if isinstance(source_item.get("media"), dict) else {}
+        source_url = str(source_item.get("url") or "")
+        local_path = str(media.get("localPath") or "") if isinstance(media, dict) else ""
+        title = str(source_item.get("title") or "")
+        if source_type in {"reel_candidate", "reel"}:
+            source = local_path or source_url
+            if not source:
+                raise SystemExit(f"Candidate {candidate.get('id')} has no reel source URL or local media")
+            builder = "build_reel.py"
+            cmd = [
+                sys.executable,
+                str(ROOT / builder),
+                "--source",
+                source,
+                "--out-dir",
+                str(out_dir),
+            ]
+            if title:
+                cmd.extend(["--headline", title])
+            if cookies_from_browser:
+                cmd.extend(["--cookies-from-browser", cookies_from_browser])
+        else:
+            if not source_url:
+                raise SystemExit(f"Candidate {candidate.get('id')} has no source item URL")
+            builder = "build_article_carousel.py"
+            cmd = [
+                sys.executable,
+                str(ROOT / builder),
+                source_url,
+                "--out-dir",
+                str(out_dir),
+                "--max-pages",
+                str(article_max_pages),
+                "--min-score",
+                str(article_min_score),
+                "--curation-backend",
+                article_curation_backend,
+            ]
+            if article_no_title_enrichment:
+                cmd.append("--no-title-enrichment")
     else:
         post = candidate.get("post") or {}
         url = str(post.get("url") or "")
@@ -2668,7 +2733,11 @@ def build_candidate(
     candidate["build_returncode"] = result.returncode
     if result.returncode == 0:
         candidate["status"] = "built"
-        candidate["manifest_path"] = str(out_dir / "manifest.json")
+        if source_type in {"reel_candidate", "reel"}:
+            reel_manifests = sorted(out_dir.rglob("reel.json"))
+            candidate["manifest_path"] = str(reel_manifests[-1]) if reel_manifests else str(out_dir)
+        else:
+            candidate["manifest_path"] = str(out_dir / "manifest.json")
         record_outcome_event(candidate, "built")
     else:
         candidate["status"] = "failed"
@@ -2678,6 +2747,11 @@ def build_candidate(
 
     rc = 0
     if publish_instagram:
+        if source_type in {"reel_candidate", "reel"}:
+            candidate["status"] = "publish_failed"
+            candidate["failure"] = "Instagram publishing for reel candidates needs a reel-specific publish manifest"
+            record_outcome_event(candidate, "instagram_publish_failed", detail=candidate["failure"])
+            return 1
         publish_cmd = [
             sys.executable,
             str(ROOT / "instagram_publish.py"),

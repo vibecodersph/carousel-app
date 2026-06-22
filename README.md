@@ -371,6 +371,73 @@ uv run python story_scout.py telegram-poll --watch --publish-instagram --instagr
 
 The broader automation plan lives in `AUTOMATION_ROADMAP.md`.
 
+## AI News Sourcing And Ranking
+
+The TypeScript pre-validation pipeline finds demand-proven AI posts, dedupes
+them, ranks them, and writes candidate records for human approval. It is
+reversible up to the queue stage: topic approval and publishing still happen
+through explicit `story_scout.py approve` / publish commands.
+
+```sh
+npm run source:ai -- --reddit-only --no-media --no-remember
+npm run rank:ai -- --input out/automation/sourcing/source_items.json --top 30
+npm run pipeline:ai -- --top 30
+```
+
+Useful direct form:
+
+```sh
+node sourcing/cli.ts run --top 30
+node sourcing/cli.ts source --reddit-only --no-media --no-remember \
+  --out out/automation/sourcing/source_items.dryrun.json
+node sourcing/cli.ts source --x-queue out/automation/candidates.json \
+  --no-reddit --no-media --no-remember --no-top-replies \
+  --dedup-state /tmp/carousel-dedup-check.json
+node sourcing/cli.ts source --max-duration-seconds 90 --max-height 720
+```
+
+What it writes:
+
+- `out/automation/sourcing/source_items.json`: deduped `SourceItem` objects
+- `out/automation/sourcing/dedup-state.json`: seen ids and recent title embeddings
+- `out/automation/source_media/`: downloaded mp4 assets when media download is enabled
+- `out/automation/ranking/ranked_items.json`: ranked queue candidates
+- `out/automation/ranking/spectacle-cache.json`: cached spectacle scores
+- `out/automation/candidates.json`: human-review queue merged by stable source item id
+
+The source JSON includes a `report.acceptance` object with the minimum item
+threshold, pass/fail state, and reasons. It also records `sourceEvents.reddit`
+for per-listing success/failure diagnostics.
+
+When `out/automation/candidates.json` exists, the TypeScript source command also
+imports existing X scout posts from that queue unless `--no-x-queue` is passed.
+Use `--x-url <status-url>` for one-off X enrichment, and `--no-top-replies` for
+cheap dry runs that should skip Reddit comment and X quote/reply lookups.
+
+Ranking weights live in `ranking/weights.json` and are read on each rank run, so
+they can change without code edits. Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` for
+LLM spectacle scoring; without it, the pipeline uses a deterministic local
+fallback so dry runs and tests stay stable. Set `EMBEDDING_PROVIDER=openai` and
+`OPENAI_API_KEY` only if you want remote title embeddings; local hash embeddings
+are the default.
+
+Media download shells out to the repo's existing `uv run yt-dlp` dependency and
+merges Reddit split audio/video with ffmpeg. By default, video candidates whose
+download fails are reported in `mediaFailures` and are not written to seen-state,
+so a later run can retry them. Pass `--allow-missing-media` only for exploratory
+runs where ranking a video without `media.localPath` is acceptable. Reddit may
+return HTTP 403 from some networks even for public `.json` listings; those
+listings are skipped and logged instead of aborting the run.
+
+Reddit request overrides for accepted networks or authenticated public JSON:
+
+```sh
+REDDIT_USER_AGENT="carousel-app-ai-news-bot/0.1 by u/<username>"
+REDDIT_COOKIE="reddit_session=..."
+REDDIT_AUTHORIZATION="Bearer ..."
+REDDIT_JSON_BASE_URL="https://www.reddit.com"
+```
+
 ## Publishing
 
 ### Instagram Graph API
