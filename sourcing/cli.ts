@@ -32,11 +32,18 @@ interface CliOptions {
   noXQueue?: boolean;
   noTopReplies?: boolean;
   xUrl?: string[];
+  noYoutube?: boolean;
+  youtubeQuery?: string[];
+  youtubeLimit?: number;
+  youtubeSearch?: boolean;
+  youtubeWindowDays?: number;
+  xLive?: boolean;
+  recencyDays?: number;
 }
 
 function parseArgs(argv: string[]): CliOptions {
   const [command = "run", ...rest] = argv;
-  const options: CliOptions = { command, xUrl: [] };
+  const options: CliOptions = { command, xUrl: [], youtubeQuery: [] };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     if (arg === "--out" || arg === "--output") options.output = rest[++i];
@@ -56,6 +63,13 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--no-x-queue") options.noXQueue = true;
     else if (arg === "--no-top-replies") options.noTopReplies = true;
     else if (arg === "--x-url") options.xUrl?.push(rest[++i]);
+    else if (arg === "--no-youtube") options.noYoutube = true;
+    else if (arg === "--youtube-query") options.youtubeQuery?.push(rest[++i]);
+    else if (arg === "--youtube-limit") options.youtubeLimit = Number(rest[++i]);
+    else if (arg === "--youtube-search") options.youtubeSearch = true;
+    else if (arg === "--youtube-window-days") options.youtubeWindowDays = Number(rest[++i]);
+    else if (arg === "--x-live") options.xLive = true;
+    else if (arg === "--recency-days") options.recencyDays = Number(rest[++i]);
     else throw new Error(`Unknown argument: ${arg}`);
   }
   return options;
@@ -93,6 +107,14 @@ async function source(options: CliOptions): Promise<SourceItem[]> {
       urls: options.xUrl,
       queuePath: xQueuePath,
       includeTopReply: !options.noTopReplies,
+      live: options.xLive,
+      recencyDays: options.recencyDays,
+    },
+    youtube: options.redditOnly || options.noYoutube ? false : {
+      queries: options.youtubeQuery?.length ? options.youtubeQuery : undefined,
+      maxItems: options.youtubeLimit,
+      useSearch: options.youtubeSearch,
+      windowDays: options.youtubeWindowDays,
     },
     includeStubs: true,
   });

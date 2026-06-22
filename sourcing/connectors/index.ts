@@ -3,11 +3,12 @@ import { fetchHuggingFaceSpacesSourceItems } from "./huggingFaceSpaces.ts";
 import { fetchProductHuntSourceItems } from "./productHunt.ts";
 import { fetchRedditSourceItems, type RedditConnectorOptions } from "./reddit.ts";
 import { fetchXSourceItems, type XConnectorOptions } from "./x.ts";
-import { fetchYouTubeShortsSourceItems } from "./youtubeShorts.ts";
+import { fetchYouTubeShortsSourceItems, type YouTubeShortsConnectorOptions } from "./youtubeShorts.ts";
 
 export interface FetchAllSourceOptions {
   reddit?: false | RedditConnectorOptions;
   x?: false | XConnectorOptions;
+  youtube?: false | YouTubeShortsConnectorOptions;
   includeStubs?: boolean;
 }
 
@@ -19,9 +20,11 @@ export async function fetchAllSourceItems(options: FetchAllSourceOptions = {}): 
   if (options.x && options.x !== false) {
     batches.push(await fetchXSourceItems(options.x));
   }
+  if (options.youtube !== false) {
+    batches.push(await fetchYouTubeShortsSourceItems(typeof options.youtube === "object" ? options.youtube : {}));
+  }
   if (options.includeStubs) {
     batches.push(
-      await fetchYouTubeShortsSourceItems(),
       await fetchProductHuntSourceItems(),
       await fetchHuggingFaceSpacesSourceItems(),
     );

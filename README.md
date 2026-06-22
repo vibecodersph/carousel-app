@@ -406,13 +406,28 @@ What it writes:
 - `out/automation/candidates.json`: human-review queue merged by stable source item id
 
 The source JSON includes a `report.acceptance` object with the minimum item
-threshold, pass/fail state, and reasons. It also records `sourceEvents.reddit`
-for per-listing success/failure diagnostics.
+threshold, pass/fail state, and blocking `reasons` (count below minimum, missing
+metrics, or video items without `localPath`). Degraded upstream sources are
+reported separately in `report.warnings` and do **not** fail acceptance — a run
+that still returns ≥50 deduped items with metrics passes even if Reddit is
+unreachable. Per-listing Reddit diagnostics stay in `sourceEvents.reddit`.
 
-When `out/automation/candidates.json` exists, the TypeScript source command also
-imports existing X scout posts from that queue unless `--no-x-queue` is passed.
-Use `--x-url <status-url>` for one-off X enrichment, and `--no-top-replies` for
-cheap dry runs that should skip Reddit comment and X quote/reply lookups.
+Connectors that feed a default run:
+
+- **Reddit** — public `.json` listings (`top/day`, `top/week`, `rising`) across
+  the configured AI subreddits. Blocked by HTTP 403 on some datacenter networks.
+- **X** — imported from the `out/automation/candidates.json` scout queue (unless
+  `--no-x-queue`), plus `--x-url <status-url>` for one-off enrichment.
+- **YouTube** — real `yt-dlp` flat-playlist search for AI-demo shorts (all video,
+  duration-capped so they download cleanly). Disable with `--no-youtube`; tune
+  with `--youtube-query "<search>"` (repeatable), `--youtube-limit <n>`, or the
+  `YOUTUBE_SOURCE_QUERIES` env override (comma separated).
+- **Product Hunt / Hugging Face Spaces** — stubs behind the same `SourceItem`
+  interface, ready to implement.
+
+Because YouTube is reachable where Reddit is blocked, the default `source` run
+(X queue + YouTube) clears the ≥50-item bar on its own. Use `--no-top-replies`
+for cheap dry runs that skip Reddit comment and X quote/reply lookups.
 
 Ranking weights live in `ranking/weights.json` and are read on each rank run, so
 they can change without code edits. Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` for

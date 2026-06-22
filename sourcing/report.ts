@@ -28,6 +28,8 @@ export interface SourceRunSummary {
     ok: boolean;
     reasons: string[];
   };
+  /** Non-blocking degradations (e.g. an upstream source was unavailable). */
+  warnings: string[];
   issues: SourceRunIssue[];
 }
 
@@ -53,9 +55,13 @@ export function summarizeSourceRun(input: SourceRunSummaryInput): SourceRunSumma
   if (videoWithoutLocalPath && input.mediaFailureCount) {
     reasons.push(`${videoWithoutLocalPath} video item(s) missing localPath`);
   }
-  const blockingIssues = (input.issues ?? []).filter((issue) => issue.code === "source_unavailable");
-  if (blockingIssues.length) {
-    reasons.push(`${blockingIssues.length} source listing(s) unavailable`);
+  // A degraded upstream source (e.g. Reddit 403 from this network) is a warning, not
+  // an acceptance failure: the bar is >=minItems deduped items with metrics and
+  // resolved hasVideo. Surface it so the degradation stays visible.
+  const warnings: string[] = [];
+  const unavailable = (input.issues ?? []).filter((issue) => issue.code === "source_unavailable");
+  if (unavailable.length) {
+    warnings.push(`${unavailable.length} source listing(s) unavailable`);
   }
   return {
     rawCount: input.rawItems.length,
@@ -70,6 +76,7 @@ export function summarizeSourceRun(input: SourceRunSummaryInput): SourceRunSumma
       ok: reasons.length === 0,
       reasons,
     },
+    warnings,
     issues: input.issues ?? [],
   };
 }

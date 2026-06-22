@@ -177,7 +177,21 @@ test("source run report exposes acceptance status and source issues", () => {
   });
   assert.equal(failed.acceptance.ok, false);
   assert.ok(failed.acceptance.reasons.some((reason) => reason.includes("below minimum")));
-  assert.ok(failed.acceptance.reasons.some((reason) => reason.includes("source listing")));
+  // A degraded source is a non-blocking warning, not an acceptance reason.
+  assert.ok(failed.warnings.some((warning) => warning.includes("source listing")));
+  assert.ok(!failed.acceptance.reasons.some((reason) => reason.includes("source listing")));
+
+  // Count met despite a down source -> acceptance passes, warning still surfaced.
+  const degraded = summarizeSourceRun({
+    rawItems: items,
+    outputItems: items,
+    droppedCount: 0,
+    mediaFailureCount: 0,
+    minItems: 50,
+    issues: [{ source: "reddit", code: "source_unavailable", message: "HTTP 403" }],
+  });
+  assert.equal(degraded.acceptance.ok, true);
+  assert.ok(degraded.warnings.some((warning) => warning.includes("source listing")));
 });
 
 test("x connector emits SourceItems from existing scout queue records", async () => {

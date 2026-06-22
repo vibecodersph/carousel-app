@@ -10,7 +10,22 @@
   },
   "logo": "logo.png",
   "publishing": {
-    "instagram_user_id": "17841411137200252"
+    "instagram_user_id": "17841411137200252",
+    "instagram_reels": {
+      "media_filename": "reel.mp4",
+      "timezone": "Asia/Tokyo",
+      "publish_time": "09:00",
+      "interval_hours": 24,
+      "caption_context": "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
+      "caption_cta": "気になったら保存して、あとで見返してください。",
+      "hashtags": [
+        "#AIニュース",
+        "#生成AI",
+        "#AI開発",
+        "#エンジニア",
+        "#AIブリーフ"
+      ]
+    }
   },
   "brand": {
     "brand_name": "AI Brief JP",
