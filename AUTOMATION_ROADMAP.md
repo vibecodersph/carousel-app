@@ -63,6 +63,11 @@ out/automation/candidates.json or stories.json
 | Manifest/report trail | Partial | builders, publishers | Build manifests and publish reports exist; cross-run metrics are still thin. |
 | Generic visual QA | Missing | planned | Weekly has claim checks, but there is no manifest-wide dimensions/contact-sheet gate yet. |
 | Scheduling/deployment docs | Missing | planned | Commands are ready, but launchd/cron/worker setup is not documented. |
+| Reel scheduling (legacy single channel) | Partial | `reel_scheduler.py` | `plan` + `run-due path/to/schedule.json` still work for one channel with a fixed `media_filename`; legacy runs now mirror status into the reel ledger. |
+| Reel channel-aware ledger | Done | `reel_ledger.py`, `reel_scheduler.py` | SQLite ledger keyed by `(content_hash, channel_id)`, plus `scan`, `import-schedules`, and `status`. |
+| Reel slot cadence (3–4/day) | Done | `reel_scheduler.py`, `channels/*/channel.json` | `plan-ledger` fills per-channel slots with timezone + deterministic jitter. |
+| Reel insights/stats | Done | `reel_scheduler.py`, `reel_ledger.py` | `sync-insights` appends Graph insight snapshots for published rows with media ids. |
+| Reel dashboard | Done | `reel_scheduler.py` | `report --out out/reel_report.html` writes a self-contained HTML ledger report. |
 
 ## Queue States
 
@@ -106,6 +111,13 @@ out/automation/candidates.json or stories.json
    Add a concise status/report command that summarizes queue counts, recent
    failures, pending approvals, built-but-unpublished items, and last scan time.
 
+7. **Reel operations hardening**
+   The channel-aware reel ledger, per-channel slot cadence, insights sync, and
+   HTML report now exist. Remaining hardening is operational: production cron or
+   launchd docs, one live `sync-insights` smoke test with the final Meta scopes,
+   and any browser-based reschedule/approve actions if the static report stops
+   being enough.
+
 ## Next Milestones
 
 1. Build `manifest_qa.py` for generic slide existence, dimensions, media count,
@@ -116,6 +128,8 @@ out/automation/candidates.json or stories.json
    setup.
 5. Add an automation status command or report that reads
    `out/automation/candidates.json`.
+6. Document the reel cron loop: `plan-ledger`, ledger-native `run-due`,
+   `sync-insights`, and `report`. See `REEL_SCHEDULING.md`.
 
 ## Launch Checklist
 

@@ -9,6 +9,26 @@
     "voice_doc": "../../brand/VIBECODERS_IG_VOICE.md"
   },
   "logo": "logo.png",
+  "publishing": {
+    "instagram_reels": {
+      "timezone": "Asia/Manila",
+      "slots": [
+        "12:00",
+        "18:00",
+        "21:00"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
+      "caption_context": "A quick read on what this means for builders shipping with AI.",
+      "caption_cta": "Save this one for your next build session.",
+      "hashtags": [
+        "#AI",
+        "#AIDevelopment",
+        "#VibeCoding",
+        "#VibeCodersPH"
+      ]
+    }
+  },
   "brand": {
     "brand_name": "vibecodersph",
     "handle": "@vibecodersph",

@@ -16,6 +16,13 @@
       "timezone": "Asia/Tokyo",
       "publish_time": "09:00",
       "interval_hours": 24,
+      "slots": [
+        "09:00",
+        "13:00",
+        "19:00"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
       "caption_context": "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
       "caption_cta": "気になったら保存して、あとで見返してください。",
       "hashtags": [
