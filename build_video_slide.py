@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,11 +31,21 @@ SLIDE_W, SLIDE_H = 1080, 1350
 MEDIA_X, MEDIA_Y, MEDIA_W, MEDIA_H = 110, 300, 860, 760
 POST_VIDEO_MEDIA_X, POST_VIDEO_MEDIA_Y = 75, 600
 POST_VIDEO_MEDIA_W, POST_VIDEO_MEDIA_H = 930, 523
+DEFAULT_POST_VIDEO_MAX_SECONDS = 59
 
 
 def is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def post_video_max_seconds() -> int:
+    raw = os.environ.get("INSTAGRAM_CAROUSEL_VIDEO_MAX_SECONDS", str(DEFAULT_POST_VIDEO_MAX_SECONDS)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_POST_VIDEO_MAX_SECONDS
+    return max(0, value)
 
 
 def extract_status_url(value: str) -> str | None:
@@ -764,7 +775,7 @@ def compose_video(
     if mute:
         cmd.append("-an")
     else:
-        cmd.extend(["-map", "1:a?", "-c:a", "aac", "-b:a", "160k"])
+        cmd.extend(["-map", "1:a?", "-c:a", "aac", "-b:a", "96k"])
     cmd.extend(
         [
             "-c:v",
@@ -774,9 +785,13 @@ def compose_video(
             "-movflags",
             "+faststart",
             "-shortest",
-            str(out_path),
         ]
     )
+    max_seconds = post_video_max_seconds() if layout == "post-video" else 0
+    if max_seconds:
+        print(f"[video] limiting post-video duration to {max_seconds}s")
+        cmd.extend(["-t", str(max_seconds)])
+    cmd.append(str(out_path))
 
     print(f"[video 3/5] composing MP4 -> {out_path}")
     run(cmd)

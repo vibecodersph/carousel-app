@@ -48,7 +48,9 @@ IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
 # Last-resort account label. The active channel's account_name normally supplies this.
 DEFAULT_ACCOUNT_NAME = "vibecodersph"
-DEFAULT_MAX_CAROUSEL_ITEMS = 20
+# Instagram's app UI can show larger carousels, but the Content Publishing API
+# accepts 10 child items. Keep generated posts inside the publishable API limit.
+DEFAULT_MAX_CAROUSEL_ITEMS = 10
 PERSON_SOURCE_HANDLES = {
     "sama",
     "karpathy",
@@ -2209,7 +2211,24 @@ def carousel_item_limit() -> int:
         value = int(raw)
     except ValueError:
         return DEFAULT_MAX_CAROUSEL_ITEMS
-    return max(2, value)
+    return max(2, min(value, DEFAULT_MAX_CAROUSEL_ITEMS))
+
+
+def max_thread_posts_for_carousel(
+    item_limit: int,
+    *,
+    first_page_only: bool,
+    skip_first_explainer: bool,
+) -> int:
+    if first_page_only:
+        return 0
+    # Reserve one slot for the cover and one for the CTA. Each thread post then
+    # uses an explainer slide plus a source/video slide, except the optional
+    # skipped first explainer.
+    available_slots = max(0, item_limit - 2)
+    if skip_first_explainer and available_slots:
+        return 1 + max(0, (available_slots - 1) // 2)
+    return available_slots // 2
 
 
 def carousel_cta_copy() -> dict[str, str]:
@@ -2813,15 +2832,31 @@ def build_x_carousel(
     out_dir.mkdir(parents=True, exist_ok=True)
     account_name = account_name.strip() or DEFAULT_ACCOUNT_NAME
     url = canonical_x_url(url)
+    item_limit = carousel_item_limit()
+    requested_thread_posts = max(1, max_thread_posts)
+    render_thread_post_limit = max_thread_posts_for_carousel(
+        item_limit,
+        first_page_only=first_page_only,
+        skip_first_explainer=skip_first_explainer,
+    )
+    discovery_thread_post_limit = requested_thread_posts
+    if not first_page_only and render_thread_post_limit:
+        discovery_thread_post_limit = min(requested_thread_posts, render_thread_post_limit)
+        if requested_thread_posts > discovery_thread_post_limit:
+            print(
+                f"[x] limiting thread to {discovery_thread_post_limit} post(s) so the carousel "
+                f"fits {item_limit} publishable slides including cover + CTA",
+                file=sys.stderr,
+            )
     posts: list[dict[str, str]] = []
     used_thread_source = ""
     if not no_thread:
         if thread_source in ("auto", "xai"):
-            posts = discover_thread_posts_xai(url, max_thread_posts)
+            posts = discover_thread_posts_xai(url, discovery_thread_post_limit)
             if posts:
                 used_thread_source = "xai"
         if not posts and thread_source in ("auto", "playwright"):
-            posts = discover_thread_posts(url, max_thread_posts, cookies_from_browser)
+            posts = discover_thread_posts(url, discovery_thread_post_limit, cookies_from_browser)
             if posts:
                 used_thread_source = "playwright"
     if not posts:
@@ -2829,6 +2864,13 @@ def build_x_carousel(
         embed_post = fetch_embed_post(url) if metadata is None else None
         posts = [embed_post or post_from_metadata(url, metadata)]
         used_thread_source = "single-post"
+    if not first_page_only and render_thread_post_limit and len(posts) > render_thread_post_limit:
+        print(
+            f"[x] trimming thread from {len(posts)} to {render_thread_post_limit} post(s) "
+            f"to keep cover + CTA inside {item_limit} slides",
+            file=sys.stderr,
+        )
+        posts = posts[:render_thread_post_limit]
 
     first_metadata = fetch_metadata(posts[0]["url"], cookies_from_browser)
     if first_metadata:
@@ -2846,11 +2888,10 @@ def build_x_carousel(
     content_total = 1 if first_page_only else 1 + (len(posts) * 2) - skipped_explainer_count
     include_cta = not first_page_only
     total = content_total + (1 if include_cta else 0)
-    if total > carousel_item_limit():
-        print(
-            f"[x] warning: rendering {total} slides; configured Instagram item limit is "
-            f"{carousel_item_limit()}",
-            file=sys.stderr,
+    if total > item_limit:
+        raise SystemExit(
+            f"rendering {total} slides would exceed the Instagram publishing limit of "
+            f"{item_limit}; reduce --max-thread-posts"
         )
     slides: list[dict[str, object]] = []
     title_path = out_dir / "slide_01.png"

@@ -49,6 +49,30 @@ class InstagramPublishCredentialTests(unittest.TestCase):
         self.assertEqual(source, "cli")
 
 
+class InstagramPublishMediaItemTests(unittest.TestCase):
+    def test_rejects_manifests_over_graph_api_carousel_limit(self) -> None:
+        manifest = {
+            "slides": [
+                {
+                    "index": index,
+                    "type": "post",
+                    "path": f"/tmp/slide_{index:02d}.png",
+                    "source_url": "",
+                }
+                for index in range(1, instagram_publish.MAX_CAROUSEL_ITEMS + 2)
+            ]
+        }
+
+        with self.assertRaisesRegex(SystemExit, "at most 10 items"):
+            instagram_publish.build_media_items(
+                manifest,
+                instagram_publish.ROOT / "out" / "manifest.json",
+                media_base_url="https://cdn.example.com",
+                overrides={},
+                dry_run=True,
+            )
+
+
 class InstagramPublishRetryTests(unittest.TestCase):
     def test_retries_failed_pre_publish_container_with_fresh_containers(self) -> None:
         items = [image_item(1), image_item(2)]

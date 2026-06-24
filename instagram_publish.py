@@ -47,7 +47,8 @@ DEFAULT_PUBLISH_RETRY_DELAY_SECONDS = 60
 FACEBOOK_GRAPH_API_ROOT = "https://graph.facebook.com"
 INSTAGRAM_GRAPH_API_ROOT = "https://graph.instagram.com"
 PLACEHOLDER_MEDIA_BASE_URL = "https://example.com/instagram-media"
-MAX_CAROUSEL_ITEMS = 20
+# Meta's Instagram Content Publishing API accepts at most 10 carousel children.
+MAX_CAROUSEL_ITEMS = 10
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 VIDEO_SUFFIXES = {".mp4", ".mov"}
 FINISHED_STATUS_CODES = {"FINISHED", "PUBLISHED"}
