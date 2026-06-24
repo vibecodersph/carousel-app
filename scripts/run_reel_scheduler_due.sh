@@ -25,5 +25,10 @@ cd "$ROOT" || exit 1
 echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler run start"
 "$UV" run python reel_scheduler.py run-due --upload-r2
 exit_code=$?
+"$UV" run python reel_scheduler.py report --out out/reel_report.html
+report_exit=$?
+if [ "$report_exit" -ne 0 ]; then
+  echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler report exit=$report_exit"
+fi
 echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler run exit=$exit_code"
 exit $exit_code
