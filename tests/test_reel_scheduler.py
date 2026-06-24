@@ -565,6 +565,225 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 existing = reel_ledger.get_reel(conn, "already-scheduled", "aibrief_jp")
                 self.assertEqual(existing["scheduled_at"], "2026-06-23T09:00:00+09:00")
 
+    def test_reflow_queue_updates_only_queued_rows_to_current_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="published",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "published"),
+                    media_path=str(root / "published" / "reel.ja.aibrief_jp.mp4"),
+                    source_video="AAA111",
+                    title="published",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-06-24T13:00:00+09:00",
+                    published_at="2026-06-24T04:00:00+00:00",
+                )
+                for index in range(1, 5):
+                    clip = root / ("AAA111" if index % 2 else "BBB222") / "clips" / f"{index:03d}"
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(f"queued-{index}".encode("utf-8"))
+                    manifest = root / "manifests" / f"queued-{index}" / "manifest.json"
+                    reel_scheduler.write_json(manifest, {"scheduled_at": "old"})
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=f"queued-{index}",
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video="AAA111" if index % 2 else "BBB222",
+                        title=f"queued {index}",
+                        status=reel_ledger.STATUS_PREVIEWED,
+                        scheduled_at=f"2026-07-{index + 1:02d}T13:00:00+09:00",
+                        manifest_path=str(manifest),
+                    )
+
+            reel_scheduler.reflow_queue_rows(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                start_at_text="2026-06-25",
+                jitter_minutes=0,
+                settings_key="instagram_reels",
+                apply=False,
+            )
+            with reel_ledger.connect(db) as conn:
+                self.assertEqual(
+                    reel_ledger.get_reel(conn, "queued-1", "aibrief_jp")["scheduled_at"],
+                    "2026-07-02T13:00:00+09:00",
+                )
+
+            reel_scheduler.reflow_queue_rows(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                start_at_text="2026-06-25",
+                jitter_minutes=0,
+                settings_key="instagram_reels",
+                apply=True,
+            )
+            with reel_ledger.connect(db) as conn:
+                published = reel_ledger.get_reel(conn, "published", "aibrief_jp")
+                self.assertEqual(published["scheduled_at"], "2026-06-24T13:00:00+09:00")
+                rows = conn.execute(
+                    "SELECT content_hash, scheduled_at FROM reels "
+                    "WHERE channel_id='aibrief_jp' AND status=? "
+                    "ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [
+                        ("queued-1", "2026-06-25T09:00:00+09:00"),
+                        ("queued-2", "2026-06-25T13:00:00+09:00"),
+                        ("queued-3", "2026-06-25T19:00:00+09:00"),
+                        ("queued-4", "2026-06-26T09:00:00+09:00"),
+                    ],
+                )
+                manifest = reel_scheduler.read_json(
+                    root / "manifests" / "queued-1" / "manifest.json"
+                )
+                self.assertEqual(manifest["scheduled_at"], "2026-06-25T09:00:00+09:00")
+
+    def test_reflow_queue_can_start_today_after_posts_were_published_early(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="published-early",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "published"),
+                    media_path=str(root / "published" / "reel.ja.aibrief_jp.mp4"),
+                    title="published early",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-06-24T09:00:00+09:00",
+                    published_at="2026-06-23T08:00:00+00:00",
+                )
+                for index in range(1, 4):
+                    clip = root / "clips" / f"{index:03d}"
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(f"queued-{index}".encode("utf-8"))
+                    manifest = root / "manifests" / f"queued-{index}" / "manifest.json"
+                    reel_scheduler.write_json(manifest, {"scheduled_at": "old"})
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=f"queued-today-{index}",
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video="AAA111",
+                        title=f"queued today {index}",
+                        status=reel_ledger.STATUS_PREVIEWED,
+                        scheduled_at=f"2026-06-25T0{index}:00:00+09:00",
+                        manifest_path=str(manifest),
+                    )
+
+            reel_scheduler.reflow_queue_rows(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                start_at_text="2026-06-24T09:45:00+09:00",
+                jitter_minutes=0,
+                settings_key="instagram_reels",
+                apply=True,
+            )
+            with reel_ledger.connect(db) as conn:
+                published = reel_ledger.get_reel(conn, "published-early", "aibrief_jp")
+                self.assertEqual(published["scheduled_at"], "2026-06-24T09:00:00+09:00")
+                rows = conn.execute(
+                    "SELECT content_hash, scheduled_at FROM reels "
+                    "WHERE channel_id='aibrief_jp' AND status=? "
+                    "ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [
+                        ("queued-today-1", "2026-06-24T09:45:00+09:00"),
+                        ("queued-today-2", "2026-06-24T13:00:00+09:00"),
+                        ("queued-today-3", "2026-06-24T19:00:00+09:00"),
+                    ],
+                )
+
+    def test_alternate_sources_reorders_queued_rows_after_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            rows = [
+                ("queued-1", "We7BZVKbCVw", "2026-06-24T13:00:00+09:00"),
+                ("queued-2", "We7BZVKbCVw", "2026-06-24T19:00:00+09:00"),
+                ("queued-3", "PQU9o_5rHC4", "2026-06-25T09:00:00+09:00"),
+                ("queued-4", "PQU9o_5rHC4", "2026-06-25T13:00:00+09:00"),
+            ]
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="published-at-boundary",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "published"),
+                    media_path=str(root / "published" / "reel.ja.aibrief_jp.mp4"),
+                    source_video="PQU9o_5rHC4",
+                    title="published",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-06-24T09:45:00+09:00",
+                    published_at="2026-06-24T00:45:00+00:00",
+                )
+                for content_hash, source, scheduled_at in rows:
+                    clip = root / source / "clips" / content_hash
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(content_hash.encode("utf-8"))
+                    manifest = root / "manifests" / content_hash / "manifest.json"
+                    reel_scheduler.write_json(manifest, {"scheduled_at": scheduled_at})
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=content_hash,
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video=source,
+                        title=content_hash,
+                        status=reel_ledger.STATUS_PREVIEWED,
+                        scheduled_at=scheduled_at,
+                        manifest_path=str(manifest),
+                    )
+
+            reel_scheduler.alternate_source_queue_rows(
+                db_path=db,
+                after_text="2026-06-24T09:45:00+09:00",
+                channel_filter=None,
+                apply=True,
+            )
+            with reel_ledger.connect(db) as conn:
+                scheduled = conn.execute(
+                    "SELECT content_hash, source_video, scheduled_at FROM reels "
+                    "WHERE status=? ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["source_video"], row["scheduled_at"]) for row in scheduled],
+                    [
+                        ("queued-1", "We7BZVKbCVw", "2026-06-24T13:00:00+09:00"),
+                        ("queued-3", "PQU9o_5rHC4", "2026-06-24T19:00:00+09:00"),
+                        ("queued-2", "We7BZVKbCVw", "2026-06-25T09:00:00+09:00"),
+                        ("queued-4", "PQU9o_5rHC4", "2026-06-25T13:00:00+09:00"),
+                    ],
+                )
+                moved_manifest = reel_scheduler.read_json(
+                    root / "manifests" / "queued-3" / "manifest.json"
+                )
+                self.assertEqual(moved_manifest["scheduled_at"], "2026-06-24T19:00:00+09:00")
+
     def test_sync_insights_records_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "reels.db"

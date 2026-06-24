@@ -95,19 +95,32 @@ class ReelLedgerTests(unittest.TestCase):
                 clip_dir="/c/c", media_path="/c/c/x.mp4",
                 status=reel_ledger.STATUS_SCHEDULED, scheduled_at="2026-06-23T12:00:00+08:00",
             )
+            reel_ledger.upsert_imported(
+                conn, content_hash="d", channel_id="aibrief_jp", lang="ja",
+                clip_dir="/c/d", media_path="/c/d/x.mp4",
+                status=reel_ledger.STATUS_PREVIEWED, scheduled_at="2026-06-23T20:00:00+09:00",
+            )
 
         with reel_ledger.connect(self.db) as conn:
             counts = reel_ledger.status_counts(conn)
             self.assertEqual(counts["aibrief_jp"][reel_ledger.STATUS_NEW], 1)
             self.assertEqual(counts["aibrief_jp"][reel_ledger.STATUS_SCHEDULED], 1)
+            self.assertEqual(counts["aibrief_jp"][reel_ledger.STATUS_PREVIEWED], 1)
             self.assertEqual(counts["vibecodersph"][reel_ledger.STATUS_SCHEDULED], 1)
 
             # vibecodersph @ 2026-06-23T12:00+08:00 (04:00Z) precedes
             # aibrief_jp @ 2026-06-24T09:00+09:00 (00:00Z next day), despite the
             # later wall-clock date string.
-            order = [row["channel_id"] for row in reel_ledger.upcoming(conn)]
-            self.assertEqual(order, ["vibecodersph", "aibrief_jp"])
-            self.assertEqual(len(reel_ledger.upcoming(conn, "aibrief_jp")), 1)
+            order = [(row["channel_id"], row["status"]) for row in reel_ledger.upcoming(conn)]
+            self.assertEqual(
+                order,
+                [
+                    ("vibecodersph", reel_ledger.STATUS_SCHEDULED),
+                    ("aibrief_jp", reel_ledger.STATUS_PREVIEWED),
+                    ("aibrief_jp", reel_ledger.STATUS_SCHEDULED),
+                ],
+            )
+            self.assertEqual(len(reel_ledger.upcoming(conn, "aibrief_jp")), 2)
 
     def test_record_and_read_insight_snapshot(self) -> None:
         with reel_ledger.connect(self.db) as conn:

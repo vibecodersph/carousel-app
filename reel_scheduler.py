@@ -37,6 +37,51 @@ SCHEDULE_VERSION = 1
 CHANNEL_MEDIA_RE = re.compile(r"^reel\.([A-Za-z]{2,5})\.([A-Za-z0-9_-]+)\.mp4$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Platform registry: the same ledger + scheduler drives both Instagram reels
+# and TikTok. A platform selects which channel.json publishing block holds its
+# posting slots, which publisher script ``run-due`` shells out to, the report
+# filename that carries the published id back, and a separate ledger db so one
+# clip can be tracked independently on each platform.
+PLATFORMS: dict[str, dict[str, Any]] = {
+    "instagram": {
+        "settings_key": "instagram_reels",
+        "publisher": "instagram_publish.py",
+        "report_name": "instagram_publish.json",
+        "db_path": reel_ledger.DEFAULT_DB_PATH,
+    },
+    "tiktok": {
+        "settings_key": "tiktok",
+        "publisher": "tiktok_publish.py",
+        "report_name": "tiktok_publish.json",
+        "db_path": ROOT / "state" / "tiktok.db",
+    },
+}
+DEFAULT_PLATFORM = "instagram"
+
+
+def platform_config(platform: str) -> dict[str, Any]:
+    try:
+        return PLATFORMS[platform]
+    except KeyError:
+        raise SystemExit(f"Unknown platform '{platform}'. Choose from {sorted(PLATFORMS)}.")
+
+
+def resolve_platform(args: argparse.Namespace) -> str:
+    return str(getattr(args, "platform", None) or DEFAULT_PLATFORM)
+
+
+def settings_key_for(platform: str) -> str:
+    return str(platform_config(platform)["settings_key"])
+
+
+def resolve_db(args: argparse.Namespace) -> Path:
+    """``--db`` wins; otherwise default to the platform's ledger (reels/tiktok.db)."""
+    explicit = getattr(args, "db", None)
+    if explicit is not None:
+        return explicit
+    return platform_config(resolve_platform(args))["db_path"]
+
+
 # Map legacy schedule.json status vocabulary onto the ledger lifecycle.
 LEGACY_STATUS_MAP = {
     "scheduled": reel_ledger.STATUS_SCHEDULED,
@@ -97,9 +142,9 @@ def write_json(path: Path, data: Any) -> None:
     temporary.replace(path)
 
 
-def reel_settings(channel: Channel) -> dict[str, Any]:
+def reel_settings(channel: Channel, settings_key: str = "instagram_reels") -> dict[str, Any]:
     publishing = channel.publishing if isinstance(channel.publishing, dict) else {}
-    settings = publishing.get("instagram_reels")
+    settings = publishing.get(settings_key)
     return settings if isinstance(settings, dict) else {}
 
 
@@ -145,6 +190,12 @@ def scheduler_date_arg(args: argparse.Namespace) -> str | None:
     if positional and flagged:
         raise SystemExit("Use either DATE or --start-at, not both")
     return positional or flagged or None
+
+
+def has_explicit_time(value: str | None) -> bool:
+    if not value:
+        return False
+    return not DATE_RE.match(value.strip().replace("Z", "+00:00"))
 
 
 def row_scheduled_date(row: Any) -> date | None:
@@ -227,6 +278,16 @@ def slot_key(moment: datetime, clock: time) -> str:
     return f"{moment.date().isoformat()}T{clock.strftime('%H:%M')}"
 
 
+def slot_occupancy_key(moment: datetime, clocks: list[time], jitter_minutes: int) -> str:
+    tolerance = max(0, jitter_minutes)
+    for clock in clocks:
+        base = datetime.combine(moment.date(), clock, tzinfo=moment.tzinfo)
+        diff = abs((moment - base).total_seconds()) / 60
+        if diff <= tolerance:
+            return slot_key(base, clock)
+    return moment.replace(second=0, microsecond=0).isoformat()
+
+
 def occupied_slot_keys(
     rows: list[Any],
     *,
@@ -248,17 +309,39 @@ def occupied_slot_keys(
         if scheduled.tzinfo is None:
             scheduled = scheduled.replace(tzinfo=tz)
         local = scheduled.astimezone(tz)
-        matched = False
-        for clock in clocks:
-            base = datetime.combine(local.date(), clock, tzinfo=tz)
-            diff = abs((local - base).total_seconds()) / 60
-            if diff <= tolerance:
-                occupied.add(slot_key(base, clock))
-                matched = True
-                break
-        if not matched:
-            occupied.add(f"{local.replace(second=0, microsecond=0).isoformat()}")
+        occupied.add(slot_occupancy_key(local, clocks, tolerance))
     return occupied
+
+
+def row_value(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def parse_row_datetime(value: Any, timezone_name: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone_for(timezone_name))
+    return parsed
+
+
+def reflow_blocking_rows(rows: list[Any], *, start_at: datetime, timezone_name: str) -> list[Any]:
+    """Rows that should still occupy slots while laying out a queue reflow."""
+    blockers: list[Any] = []
+    for row in rows:
+        if str(row_value(row, "status") or "") == reel_ledger.STATUS_PUBLISHED:
+            published_at = parse_row_datetime(row_value(row, "published_at"), timezone_name)
+            if published_at is not None and published_at < start_at:
+                continue
+        blockers.append(row)
+    return blockers
 
 
 def next_open_slots(
@@ -269,10 +352,12 @@ def next_open_slots(
     count: int,
     jitter_override: int | None = None,
     content_hashes: list[str] | None = None,
+    settings_key: str = "instagram_reels",
+    include_start_at: bool = False,
 ) -> list[datetime]:
     if count <= 0:
         return []
-    settings = reel_settings(channel)
+    settings = reel_settings(channel, settings_key)
     timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
     tz = timezone_for(timezone_name)
     local_start = start_at.astimezone(tz)
@@ -288,6 +373,12 @@ def next_open_slots(
     )
     hashes = content_hashes or [str(i) for i in range(count)]
     slots: list[datetime] = []
+    if include_start_at and local_start.weekday() not in skipped:
+        manual = local_start.replace(microsecond=0)
+        key = slot_occupancy_key(manual, clocks, jitter_minutes)
+        if key not in occupied:
+            slots.append(manual)
+            occupied.add(key)
     day = local_start.date()
     while len(slots) < count:
         if day.weekday() not in skipped:
@@ -475,8 +566,9 @@ def build_caption(
     *,
     source_url: str = "",
     title_override: str | None = None,
+    settings_key: str = "instagram_reels",
 ) -> tuple[str, list[str]]:
-    settings = reel_settings(channel)
+    settings = reel_settings(channel, settings_key)
     title = title_override or clip_title(channel, clip_dir, notes)
     hashtags = caption_hashtags(channel, notes, settings)
     if channel.language_name.lower().startswith("japanese"):
@@ -760,16 +852,26 @@ def publisher_command(
     media_base_url: str,
     r2_bucket: str,
     r2_public_base_url: str,
+    platform: str = "instagram",
+    tiktok_mode: str = "inbox",
+    tiktok_source: str = "file",
+    tiktok_privacy: str = "SELF_ONLY",
 ) -> list[str]:
-    command = [
-        sys.executable,
-        str(ROOT / "instagram_publish.py"),
-        str(job["manifest_path"]),
-        "--single-video-media-type",
-        "REELS",
-        "--out",
-        str(job["publish_report_path"]),
-    ]
+    config = platform_config(platform)
+    command = [sys.executable, str(ROOT / str(config["publisher"])), str(job["manifest_path"])]
+    if platform == "tiktok":
+        command.extend(
+            [
+                "--mode", tiktok_mode,
+                "--source", tiktok_source,
+                "--privacy-level", tiktok_privacy,
+                "--out", str(job["publish_report_path"]),
+            ]
+        )
+    else:
+        command.extend(
+            ["--single-video-media-type", "REELS", "--out", str(job["publish_report_path"])]
+        )
     if dry_run:
         command.append("--dry-run")
     if upload_r2:
@@ -780,7 +882,8 @@ def publisher_command(
                 f"reels/{safe_job_id(channel_id)}/{safe_job_id(schedule_id)}/{safe_job_id(str(job['id']))}",
             ]
         )
-    if media_base_url:
+    # tiktok_publish.py has no --media-base-url; it only pulls from R2 it uploaded.
+    if media_base_url and platform != "tiktok":
         command.extend(["--media-base-url", media_base_url])
     if r2_bucket:
         command.extend(["--r2-bucket", r2_bucket])
@@ -924,9 +1027,9 @@ def ledger_job_id(row: Any) -> str:
     return safe_job_id(f"{source}-{row['channel_id']}-{str(row['content_hash'])[:12]}")
 
 
-def ledger_report_path(row: Any) -> Path:
+def ledger_report_path(row: Any, platform: str = "instagram") -> Path:
     manifest_path = Path(str(row["manifest_path"] or ""))
-    return manifest_path.with_name("instagram_publish.json")
+    return manifest_path.with_name(str(platform_config(platform)["report_name"]))
 
 
 def write_ledger_manifest(
@@ -935,6 +1038,7 @@ def write_ledger_manifest(
     channel: Channel,
     scheduled_at: datetime,
     out_dir: Path,
+    settings_key: str = "instagram_reels",
 ) -> tuple[Path, str, str]:
     clip_dir = Path(str(row["clip_dir"]))
     media_path = Path(str(row["media_path"]))
@@ -949,6 +1053,7 @@ def write_ledger_manifest(
         notes,
         source_url=source_url,
         title_override=title,
+        settings_key=settings_key,
     )
     stamp = scheduled_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     job_dir = out_dir.expanduser().resolve() / channel.id / f"{stamp}_{ledger_job_id(row)}"
@@ -990,6 +1095,77 @@ def round_robin_sources(rows: list[Any]) -> list[Any]:
     return interleaved
 
 
+def row_source_video(row: Any) -> str:
+    return str(row_value(row, "source_video") or "")
+
+
+def row_chronological_key(row: Any, timezone_name: str = DEFAULT_TIMEZONE) -> tuple[int, float]:
+    scheduled = parse_row_datetime(row_value(row, "scheduled_at"), timezone_name)
+    if scheduled is None:
+        return (1, 0.0)
+    return (0, scheduled.astimezone(timezone.utc).timestamp())
+
+
+def row_is_after(row: Any, boundary: datetime, timezone_name: str = DEFAULT_TIMEZONE) -> bool:
+    scheduled = parse_row_datetime(row_value(row, "scheduled_at"), timezone_name)
+    return scheduled is not None and scheduled.astimezone(timezone.utc) > boundary.astimezone(timezone.utc)
+
+
+def row_is_at_or_before(row: Any, boundary: datetime, timezone_name: str = DEFAULT_TIMEZONE) -> bool:
+    scheduled = parse_row_datetime(row_value(row, "scheduled_at"), timezone_name)
+    return scheduled is not None and scheduled.astimezone(timezone.utc) <= boundary.astimezone(timezone.utc)
+
+
+def source_order_from(rows: list[Any]) -> list[str]:
+    ordered: list[str] = []
+    for row in rows:
+        source = row_source_video(row)
+        if source and source not in ordered:
+            ordered.append(source)
+    return ordered
+
+
+def next_source_after(source_order: list[str], last_source: str | None) -> str:
+    if not source_order:
+        return ""
+    if last_source in source_order:
+        return source_order[(source_order.index(str(last_source)) + 1) % len(source_order)]
+    return source_order[0]
+
+
+def pop_alternating_row(
+    pools: dict[str, dict[str, list[Any]]],
+    *,
+    channel_id: str,
+    desired_source: str,
+    source_order: list[str],
+    last_source: str | None,
+) -> Any:
+    channel_pools = pools[channel_id]
+    if desired_source and channel_pools.get(desired_source):
+        return channel_pools[desired_source].pop(0)
+    for source in source_order:
+        if source != last_source and channel_pools.get(source):
+            return channel_pools[source].pop(0)
+    for source in source_order:
+        if channel_pools.get(source):
+            return channel_pools[source].pop(0)
+    for bucket in channel_pools.values():
+        if bucket:
+            return bucket.pop(0)
+    raise RuntimeError(f"No queued rows left for channel {channel_id}")
+
+
+def update_manifest_scheduled_at(manifest_path: Path, scheduled_at: datetime) -> None:
+    if not manifest_path.exists():
+        return
+    data = read_json(manifest_path)
+    if not isinstance(data, dict):
+        return
+    data["scheduled_at"] = scheduled_at.replace(microsecond=0).isoformat()
+    write_json(manifest_path, data)
+
+
 def plan_ledger_rows(
     *,
     db_path: Path,
@@ -1000,6 +1176,7 @@ def plan_ledger_rows(
     limit_per_channel: int | None,
     jitter_minutes: int | None,
     scan_first: bool,
+    settings_key: str = "instagram_reels",
 ) -> dict[str, int]:
     if scan_first:
         scan_command(argparse.Namespace(clips_dir=clips_dir, db=db_path))
@@ -1011,7 +1188,7 @@ def plan_ledger_rows(
             by_channel.setdefault(str(row["channel_id"]), []).append(row)
         for channel_id in sorted(by_channel):
             channel = load_channel(channel_id)
-            settings = reel_settings(channel)
+            settings = reel_settings(channel, settings_key)
             timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
             start_at = (
                 parse_datetime(start_at_text, timezone_name)
@@ -1029,6 +1206,7 @@ def plan_ledger_rows(
                 count=len(channel_rows),
                 jitter_override=jitter_minutes,
                 content_hashes=[str(row["content_hash"]) for row in channel_rows],
+                settings_key=settings_key,
             )
             for row, scheduled_at in zip(channel_rows, slots):
                 manifest_path, caption, title = write_ledger_manifest(
@@ -1036,6 +1214,7 @@ def plan_ledger_rows(
                     channel=channel,
                     scheduled_at=scheduled_at,
                     out_dir=out_dir,
+                    settings_key=settings_key,
                 )
                 reel_ledger.set_status(
                     conn,
@@ -1052,6 +1231,254 @@ def plan_ledger_rows(
     return planned
 
 
+def reflow_queue_rows(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    start_at_text: str | None,
+    jitter_minutes: int | None,
+    settings_key: str,
+    apply: bool,
+) -> dict[str, int]:
+    """Reassign queued rows to slots without touching published history."""
+    queue_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    placeholders = ",".join("?" for _ in queue_statuses)
+    counts: dict[str, int] = {}
+    previews: list[tuple[str, str, str, str, str]] = []
+    with reel_ledger.connect(db_path) as conn:
+        query = (
+            "SELECT * FROM reels WHERE status IN (" + placeholders + ") "
+            "AND scheduled_at IS NOT NULL"
+            + (" AND channel_id=?" if channel_filter else "")
+            + " ORDER BY channel_id, scheduled_at, source_video, clip_dir, lang, content_hash"
+        )
+        params: list[Any] = list(queue_statuses)
+        if channel_filter:
+            params.append(channel_filter)
+        rows = conn.execute(query, params).fetchall()
+        by_channel: dict[str, list[Any]] = {}
+        for row in rows:
+            by_channel.setdefault(str(row["channel_id"]), []).append(row)
+        for channel_id in sorted(by_channel):
+            channel = load_channel(channel_id)
+            settings = reel_settings(channel, settings_key)
+            timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+            start_at = (
+                parse_datetime(start_at_text, timezone_name)
+                if start_at_text
+                else datetime.now(timezone.utc)
+            )
+            channel_rows = round_robin_sources(by_channel[channel_id])
+            queue_hashes = {str(row["content_hash"]) for row in channel_rows}
+            existing = [
+                row
+                for row in reel_ledger.rows_with_schedule(conn, channel_id)
+                if str(row["content_hash"]) not in queue_hashes
+            ]
+            existing = reflow_blocking_rows(
+                existing,
+                start_at=start_at,
+                timezone_name=timezone_name,
+            )
+            slots = next_open_slots(
+                channel=channel,
+                start_at=start_at,
+                existing_rows=existing,
+                count=len(channel_rows),
+                jitter_override=jitter_minutes,
+                content_hashes=[str(row["content_hash"]) for row in channel_rows],
+                settings_key=settings_key,
+                include_start_at=has_explicit_time(start_at_text),
+            )
+            for row, scheduled_at in zip(channel_rows, slots):
+                old_at = str(row["scheduled_at"] or "")
+                new_at = scheduled_at.isoformat()
+                counts[channel_id] = counts.get(channel_id, 0) + 1
+                previews.append(
+                    (
+                        channel_id,
+                        old_at,
+                        new_at,
+                        str(row["status"] or ""),
+                        str(row["title"] or row["clip_dir"] or "")[:80],
+                    )
+                )
+                if not apply:
+                    continue
+                conn.execute(
+                    "UPDATE reels SET scheduled_at=?, updated_at=? "
+                    "WHERE content_hash=? AND channel_id=?",
+                    (new_at, utc_now(), row["content_hash"], channel_id),
+                )
+                update_manifest_scheduled_at(Path(str(row["manifest_path"] or "")), scheduled_at)
+    for channel_id, old_at, new_at, status, title in previews[:20]:
+        verb = "move" if old_at != new_at else "keep"
+        print(f"[reel-scheduler] {verb} {channel_id:<14} {status:<16} {old_at} -> {new_at}  {title}")
+    if len(previews) > 20:
+        print(f"[reel-scheduler] ... {len(previews) - 20} more queued rows")
+    action = "reflowed" if apply else "would reflow"
+    for channel_id in sorted(counts):
+        print(f"[reel-scheduler] {action} {counts[channel_id]} queued {channel_id} row(s)")
+    if not counts:
+        print("[reel-scheduler] no queued rows to reflow")
+    if not apply:
+        print("[reel-scheduler] dry run only; rerun with --apply to update the ledger")
+    return counts
+
+
+def alternate_source_queue_rows(
+    *,
+    db_path: Path,
+    after_text: str | None,
+    channel_filter: str | None,
+    apply: bool,
+) -> int:
+    """Shuffle queued content into existing slots so source_video alternates globally."""
+    boundary = (
+        parse_datetime(after_text, DEFAULT_TIMEZONE)
+        if after_text
+        else datetime.now(timezone.utc)
+    )
+    queue_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    queued_placeholders = ",".join("?" for _ in queue_statuses)
+    scheduled_statuses = [
+        reel_ledger.STATUS_SCHEDULED,
+        reel_ledger.STATUS_PREVIEWED,
+        reel_ledger.STATUS_PUBLISHING,
+        reel_ledger.STATUS_PUBLISHED,
+    ]
+    scheduled_placeholders = ",".join("?" for _ in scheduled_statuses)
+    previews: list[tuple[str, str, str, str, str, str, str]] = []
+    with reel_ledger.connect(db_path) as conn:
+        queued_query = (
+            "SELECT * FROM reels WHERE status IN (" + queued_placeholders + ") "
+            "AND scheduled_at IS NOT NULL"
+            + (" AND channel_id=?" if channel_filter else "")
+        )
+        queued_params: list[Any] = list(queue_statuses)
+        if channel_filter:
+            queued_params.append(channel_filter)
+        queued_rows = [
+            row
+            for row in conn.execute(queued_query, queued_params).fetchall()
+            if row_is_after(row, boundary)
+        ]
+        queued_rows.sort(key=row_chronological_key)
+        if not queued_rows:
+            print("[reel-scheduler] no queued rows after the requested boundary")
+            return 0
+
+        history_query = (
+            "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
+            "AND scheduled_at IS NOT NULL"
+            + (" AND channel_id=?" if channel_filter else "")
+        )
+        history_params: list[Any] = list(scheduled_statuses)
+        if channel_filter:
+            history_params.append(channel_filter)
+        history_rows = [
+            row
+            for row in conn.execute(history_query, history_params).fetchall()
+            if row_is_at_or_before(row, boundary)
+        ]
+        history_rows.sort(key=row_chronological_key)
+        last_source = row_source_video(history_rows[-1]) if history_rows else None
+        source_order = source_order_from(queued_rows)
+        if last_source and last_source not in source_order:
+            source_order.append(last_source)
+        if len(source_order) < 2:
+            print("[reel-scheduler] fewer than two source videos remain in the queued rows")
+            return 0
+
+        pools: dict[str, dict[str, list[Any]]] = {}
+        for row in queued_rows:
+            channel_id = str(row["channel_id"])
+            source = row_source_video(row)
+            pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
+
+        assignments: list[tuple[Any, Any, str]] = []
+        for slot in queued_rows:
+            channel_id = str(slot["channel_id"])
+            desired_source = next_source_after(source_order, last_source)
+            selected = pop_alternating_row(
+                pools,
+                channel_id=channel_id,
+                desired_source=desired_source,
+                source_order=source_order,
+                last_source=last_source,
+            )
+            assignments.append((slot, selected, desired_source))
+            last_source = row_source_video(selected)
+
+        for slot, selected, desired_source in assignments:
+            channel_id = str(selected["channel_id"])
+            old_at = str(selected["scheduled_at"] or "")
+            new_at = str(slot["scheduled_at"] or "")
+            previews.append(
+                (
+                    channel_id,
+                    old_at,
+                    new_at,
+                    row_source_video(selected),
+                    desired_source,
+                    str(selected["status"] or ""),
+                    str(selected["title"] or selected["clip_dir"] or "")[:70],
+                )
+            )
+            if not apply:
+                continue
+            scheduled_at = parse_row_datetime(new_at, DEFAULT_TIMEZONE)
+            if scheduled_at is None:
+                continue
+            conn.execute(
+                "UPDATE reels SET scheduled_at=?, updated_at=? WHERE content_hash=? AND channel_id=?",
+                (new_at, utc_now(), selected["content_hash"], channel_id),
+            )
+            update_manifest_scheduled_at(Path(str(selected["manifest_path"] or "")), scheduled_at)
+
+    for channel_id, old_at, new_at, source, desired_source, status, title in previews[:24]:
+        verb = "move" if old_at != new_at else "keep"
+        desired_note = f", wanted {desired_source}" if desired_source and desired_source != source else ""
+        print(
+            f"[reel-scheduler] {verb} {channel_id:<14} {status:<16} "
+            f"{source}{desired_note}: {old_at} -> {new_at}  {title}"
+        )
+    if len(previews) > 24:
+        print(f"[reel-scheduler] ... {len(previews) - 24} more queued rows")
+    action = "alternated" if apply else "would alternate"
+    print(f"[reel-scheduler] {action} {len(previews)} queued row(s) after {boundary.isoformat()}")
+    if not apply:
+        print("[reel-scheduler] dry run only; rerun with --apply to update the ledger")
+    return len(previews)
+
+
+def resolve_tiktok_publish_opts(
+    platform: str,
+    channel_id: str,
+    *,
+    tiktok_mode: str | None,
+    tiktok_source: str | None,
+    tiktok_privacy: str | None,
+) -> dict[str, str]:
+    """Per-channel TikTok posting options to splat into ``publisher_command``.
+
+    CLI flags win; otherwise read the channel's ``publishing.tiktok`` block;
+    otherwise fall back to unaudited-friendly defaults (inbox/file/SELF_ONLY).
+    Returns ``{}`` for non-tiktok platforms so it can be splatted unconditionally.
+    """
+    if platform != "tiktok":
+        return {}
+    try:
+        settings = reel_settings(load_channel(channel_id), "tiktok")
+    except Exception:
+        settings = {}
+    return {
+        "tiktok_mode": tiktok_mode or str(settings.get("mode") or "inbox"),
+        "tiktok_source": tiktok_source or str(settings.get("source") or "file"),
+        "tiktok_privacy": tiktok_privacy or str(settings.get("privacy_level") or "SELF_ONLY"),
+    }
+
+
 def run_due_ledger(
     *,
     db_path: Path,
@@ -1066,6 +1493,10 @@ def run_due_ledger(
     media_base_url: str,
     r2_bucket: str,
     r2_public_base_url: str,
+    platform: str = "instagram",
+    tiktok_mode: str | None = None,
+    tiktok_source: str | None = None,
+    tiktok_privacy: str | None = None,
 ) -> int:
     with reel_ledger.connect(db_path) as conn:
         rows = reel_ledger.due_reels(
@@ -1088,7 +1519,7 @@ def run_due_ledger(
         job = {
             "id": ledger_job_id(row),
             "manifest_path": str(row["manifest_path"]),
-            "publish_report_path": str(ledger_report_path(row)),
+            "publish_report_path": str(ledger_report_path(row, platform)),
         }
         publishable, reason = row_is_publishable(row)
         if not publishable:
@@ -1103,6 +1534,13 @@ def run_due_ledger(
                 )
             print(f"[reel-scheduler] skipped {job['id']}: {reason}")
             continue
+        tiktok_opts = resolve_tiktok_publish_opts(
+            platform,
+            row_channel_id,
+            tiktok_mode=tiktok_mode,
+            tiktok_source=tiktok_source,
+            tiktok_privacy=tiktok_privacy,
+        )
         command = publisher_command(
             job,
             channel_id=row_channel_id,
@@ -1112,6 +1550,8 @@ def run_due_ledger(
             media_base_url=media_base_url,
             r2_bucket=r2_bucket,
             r2_public_base_url=r2_public_base_url,
+            platform=platform,
+            **tiktok_opts,
         )
         with reel_ledger.connect(db_path) as conn:
             claimed = reel_ledger.claim_for_publish(
@@ -1137,7 +1577,7 @@ def run_due_ledger(
                         last_error=None,
                     )
                 else:
-                    media_id, permalink = report_publish_identity(ledger_report_path(row))
+                    media_id, permalink = report_publish_identity(ledger_report_path(row, platform))
                     reel_ledger.set_status(
                         conn,
                         content_hash,
@@ -1228,6 +1668,7 @@ def render_report_html(
         "<tr>"
         f"<td>{esc(row['scheduled_at'])}</td>"
         f"<td>{esc(row['channel_id'])}</td>"
+        f"<td>{esc(row['status'])}</td>"
         f"<td>{esc(row['title'] or row['clip_dir'])}</td>"
         "</tr>"
         for row in upcoming
@@ -1255,7 +1696,7 @@ def render_report_html(
     ]
     status_headers = "".join(f"<th>{esc(status)}</th>" for status in order)
     count_body = "".join(count_rows) or '<tr><td colspan="8">No rows</td></tr>'
-    upcoming_body = "".join(upcoming_rows) or '<tr><td colspan="3">No upcoming reels</td></tr>'
+    upcoming_body = "".join(upcoming_rows) or '<tr><td colspan="4">No queued reels</td></tr>'
     published_body = "".join(published_rows) or '<tr><td colspan="3">No published reels</td></tr>'
     insight_body = "".join(insight_html) or '<tr><td colspan="8">No insight snapshots</td></tr>'
     return f"""<!doctype html>
@@ -1283,9 +1724,9 @@ def render_report_html(
     <thead><tr><th>Channel</th>{status_headers}</tr></thead>
     <tbody>{count_body}</tbody>
   </table>
-  <h2>Upcoming</h2>
+  <h2>Upcoming Queue</h2>
   <table>
-    <thead><tr><th>Scheduled</th><th>Channel</th><th>Title</th></tr></thead>
+    <thead><tr><th>Scheduled</th><th>Channel</th><th>Status</th><th>Title</th></tr></thead>
     <tbody>{upcoming_body}</tbody>
   </table>
   <h2>Recently Published</h2>
@@ -1320,10 +1761,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_due = subparsers.add_parser("run-due", help="Publish reels whose scheduled time has arrived")
     run_due.add_argument("schedule", nargs="?", type=Path, help="Optional legacy schedule.json path")
+    run_due.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
+    )
+    run_due.add_argument("--tiktok-mode", choices=("inbox", "direct"), default=None, help="TikTok: inbox draft (default) or direct post")
+    run_due.add_argument("--tiktok-source", choices=("file", "pull"), default=None, help="TikTok upload: file (default) or R2 pull")
+    run_due.add_argument("--tiktok-privacy", default=None, help="TikTok direct-post privacy (default: SELF_ONLY)")
     run_due.add_argument("--now", help="Override the current time in ISO 8601 (useful for operations/tests)")
     run_due.add_argument("--channel", help="Ledger mode: limit to one channel id")
     run_due.add_argument("--date", help="Ledger mode: process rows scheduled on YYYY-MM-DD")
-    run_due.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    run_due.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     run_due.add_argument("--dry-run", action="store_true", help="Preview through instagram_publish.py")
     run_due.add_argument("--all", action="store_true", help="Include future jobs")
     run_due.add_argument("--retry-failed", action="store_true", help="Retry jobs in publish_failed state")
@@ -1341,15 +1788,21 @@ def build_parser() -> argparse.ArgumentParser:
         "scan", help="Discover reel.<lang>.<channel>.mp4 variants into the ledger"
     )
     scan.add_argument("clips_dir", type=Path, help="reel-app clips folder (multi-channel)")
-    scan.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    scan.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Ledger to scan into (default: instagram)"
+    )
+    scan.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
 
     plan_ledger = subparsers.add_parser(
         "plan-ledger", help="Scan multi-channel clips and assign new ledger rows to per-channel slots"
     )
     plan_ledger.add_argument("clips_dir", type=Path, help="reel-app clips folder (multi-channel)")
+    plan_ledger.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
+    )
     plan_ledger.add_argument("date", nargs="?", help="Optional first eligible date (YYYY-MM-DD) or ISO datetime")
     plan_ledger.add_argument("--channel", help="Limit planning to one channel id")
-    plan_ledger.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    plan_ledger.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     plan_ledger.add_argument(
         "--out-dir",
         type=Path,
@@ -1361,30 +1814,65 @@ def build_parser() -> argparse.ArgumentParser:
     plan_ledger.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this plan")
     plan_ledger.add_argument("--no-scan", action="store_true", help="Plan existing new ledger rows only")
 
+    reflow = subparsers.add_parser(
+        "reflow-queue",
+        help="Reassign queued scheduled/previewed rows to current per-channel slots without touching published rows",
+    )
+    reflow.add_argument("date", nargs="?", help="First eligible date (YYYY-MM-DD) or ISO datetime")
+    reflow.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
+    )
+    reflow.add_argument("--channel", help="Limit to one channel id")
+    reflow.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    reflow.add_argument("--start-at", help="First eligible date/time; accepts YYYY-MM-DD or ISO 8601")
+    reflow.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this reflow")
+    reflow.add_argument("--apply", action="store_true", help="Actually update queued rows")
+
+    alternate_sources = subparsers.add_parser(
+        "alternate-sources",
+        help="Reorder queued rows after a timestamp so source videos alternate in the combined queue",
+    )
+    alternate_sources.add_argument("--after", help="Only reorder queued rows after this ISO datetime")
+    alternate_sources.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
+    )
+    alternate_sources.add_argument("--channel", help="Limit to one channel id")
+    alternate_sources.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    alternate_sources.add_argument("--apply", action="store_true", help="Actually update queued rows")
+
     importer = subparsers.add_parser(
         "import-schedules", help="Seed the ledger from existing schedule.json files"
     )
     importer.add_argument("--root", type=Path, default=DEFAULT_OUT, help="Folder of <schedule>/schedule.json dirs")
-    importer.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    importer.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
 
     status = subparsers.add_parser(
         "status", help="Summarize ledger counts, upcoming posts, and recent publishes"
     )
+    status.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to read (default: instagram)"
+    )
     status.add_argument("--channel", help="Limit to one channel id")
-    status.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    status.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     status.add_argument("--limit", type=int, default=15, help="Max upcoming rows to show")
 
     cleanup = subparsers.add_parser(
         "cleanup-missing", help="Dry-run/delete ledger rows whose media file no longer exists"
     )
+    cleanup.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to clean (default: instagram)"
+    )
     cleanup.add_argument("--channel", help="Limit to one channel id")
-    cleanup.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    cleanup.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     cleanup.add_argument("--all-statuses", action="store_true", help="Consider every status, not just failed rows")
     cleanup.add_argument("--apply", action="store_true", help="Actually delete missing-media rows")
 
-    sync = subparsers.add_parser("sync-insights", help="Fetch Instagram insights for published ledger rows")
+    sync = subparsers.add_parser("sync-insights", help="Fetch insights for published ledger rows")
+    sync.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="instagram (Graph) or tiktok (video.list)"
+    )
     sync.add_argument("--channel", help="Limit to one channel id")
-    sync.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    sync.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     sync.add_argument("--limit", type=int, help="Maximum published rows to sync")
     sync.add_argument("--dry-run", action="store_true", help="Print rows that would be synced")
     sync.add_argument(
@@ -1397,10 +1885,13 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--graph-api-root", default="")
 
     report = subparsers.add_parser("report", help="Render a self-contained HTML report from the ledger")
+    report.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to render (default: instagram)"
+    )
     report.add_argument("--channel", help="Limit to one channel id")
-    report.add_argument("--db", type=Path, default=reel_ledger.DEFAULT_DB_PATH, help="Ledger database path")
+    report.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     report.add_argument("--out", type=Path, default=ROOT / "out" / "reel_report.html")
-    report.add_argument("--limit", type=int, default=50, help="Rows per report table")
+    report.add_argument("--limit", type=int, default=0, help="Rows per report table; 0 means all")
     return parser
 
 
@@ -1451,14 +1942,21 @@ def plan_command(args: argparse.Namespace) -> int:
 
 
 def run_due_command(args: argparse.Namespace) -> int:
+    platform = resolve_platform(args)
+    settings_key = settings_key_for(platform)
+    db_path = resolve_db(args)
     if args.schedule:
+        if platform != "instagram":
+            raise SystemExit("Legacy schedule.json publishing is Instagram-only; use the ledger path for tiktok")
         schedule_path = args.schedule.expanduser().resolve()
         schedule = read_json(schedule_path)
         if not isinstance(schedule, dict):
             raise SystemExit(f"Invalid reel schedule: {schedule_path}")
         timezone_name = str(schedule.get("timezone") or DEFAULT_TIMEZONE)
     elif args.channel:
-        timezone_name = setting_text(reel_settings(load_channel(args.channel)), "timezone", DEFAULT_TIMEZONE)
+        timezone_name = setting_text(
+            reel_settings(load_channel(args.channel), settings_key), "timezone", DEFAULT_TIMEZONE
+        )
     else:
         timezone_name = DEFAULT_TIMEZONE
     now = parse_datetime(args.now, timezone_name) if args.now else datetime.now(timezone.utc)
@@ -1477,11 +1975,11 @@ def run_due_command(args: argparse.Namespace) -> int:
             media_base_url=args.media_base_url.strip(),
             r2_bucket=args.r2_bucket.strip(),
             r2_public_base_url=args.r2_public_base_url.strip(),
-            db_path=args.db,
+            db_path=db_path,
         )
         return rc
     return run_due_ledger(
-        db_path=args.db,
+        db_path=db_path,
         now=now,
         channel_id=args.channel,
         scheduled_date=scheduled_date,
@@ -1493,6 +1991,10 @@ def run_due_command(args: argparse.Namespace) -> int:
         media_base_url=args.media_base_url.strip(),
         r2_bucket=args.r2_bucket.strip(),
         r2_public_base_url=args.r2_public_base_url.strip(),
+        platform=platform,
+        tiktok_mode=getattr(args, "tiktok_mode", None),
+        tiktok_source=getattr(args, "tiktok_source", None),
+        tiktok_privacy=getattr(args, "tiktok_privacy", None),
     )
 
 
@@ -1501,8 +2003,10 @@ def plan_ledger_command(args: argparse.Namespace) -> int:
         raise SystemExit("--limit-per-channel must be greater than zero")
     if args.jitter_minutes is not None and args.jitter_minutes < 0:
         raise SystemExit("--jitter-minutes must be zero or greater")
+    platform = resolve_platform(args)
+    db_path = resolve_db(args)
     planned = plan_ledger_rows(
-        db_path=args.db,
+        db_path=db_path,
         clips_dir=args.clips_dir,
         out_dir=args.out_dir,
         channel_filter=args.channel,
@@ -1510,14 +2014,44 @@ def plan_ledger_command(args: argparse.Namespace) -> int:
         limit_per_channel=args.limit_per_channel,
         jitter_minutes=args.jitter_minutes,
         scan_first=not args.no_scan,
+        settings_key=settings_key_for(platform),
     )
     if not planned:
         print("[reel-scheduler] no new ledger rows to schedule")
         return 0
     for channel_id in sorted(planned):
-        print(f"[reel-scheduler] planned {planned[channel_id]} {channel_id} reel(s)")
+        print(f"[reel-scheduler] planned {planned[channel_id]} {channel_id} {platform} reel(s)")
     print(f"[reel-scheduler] manifests: {args.out_dir.expanduser().resolve()}")
-    print(f"[reel-scheduler] ledger: {args.db}")
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def reflow_queue_command(args: argparse.Namespace) -> int:
+    if args.jitter_minutes is not None and args.jitter_minutes < 0:
+        raise SystemExit("--jitter-minutes must be zero or greater")
+    platform = resolve_platform(args)
+    db_path = resolve_db(args)
+    reflow_queue_rows(
+        db_path=db_path,
+        channel_filter=args.channel,
+        start_at_text=scheduler_date_arg(args),
+        jitter_minutes=args.jitter_minutes,
+        settings_key=settings_key_for(platform),
+        apply=args.apply,
+    )
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def alternate_sources_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    alternate_source_queue_rows(
+        db_path=db_path,
+        after_text=args.after,
+        channel_filter=args.channel,
+        apply=args.apply,
+    )
+    print(f"[reel-scheduler] ledger: {db_path}")
     return 0
 
 
@@ -1527,11 +2061,12 @@ def source_video_name(clips_dir: Path) -> str:
 
 
 def scan_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
     discovered = discover_channel_clips(args.clips_dir)
     known = set(available_channels())
     source_video = source_video_name(args.clips_dir)
     inserted = updated = unknown = 0
-    with reel_ledger.connect(args.db) as conn:
+    with reel_ledger.connect(db_path) as conn:
         for clip_dir, lang, channel_id, media_path, notes, _ in discovered:
             if channel_id not in known:
                 unknown += 1
@@ -1556,7 +2091,7 @@ def scan_command(args: argparse.Namespace) -> int:
         f"[reel-scheduler] scanned {len(discovered)} variants -> "
         f"{inserted} new, {updated} existing, {unknown} unknown-channel"
     )
-    print(f"[reel-scheduler] ledger: {args.db}")
+    print(f"[reel-scheduler] ledger: {db_path}")
     return 0
 
 
@@ -1617,12 +2152,13 @@ def import_schedules_command(args: argparse.Namespace) -> int:
 
 
 def status_command(args: argparse.Namespace) -> int:
-    with reel_ledger.connect(args.db) as conn:
+    db_path = resolve_db(args)
+    with reel_ledger.connect(db_path) as conn:
         counts = reel_ledger.status_counts(conn, args.channel)
         upcoming = reel_ledger.upcoming(conn, args.channel, limit=args.limit)
         published = reel_ledger.recent_published(conn, args.channel, limit=5)
     if not counts:
-        print(f"[reel-scheduler] ledger is empty: {args.db}")
+        print(f"[reel-scheduler] ledger is empty: {db_path}")
         print("[reel-scheduler] run 'scan <clips_dir>' or 'import-schedules' first")
         return 0
     order = [
@@ -1643,18 +2179,19 @@ def status_command(args: argparse.Namespace) -> int:
         print("\nUpcoming:")
         for row in upcoming:
             label = (row["title"] or row["clip_dir"] or "")[:60]
-            print(f"  {row['scheduled_at']}  {row['channel_id']:<14} {label}")
+            print(f"  {row['scheduled_at']}  {row['channel_id']:<14} {row['status']:<16} {label}")
     if published:
         print("\nRecently published:")
         for row in published:
             print(f"  {row['published_at']}  {row['channel_id']:<14} {row['permalink'] or '(no permalink)'}")
-    print(f"\nledger: {args.db}")
+    print(f"\nledger: {db_path}")
     return 0
 
 
 def cleanup_missing_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
     statuses = None if args.all_statuses else {reel_ledger.STATUS_FAILED}
-    with reel_ledger.connect(args.db) as conn:
+    with reel_ledger.connect(db_path) as conn:
         query = "SELECT content_hash, channel_id, status, scheduled_at, title, media_path FROM reels"
         params: list[Any] = []
         clauses: list[str] = []
@@ -1672,7 +2209,7 @@ def cleanup_missing_command(args: argparse.Namespace) -> int:
         if not args.apply:
             print(
                 f"[reel-scheduler] would delete {len(missing)} missing-media row(s) "
-                f"from {args.db}; rerun with --apply"
+                f"from {db_path}; rerun with --apply"
             )
             for row in missing[:10]:
                 print(
@@ -1687,15 +2224,22 @@ def cleanup_missing_command(args: argparse.Namespace) -> int:
                 "DELETE FROM reels WHERE content_hash=? AND channel_id=?",
                 (row["content_hash"], row["channel_id"]),
             )
-    print(f"[reel-scheduler] deleted {len(missing)} missing-media row(s) from {args.db}")
+    print(f"[reel-scheduler] deleted {len(missing)} missing-media row(s) from {db_path}")
     return 0
 
 
 def sync_insights_command(args: argparse.Namespace) -> int:
-    import instagram_publish
-
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be greater than zero")
+    db_path = resolve_db(args)
+    if resolve_platform(args) == "tiktok":
+        return sync_tiktok_insights(args, db_path)
+    return sync_instagram_insights(args, db_path)
+
+
+def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
+    import instagram_publish
+
     metrics = [part.strip() for part in str(args.metrics or "").split(",") if part.strip()]
     if not metrics:
         raise SystemExit("--metrics must include at least one metric")
@@ -1704,7 +2248,7 @@ def sync_insights_command(args: argparse.Namespace) -> int:
         args.graph_api_version or instagram_publish.graph_api_version()
     )
     graph_root = (args.graph_api_root or instagram_publish.graph_api_root()).rstrip("/")
-    with reel_ledger.connect(args.db) as conn:
+    with reel_ledger.connect(db_path) as conn:
         rows = reel_ledger.published_reels_for_insights(conn, args.channel, args.limit)
     if not rows:
         print("[reel-scheduler] no published media ids to sync")
@@ -1736,7 +2280,7 @@ def sync_insights_command(args: argparse.Namespace) -> int:
             graph_api_root=graph_root,
         )
         parsed = parse_insight_metrics(payload)
-        with reel_ledger.connect(args.db) as conn:
+        with reel_ledger.connect(db_path) as conn:
             reel_ledger.record_insight(
                 conn,
                 content_hash=str(row["content_hash"]),
@@ -1751,21 +2295,75 @@ def sync_insights_command(args: argparse.Namespace) -> int:
     return 0 if skipped == 0 else 1
 
 
+def sync_tiktok_insights(args: argparse.Namespace, db_path: Path) -> int:
+    """Pull TikTok view/like/comment/share counts for published rows.
+
+    Uses ``/v2/video/query/`` (scope ``video.list``). The ledger ``media_id`` is
+    the public post id captured at publish time; if a post was still in
+    moderation then, its id may be a publish_id and the query won't match — that
+    row is skipped until re-published metadata is available.
+    """
+    import tiktok_publish
+
+    tiktok_publish.load_env_file(ROOT / ".env")
+    with reel_ledger.connect(db_path) as conn:
+        rows = reel_ledger.published_reels_for_insights(conn, args.channel, args.limit)
+    if not rows:
+        print("[reel-scheduler] no published TikTok post ids to sync")
+        return 0
+    synced = skipped = 0
+    for row in rows:
+        manifest = {"channel_id": row["channel_id"]}
+        access_token, token_source = tiktok_publish.resolve_tiktok_access_token(
+            args.access_token, manifest, ROOT / "reel_scheduler.py"
+        )
+        if not access_token:
+            skipped += 1
+            print(f"[reel-scheduler] skip {row['media_id']}: no TikTok token for {row['channel_id']}")
+            continue
+        post_id = str(row["media_id"])
+        if args.dry_run:
+            print(f"[reel-scheduler] would sync {row['channel_id']} {post_id} via {token_source}")
+            synced += 1
+            continue
+        payload = tiktok_publish.query_video_metrics([post_id], access_token=access_token)
+        parsed = tiktok_publish.parse_video_metrics(payload, post_id)
+        if not parsed:
+            skipped += 1
+            print(f"[reel-scheduler] skip {post_id}: not found in video.query (still in moderation?)")
+            continue
+        with reel_ledger.connect(db_path) as conn:
+            reel_ledger.record_insight(
+                conn,
+                content_hash=str(row["content_hash"]),
+                channel_id=str(row["channel_id"]),
+                media_id=post_id,
+                metrics=parsed,
+                raw=json.dumps(payload, ensure_ascii=False),
+            )
+        synced += 1
+        print(f"[reel-scheduler] synced {row['channel_id']} {post_id}")
+    print(f"[reel-scheduler] insights synced={synced} skipped={skipped}")
+    return 0 if skipped == 0 else 1
+
+
 def report_command(args: argparse.Namespace) -> int:
-    if args.limit <= 0:
-        raise SystemExit("--limit must be greater than zero")
-    with reel_ledger.connect(args.db) as conn:
+    if args.limit < 0:
+        raise SystemExit("--limit must be zero or greater")
+    limit = None if args.limit == 0 else args.limit
+    db_path = resolve_db(args)
+    with reel_ledger.connect(db_path) as conn:
         counts = reel_ledger.status_counts(conn, args.channel)
-        upcoming = reel_ledger.upcoming(conn, args.channel, limit=args.limit)
-        published = reel_ledger.recent_published(conn, args.channel, limit=args.limit)
-        insight_rows = reel_ledger.latest_insight_rows(conn, args.channel, limit=args.limit)
+        upcoming = reel_ledger.upcoming(conn, args.channel, limit=limit)
+        published = reel_ledger.recent_published(conn, args.channel, limit=limit)
+        insight_rows = reel_ledger.latest_insight_rows(conn, args.channel, limit=limit)
     args.out.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
     html_text = render_report_html(
         counts=counts,
         upcoming=upcoming,
         published=published,
         insight_rows=insight_rows,
-        db_path=args.db,
+        db_path=db_path,
     )
     args.out.expanduser().resolve().write_text(html_text, encoding="utf-8")
     print(f"[reel-scheduler] wrote report -> {args.out.expanduser().resolve()}")
@@ -1780,6 +2378,10 @@ def main() -> int:
         return run_due_command(args)
     if args.command == "plan-ledger":
         return plan_ledger_command(args)
+    if args.command == "reflow-queue":
+        return reflow_queue_command(args)
+    if args.command == "alternate-sources":
+        return alternate_sources_command(args)
     if args.command == "scan":
         return scan_command(args)
     if args.command == "import-schedules":

@@ -32,6 +32,28 @@
         "#エンジニア",
         "#AIブリーフ"
       ]
+    },
+    "tiktok": {
+      "mode": "inbox",
+      "source": "file",
+      "privacy_level": "SELF_ONLY",
+      "timezone": "Asia/Tokyo",
+      "slots": [
+        "08:00",
+        "12:30",
+        "20:00"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
+      "caption_context": "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
+      "caption_cta": "毎日のAIクリップはフォローでチェック。",
+      "hashtags": [
+        "#AIニュース",
+        "#生成AI",
+        "#AI開発",
+        "#エンジニア",
+        "#おすすめ"
+      ]
     }
   },
   "brand": {

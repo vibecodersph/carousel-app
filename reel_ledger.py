@@ -357,30 +357,42 @@ def _scheduled_sort_key(value: Any) -> tuple[int, float]:
         return (1, 0.0)
 
 
-def upcoming(conn: sqlite3.Connection, channel_id: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
-    """Scheduled-but-unpublished reels in true chronological (UTC) order."""
+def upcoming(
+    conn: sqlite3.Connection,
+    channel_id: str | None = None,
+    limit: int | None = 20,
+) -> list[sqlite3.Row]:
+    """Queued-but-unpublished reels in true chronological (UTC) order."""
+    statuses = [STATUS_SCHEDULED, STATUS_PREVIEWED]
+    placeholders = ",".join("?" for _ in statuses)
     query = (
-        "SELECT * FROM reels WHERE status=? AND scheduled_at IS NOT NULL"
+        "SELECT * FROM reels WHERE status IN (" + placeholders + ") AND scheduled_at IS NOT NULL"
         + (" AND channel_id=?" if channel_id else "")
     )
-    params: list[Any] = [STATUS_SCHEDULED]
+    params: list[Any] = list(statuses)
     if channel_id:
         params.append(channel_id)
     rows = conn.execute(query, params).fetchall()
     rows.sort(key=lambda row: _scheduled_sort_key(row["scheduled_at"]))
-    return rows[:limit]
+    return rows[:limit] if limit is not None else rows
 
 
-def recent_published(conn: sqlite3.Connection, channel_id: str | None = None, limit: int = 10) -> list[sqlite3.Row]:
+def recent_published(
+    conn: sqlite3.Connection,
+    channel_id: str | None = None,
+    limit: int | None = 10,
+) -> list[sqlite3.Row]:
     query = (
         "SELECT * FROM reels WHERE status=?"
         + (" AND channel_id=?" if channel_id else "")
-        + " ORDER BY published_at DESC LIMIT ?"
+        + " ORDER BY published_at DESC"
     )
     params: list[Any] = [STATUS_PUBLISHED]
     if channel_id:
         params.append(channel_id)
-    params.append(limit)
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     return conn.execute(query, params).fetchall()
 
 
@@ -491,7 +503,7 @@ def published_reels_for_insights(
 def latest_insight_rows(
     conn: sqlite3.Connection,
     channel_id: str | None = None,
-    limit: int = 50,
+    limit: int | None = 50,
 ) -> list[sqlite3.Row]:
     """Published rows joined to their most recent insights snapshot, if any."""
     query = """
@@ -514,6 +526,8 @@ def latest_insight_rows(
     if channel_id:
         query += " AND r.channel_id = ?"
         params.append(channel_id)
-    query += " ORDER BY r.published_at DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY r.published_at DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     return conn.execute(query, params).fetchall()

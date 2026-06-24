@@ -27,6 +27,28 @@
         "#VibeCoding",
         "#VibeCodersPH"
       ]
+    },
+    "tiktok": {
+      "mode": "inbox",
+      "source": "file",
+      "privacy_level": "SELF_ONLY",
+      "timezone": "Asia/Manila",
+      "slots": [
+        "12:30",
+        "19:00",
+        "21:30"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
+      "caption_context": "A quick read on what this means for builders shipping with AI.",
+      "caption_cta": "Follow for daily AI build clips.",
+      "hashtags": [
+        "#AI",
+        "#AItools",
+        "#vibecoding",
+        "#buildinpublic",
+        "#fyp"
+      ]
     }
   },
   "brand": {

@@ -68,6 +68,10 @@ out/automation/candidates.json or stories.json
 | Reel slot cadence (3–4/day) | Done | `reel_scheduler.py`, `channels/*/channel.json` | `plan-ledger` fills per-channel slots with timezone + deterministic jitter. |
 | Reel insights/stats | Done | `reel_scheduler.py`, `reel_ledger.py` | `sync-insights` appends Graph insight snapshots for published rows with media ids. |
 | Reel dashboard | Done | `reel_scheduler.py` | `report --out out/reel_report.html` writes a self-contained HTML ledger report. |
+| TikTok publishing | Done (dry-run); blocked on creds for live | `tiktok_publish.py` | Content Posting API: inbox-draft and direct-post modes, FILE_UPLOAD or R2 PULL_FROM_URL, dry-run, publish report. Live publish needs TikTok app + OAuth (`TIKTOK_SETUP.md`). |
+| TikTok OAuth | Done | `tiktok_auth.py` | `url` / `exchange` / `refresh` / `creator-info`; per-channel token store in `state/tiktok_tokens.json`. Needs a registered TikTok app first. |
+| TikTok scheduling (platform-aware) | Done | `reel_scheduler.py`, `channels/*/channel.json` | `--platform tiktok` reuses `scan`/`plan-ledger`/`run-due`/`status`/`report` against `state/tiktok.db` and the `publishing.tiktok` slot block. |
+| TikTok insights/stats | Done (needs `video.list` scope) | `reel_scheduler.py`, `tiktok_publish.py` | `sync-insights --platform tiktok` pulls view/like/comment/share via `/v2/video/query/`. |
 
 ## Queue States
 
