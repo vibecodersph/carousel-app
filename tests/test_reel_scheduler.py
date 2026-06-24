@@ -784,6 +784,63 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 )
                 self.assertEqual(moved_manifest["scheduled_at"], "2026-06-24T19:00:00+09:00")
 
+    def test_unschedule_queued_reel_marks_skipped_and_refuses_published(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            manifest = root / "manifest.json"
+            reel_scheduler.write_json(manifest, {"scheduled_at": "2026-06-24T13:00:00+09:00"})
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="queued",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "queued"),
+                    media_path=str(root / "queued" / "reel.ja.aibrief_jp.mp4"),
+                    status=reel_ledger.STATUS_PREVIEWED,
+                    scheduled_at="2026-06-24T13:00:00+09:00",
+                    manifest_path=str(manifest),
+                )
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="published",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "published"),
+                    media_path=str(root / "published" / "reel.ja.aibrief_jp.mp4"),
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-06-24T09:45:00+09:00",
+                    published_at="2026-06-24T00:45:00+00:00",
+                )
+
+            ok, message = reel_scheduler.unschedule_queued_reel(
+                db_path=db,
+                content_hash="queued",
+                channel_id="aibrief_jp",
+            )
+            self.assertTrue(ok, message)
+            with reel_ledger.connect(db) as conn:
+                row = reel_ledger.get_reel(conn, "queued", "aibrief_jp")
+                self.assertEqual(row["status"], reel_ledger.STATUS_SKIPPED)
+                self.assertIsNone(row["scheduled_at"])
+                self.assertEqual(reel_ledger.upcoming(conn, "aibrief_jp"), [])
+            updated_manifest = reel_scheduler.read_json(manifest)
+            self.assertNotIn("scheduled_at", updated_manifest)
+            self.assertEqual(updated_manifest["schedule_status"], reel_ledger.STATUS_SKIPPED)
+
+            ok, message = reel_scheduler.unschedule_queued_reel(
+                db_path=db,
+                content_hash="published",
+                channel_id="aibrief_jp",
+            )
+            self.assertFalse(ok)
+            self.assertIn("published", message)
+            with reel_ledger.connect(db) as conn:
+                row = reel_ledger.get_reel(conn, "published", "aibrief_jp")
+                self.assertEqual(row["status"], reel_ledger.STATUS_PUBLISHED)
+                self.assertEqual(row["scheduled_at"], "2026-06-24T09:45:00+09:00")
+
     def test_sync_insights_records_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "reels.db"

@@ -12,13 +12,17 @@ import argparse
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import re
 import subprocess
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reel_ledger
@@ -1166,6 +1170,412 @@ def update_manifest_scheduled_at(manifest_path: Path, scheduled_at: datetime) ->
     write_json(manifest_path, data)
 
 
+def mark_manifest_unscheduled(manifest_path: Path) -> None:
+    if not manifest_path.exists():
+        return
+    data = read_json(manifest_path)
+    if not isinstance(data, dict):
+        return
+    data.pop("scheduled_at", None)
+    data["schedule_status"] = reel_ledger.STATUS_SKIPPED
+    write_json(manifest_path, data)
+
+
+def unschedule_queued_reel(
+    *,
+    db_path: Path,
+    content_hash: str,
+    channel_id: str,
+    reason: str = "removed from queue UI",
+) -> tuple[bool, str]:
+    content_hash = content_hash.strip()
+    channel_id = channel_id.strip()
+    if not content_hash or not channel_id:
+        return False, "Missing reel identity"
+    queued_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    with reel_ledger.connect(db_path) as conn:
+        row = reel_ledger.get_reel(conn, content_hash, channel_id)
+        if row is None:
+            return False, "That reel is no longer in the ledger"
+        if str(row["status"]) not in queued_statuses:
+            return False, f"Cannot remove a reel with status '{row['status']}'"
+        cursor = conn.execute(
+            "UPDATE reels SET status=?, scheduled_at=NULL, last_error=?, updated_at=? "
+            "WHERE content_hash=? AND channel_id=? AND status IN (?, ?)",
+            (
+                reel_ledger.STATUS_SKIPPED,
+                reason,
+                utc_now(),
+                content_hash,
+                channel_id,
+                reel_ledger.STATUS_SCHEDULED,
+                reel_ledger.STATUS_PREVIEWED,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return False, "That reel was already claimed or changed"
+        mark_manifest_unscheduled(Path(str(row["manifest_path"] or "")))
+        return True, f"Removed '{row['title'] or row['clip_dir']}' from the schedule"
+
+
+def queue_row_query(row: Any) -> str:
+    return urlencode(
+        {
+            "content_hash": str(row["content_hash"]),
+            "channel_id": str(row["channel_id"]),
+        }
+    )
+
+
+def render_queue_ui_html(
+    *,
+    rows: list[Any],
+    counts: dict[str, dict[str, int]],
+    db_path: Path,
+    message: str = "",
+    error: str = "",
+) -> str:
+    order = [
+        reel_ledger.STATUS_SCHEDULED,
+        reel_ledger.STATUS_PREVIEWED,
+        reel_ledger.STATUS_PUBLISHING,
+        reel_ledger.STATUS_PUBLISHED,
+        reel_ledger.STATUS_SKIPPED,
+        reel_ledger.STATUS_FAILED,
+    ]
+    count_rows = []
+    for channel_id in sorted(counts):
+        per = counts[channel_id]
+        total = sum(per.values())
+        chips = "".join(
+            f"<span>{html.escape(name)} {int(per[name])}</span>"
+            for name in order
+            if per.get(name)
+        )
+        count_rows.append(
+            f"<div class=\"count-row\"><strong>{html.escape(channel_id)}</strong>"
+            f"<span>total {total}</span>{chips}</div>"
+        )
+    queue_rows = []
+    for row in rows:
+        query = queue_row_query(row)
+        title = str(row["title"] or row["clip_dir"] or "")
+        media_path = Path(str(row["media_path"] or ""))
+        media_cell = (
+            f"<video src=\"/media?{query}\" preload=\"metadata\" controls></video>"
+            if media_path.is_file()
+            else "<span class=\"missing\">missing media</span>"
+        )
+        queue_rows.append(
+            "<tr>"
+            f"<td class=\"media\">{media_cell}</td>"
+            f"<td><div class=\"when\">{html.escape(str(row['scheduled_at'] or ''))}</div>"
+            f"<div class=\"muted\">{html.escape(str(row['channel_id'] or ''))}</div></td>"
+            f"<td><div class=\"title\">{html.escape(title)}</div>"
+            f"<div class=\"muted\">{html.escape(str(row['source_video'] or ''))}</div></td>"
+            f"<td><span class=\"status\">{html.escape(str(row['status'] or ''))}</span></td>"
+            "<td>"
+            "<form method=\"post\" action=\"/unschedule\" "
+            "onsubmit=\"return confirm('Remove this post from the schedule?');\">"
+            f"<input type=\"hidden\" name=\"content_hash\" value=\"{html.escape(str(row['content_hash']))}\">"
+            f"<input type=\"hidden\" name=\"channel_id\" value=\"{html.escape(str(row['channel_id']))}\">"
+            "<button type=\"submit\">Remove</button>"
+            "</form>"
+            "</td>"
+            "</tr>"
+        )
+    body = "".join(queue_rows) or '<tr><td colspan="5" class="empty">No queued reels</td></tr>'
+    message_html = f"<div class=\"notice ok\">{html.escape(message)}</div>" if message else ""
+    error_html = f"<div class=\"notice error\">{html.escape(error)}</div>" if error else ""
+    count_html = "".join(count_rows) or "<div class=\"count-row\">No ledger rows</div>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reel Queue</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f7f6f1;
+      --fg: #171717;
+      --muted: #687076;
+      --line: #d8d3c7;
+      --surface: #ffffff;
+      --accent: #176b57;
+      --danger: #a93527;
+      --danger-hover: #85271f;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    header {{
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: rgba(247, 246, 241, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }}
+    .wrap {{ width: min(1280px, calc(100vw - 32px)); margin: 0 auto; }}
+    .bar {{
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      padding: 14px 0;
+    }}
+    h1 {{ margin: 0; font-size: 20px; letter-spacing: 0; }}
+    .db {{ color: var(--muted); font-size: 12px; overflow-wrap: anywhere; text-align: right; }}
+    .counts {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 14px 0 4px;
+    }}
+    .count-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }}
+    .count-row span, .status {{
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }}
+    .notice {{
+      margin: 12px 0 0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+    }}
+    .notice.ok {{ border-color: rgba(23, 107, 87, 0.45); color: var(--accent); }}
+    .notice.error {{ border-color: rgba(169, 53, 39, 0.45); color: var(--danger); }}
+    main {{ padding: 18px 0 32px; }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--line);
+    }}
+    th, td {{
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      text-align: left;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
+      background: #fbfaf7;
+    }}
+    tr:last-child td {{ border-bottom: 0; }}
+    video {{
+      width: 150px;
+      aspect-ratio: 9 / 16;
+      display: block;
+      background: #101010;
+      border-radius: 4px;
+    }}
+    .media {{ width: 170px; }}
+    .when {{ font-weight: 650; white-space: nowrap; }}
+    .title {{ max-width: 560px; font-weight: 650; }}
+    .muted {{ color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }}
+    .missing, .empty {{ color: var(--muted); }}
+    button {{
+      border: 0;
+      border-radius: 6px;
+      background: var(--danger);
+      color: white;
+      padding: 8px 11px;
+      font-weight: 700;
+      cursor: pointer;
+      min-width: 76px;
+    }}
+    button:hover {{ background: var(--danger-hover); }}
+    @media (max-width: 760px) {{
+      .bar {{ align-items: flex-start; flex-direction: column; }}
+      .db {{ text-align: left; }}
+      table, thead, tbody, tr, th, td {{ display: block; }}
+      thead {{ display: none; }}
+      tr {{ border-bottom: 1px solid var(--line); padding: 10px; }}
+      td {{ border: 0; padding: 6px 0; }}
+      .media {{ width: auto; }}
+      video {{ width: min(180px, 100%); }}
+      .when {{ white-space: normal; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="bar">
+        <h1>Reel Queue</h1>
+        <div class="db">{html.escape(str(db_path))}</div>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    {message_html}
+    {error_html}
+    <section class="counts">{count_html}</section>
+    <table>
+      <thead>
+        <tr><th>Preview</th><th>Scheduled</th><th>Post</th><th>Status</th><th>Action</th></tr>
+      </thead>
+      <tbody>{body}</tbody>
+    </table>
+  </main>
+</body>
+</html>"""
+
+
+def _first_query_value(values: dict[str, list[str]], key: str) -> str:
+    return values.get(key, [""])[0]
+
+
+def make_queue_ui_handler(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    limit: int | None,
+) -> type[BaseHTTPRequestHandler]:
+    class QueueUIHandler(BaseHTTPRequestHandler):
+        server_version = "ReelQueueUI/1.0"
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def send_bytes(
+            self,
+            payload: bytes,
+            *,
+            status: HTTPStatus = HTTPStatus.OK,
+            content_type: str = "text/html; charset=utf-8",
+        ) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def send_html(self, text: str, *, status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.send_bytes(text.encode("utf-8"), status=status)
+
+        def redirect_home(self, **params: str) -> None:
+            location = "/" + (("?" + urlencode(params)) if params else "")
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/":
+                params = parse_qs(parsed.query)
+                with reel_ledger.connect(db_path) as conn:
+                    counts = reel_ledger.status_counts(conn, channel_filter)
+                    rows = reel_ledger.upcoming(conn, channel_filter, limit=limit)
+                self.send_html(
+                    render_queue_ui_html(
+                        rows=rows,
+                        counts=counts,
+                        db_path=db_path,
+                        message=_first_query_value(params, "message"),
+                        error=_first_query_value(params, "error"),
+                    )
+                )
+                return
+            if parsed.path == "/media":
+                self.serve_media(parse_qs(parsed.query))
+                return
+            self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
+
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path != "/unschedule":
+                self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
+                return
+            length = int(self.headers.get("Content-Length") or "0")
+            body = self.rfile.read(length).decode("utf-8")
+            params = parse_qs(body)
+            ok, message = unschedule_queued_reel(
+                db_path=db_path,
+                content_hash=_first_query_value(params, "content_hash"),
+                channel_id=_first_query_value(params, "channel_id"),
+            )
+            if ok:
+                self.redirect_home(message=message)
+            else:
+                self.redirect_home(error=message)
+
+        def serve_media(self, params: dict[str, list[str]]) -> None:
+            content_hash = _first_query_value(params, "content_hash")
+            channel_id = _first_query_value(params, "channel_id")
+            with reel_ledger.connect(db_path) as conn:
+                row = reel_ledger.get_reel(conn, content_hash, channel_id)
+            if row is None:
+                self.send_html("Media not found", status=HTTPStatus.NOT_FOUND)
+                return
+            path = Path(str(row["media_path"] or ""))
+            if not path.is_file():
+                self.send_html("Media file missing", status=HTTPStatus.NOT_FOUND)
+                return
+            file_size = path.stat().st_size
+            start = 0
+            end = file_size - 1
+            status = HTTPStatus.OK
+            range_header = self.headers.get("Range", "")
+            if range_header.startswith("bytes="):
+                status = HTTPStatus.PARTIAL_CONTENT
+                value = range_header.removeprefix("bytes=").split(",", 1)[0]
+                raw_start, _, raw_end = value.partition("-")
+                if raw_start:
+                    start = int(raw_start)
+                if raw_end:
+                    end = min(int(raw_end), end)
+            if start < 0 or start >= file_size or end < start:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            length = end - start + 1
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
+            if status == HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+            self.end_headers()
+            with path.open("rb") as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining:
+                    chunk = handle.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+
+    return QueueUIHandler
+
+
 def plan_ledger_rows(
     *,
     db_path: Path,
@@ -1856,6 +2266,19 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     status.add_argument("--limit", type=int, default=15, help="Max upcoming rows to show")
 
+    queue_ui = subparsers.add_parser(
+        "queue-ui",
+        help="Serve a local queue review UI with remove buttons for unpublished scheduled posts",
+    )
+    queue_ui.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to review (default: instagram)"
+    )
+    queue_ui.add_argument("--channel", help="Limit to one channel id")
+    queue_ui.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    queue_ui.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
+    queue_ui.add_argument("--port", type=int, default=8765, help="Port to listen on")
+    queue_ui.add_argument("--limit", type=int, default=200, help="Max queued rows to show")
+
     cleanup = subparsers.add_parser(
         "cleanup-missing", help="Dry-run/delete ledger rows whose media file no longer exists"
     )
@@ -2188,6 +2611,28 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def queue_ui_command(args: argparse.Namespace) -> int:
+    if args.limit is not None and args.limit <= 0:
+        raise SystemExit("--limit must be greater than zero")
+    db_path = resolve_db(args)
+    handler = make_queue_ui_handler(
+        db_path=db_path,
+        channel_filter=args.channel,
+        limit=args.limit,
+    )
+    server = ThreadingHTTPServer((args.host, args.port), handler)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"[reel-scheduler] queue UI: {url}", flush=True)
+    print(f"[reel-scheduler] ledger: {db_path}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("[reel-scheduler] queue UI stopped")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cleanup_missing_command(args: argparse.Namespace) -> int:
     db_path = resolve_db(args)
     statuses = None if args.all_statuses else {reel_ledger.STATUS_FAILED}
@@ -2388,6 +2833,8 @@ def main() -> int:
         return import_schedules_command(args)
     if args.command == "status":
         return status_command(args)
+    if args.command == "queue-ui":
+        return queue_ui_command(args)
     if args.command == "cleanup-missing":
         return cleanup_missing_command(args)
     if args.command == "sync-insights":
