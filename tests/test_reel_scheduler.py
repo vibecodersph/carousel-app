@@ -429,6 +429,17 @@ class ReelScheduleRunTests(unittest.TestCase):
 
 
 class ReelLedgerPlanningTests(unittest.TestCase):
+    def test_discover_output_clip_dirs_finds_sorted_youtube_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "B-video" / "clips").mkdir(parents=True)
+            (root / "A-video" / "clips").mkdir(parents=True)
+            (root / "no-clips").mkdir()
+
+            clips_dirs = reel_scheduler.discover_output_clip_dirs(root)
+
+            self.assertEqual([path.parent.name for path in clips_dirs], ["A-video", "B-video"])
+
     def test_parse_date_only_uses_requested_timezone_and_clock(self) -> None:
         parsed = reel_scheduler.parse_datetime(
             "2026-06-24",
@@ -710,6 +721,53 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                         ("queued-today-1", "2026-06-24T09:45:00+09:00"),
                         ("queued-today-2", "2026-06-24T13:00:00+09:00"),
                         ("queued-today-3", "2026-06-24T19:00:00+09:00"),
+                    ],
+                )
+
+    def test_reflow_queue_can_skip_ad_hoc_slot_for_wrapper_reshuffle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                for index in range(1, 3):
+                    clip = root / "clips" / f"{index:03d}"
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(f"queued-{index}".encode("utf-8"))
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=f"queued-no-ad-hoc-{index}",
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video="AAA111",
+                        title=f"queued {index}",
+                        status=reel_ledger.STATUS_PREVIEWED,
+                        scheduled_at=f"2026-06-26T0{index}:00:00+09:00",
+                    )
+
+            reel_scheduler.reflow_queue_rows(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                start_at_text="2026-06-25T13:24:30+09:00",
+                jitter_minutes=0,
+                settings_key="instagram_reels",
+                apply=True,
+                include_start_at_slot=False,
+            )
+            with reel_ledger.connect(db) as conn:
+                rows = conn.execute(
+                    "SELECT content_hash, scheduled_at FROM reels "
+                    "WHERE channel_id='aibrief_jp' AND status=? "
+                    "ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [
+                        ("queued-no-ad-hoc-1", "2026-06-25T19:00:00+09:00"),
+                        ("queued-no-ad-hoc-2", "2026-06-26T09:00:00+09:00"),
                     ],
                 )
 

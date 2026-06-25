@@ -29,6 +29,7 @@ import reel_ledger
 from channel import Channel, available_channels, load_channel
 
 ROOT = Path(__file__).resolve().parent
+DEFAULT_REEL_OUTPUTS = ROOT.parent / "reel-app" / "outputs"
 DEFAULT_OUT = ROOT / "out" / "reel_schedules"
 DEFAULT_MEDIA_FILENAME = "reel.mp4"
 DEFAULT_TIMEZONE = "Asia/Tokyo"
@@ -1161,7 +1162,7 @@ def pop_alternating_row(
 
 
 def update_manifest_scheduled_at(manifest_path: Path, scheduled_at: datetime) -> None:
-    if not manifest_path.exists():
+    if not manifest_path.is_file():
         return
     data = read_json(manifest_path)
     if not isinstance(data, dict):
@@ -1171,7 +1172,7 @@ def update_manifest_scheduled_at(manifest_path: Path, scheduled_at: datetime) ->
 
 
 def mark_manifest_unscheduled(manifest_path: Path) -> None:
-    if not manifest_path.exists():
+    if not manifest_path.is_file():
         return
     data = read_json(manifest_path)
     if not isinstance(data, dict):
@@ -1649,6 +1650,7 @@ def reflow_queue_rows(
     jitter_minutes: int | None,
     settings_key: str,
     apply: bool,
+    include_start_at_slot: bool | None = None,
 ) -> dict[str, int]:
     """Reassign queued rows to slots without touching published history."""
     queue_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
@@ -1698,7 +1700,11 @@ def reflow_queue_rows(
                 jitter_override=jitter_minutes,
                 content_hashes=[str(row["content_hash"]) for row in channel_rows],
                 settings_key=settings_key,
-                include_start_at=has_explicit_time(start_at_text),
+                include_start_at=(
+                    has_explicit_time(start_at_text)
+                    if include_start_at_slot is None
+                    else include_start_at_slot
+                ),
             )
             for row, scheduled_at in zip(channel_rows, slots):
                 old_at = str(row["scheduled_at"] or "")
@@ -2224,6 +2230,41 @@ def build_parser() -> argparse.ArgumentParser:
     plan_ledger.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this plan")
     plan_ledger.add_argument("--no-scan", action="store_true", help="Plan existing new ledger rows only")
 
+    queue_outputs = subparsers.add_parser(
+        "queue-outputs",
+        help="Scan reel-app outputs, schedule new rows, and optionally reshuffle the queue",
+    )
+    queue_outputs.add_argument(
+        "outputs_root",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_REEL_OUTPUTS,
+        help=f"Folder containing <youtube_id>/clips dirs (default: {DEFAULT_REEL_OUTPUTS})",
+    )
+    queue_outputs.add_argument(
+        "--mode",
+        choices=("append", "reshuffle"),
+        default="append",
+        help="append new rows at the end, or reshuffle the unpublished queue after adding",
+    )
+    queue_outputs.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
+    )
+    queue_outputs.add_argument("--channel", help="Limit to one channel id")
+    queue_outputs.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    queue_outputs.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT / "ledger",
+        help="Folder for generated per-reel manifests",
+    )
+    queue_outputs.add_argument("--start-at", help="First eligible date/time for append or reflow")
+    queue_outputs.add_argument("--after", help="Source alternation boundary for reshuffle (default: now)")
+    queue_outputs.add_argument("--limit-per-channel", type=int, help="Maximum new rows to schedule per channel")
+    queue_outputs.add_argument("--jitter-minutes", type=int, help="Override channel jitter")
+    queue_outputs.add_argument("--report-out", type=Path, default=ROOT / "out" / "reel_report.html")
+    queue_outputs.add_argument("--no-report", action="store_true", help="Do not refresh the HTML report")
+
     reflow = subparsers.add_parser(
         "reflow-queue",
         help="Reassign queued scheduled/previewed rows to current per-channel slots without touching published rows",
@@ -2449,6 +2490,72 @@ def plan_ledger_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def queue_outputs_command(args: argparse.Namespace) -> int:
+    if args.jitter_minutes is not None and args.jitter_minutes < 0:
+        raise SystemExit("--jitter-minutes must be zero or greater")
+    platform = resolve_platform(args)
+    db_path = resolve_db(args)
+    settings_key = settings_key_for(platform)
+    clips_dirs = discover_output_clip_dirs(args.outputs_root)
+    if not clips_dirs:
+        print(f"[reel-scheduler] no output clips folders found in {args.outputs_root}")
+        return 0
+    print(f"[reel-scheduler] scanning {len(clips_dirs)} output folder(s)")
+    for clips_dir in clips_dirs:
+        scan_command(argparse.Namespace(clips_dir=clips_dir, db=db_path, platform=platform))
+
+    append_start = args.start_at or latest_scheduled_text(db_path, args.channel)
+    planned = plan_ledger_rows(
+        db_path=db_path,
+        clips_dir=args.outputs_root,
+        out_dir=args.out_dir,
+        channel_filter=args.channel,
+        start_at_text=append_start,
+        limit_per_channel=args.limit_per_channel,
+        jitter_minutes=args.jitter_minutes,
+        scan_first=False,
+        settings_key=settings_key,
+    )
+    if planned:
+        for channel_id in sorted(planned):
+            print(f"[reel-scheduler] planned {planned[channel_id]} new {channel_id} {platform} reel(s)")
+    else:
+        print("[reel-scheduler] no new ledger rows to schedule")
+
+    if args.mode == "reshuffle":
+        reflow_start = args.start_at or datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+        alternate_after = args.after or reflow_start
+        print(f"[reel-scheduler] reshuffling queued rows from {reflow_start}")
+        reflow_queue_rows(
+            db_path=db_path,
+            channel_filter=args.channel,
+            start_at_text=reflow_start,
+            jitter_minutes=args.jitter_minutes,
+            settings_key=settings_key,
+            apply=True,
+            include_start_at_slot=False,
+        )
+        alternate_source_queue_rows(
+            db_path=db_path,
+            after_text=alternate_after,
+            channel_filter=args.channel,
+            apply=True,
+        )
+
+    if not args.no_report:
+        report_command(
+            argparse.Namespace(
+                db=db_path,
+                platform=platform,
+                channel=args.channel,
+                limit=0,
+                out=args.report_out,
+            )
+        )
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
 def reflow_queue_command(args: argparse.Namespace) -> int:
     if args.jitter_minutes is not None and args.jitter_minutes < 0:
         raise SystemExit("--jitter-minutes must be zero or greater")
@@ -2481,6 +2588,28 @@ def alternate_sources_command(args: argparse.Namespace) -> int:
 def source_video_name(clips_dir: Path) -> str:
     """The <VIDEO_ID> folder (parent of clips/), used to group rows in the ledger."""
     return clips_dir.expanduser().resolve().parent.name
+
+
+def discover_output_clip_dirs(outputs_root: Path) -> list[Path]:
+    root = outputs_root.expanduser().resolve()
+    if not root.is_dir():
+        raise SystemExit(f"Outputs folder does not exist: {root}")
+    clips_dirs = [path / "clips" for path in root.iterdir() if (path / "clips").is_dir()]
+    return sorted(clips_dirs, key=lambda path: path.parent.name)
+
+
+def latest_scheduled_text(db_path: Path, channel_filter: str | None = None) -> str | None:
+    with reel_ledger.connect(db_path) as conn:
+        rows = reel_ledger.rows_with_schedule(conn, channel_filter)
+    moments = [
+        parsed
+        for row in rows
+        if (parsed := parse_row_datetime(row["scheduled_at"], DEFAULT_TIMEZONE)) is not None
+    ]
+    if not moments:
+        return None
+    latest = max(moments, key=lambda moment: moment.astimezone(timezone.utc))
+    return latest.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
 
 
 def scan_command(args: argparse.Namespace) -> int:
@@ -2823,6 +2952,8 @@ def main() -> int:
         return run_due_command(args)
     if args.command == "plan-ledger":
         return plan_ledger_command(args)
+    if args.command == "queue-outputs":
+        return queue_outputs_command(args)
     if args.command == "reflow-queue":
         return reflow_queue_command(args)
     if args.command == "alternate-sources":
