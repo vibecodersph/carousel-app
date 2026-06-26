@@ -514,6 +514,33 @@ INSTAGRAM_GRAPH_DOMAIN=instagram
 `publishing.instagram_user_id`. `META_SYSTEM_USER_ACCESS_TOKEN` is preferred over
 `INSTAGRAM_ACCESS_TOKEN` when both are set.
 
+Optional Facebook Page mirroring:
+
+```sh
+FACEBOOK_PAGE_ID=1234567890
+FACEBOOK_PAGE_ACCESS_TOKEN=...
+```
+
+Facebook can also be configured per channel with
+`publishing.facebook.page_id` or `publishing.facebook_page_id`, and with
+channel-specific env vars such as `FACEBOOK_PAGE_ID_AIBRIEF_JP` and
+`FACEBOOK_PAGE_ACCESS_TOKEN_AIBRIEF_JP`. If the token can list Pages,
+`instagram_publish.py` can also discover the Facebook Page connected to the
+manifest channel's Instagram account through `/me/accounts`. When a Facebook
+Page ID is configured or discovered, `instagram_publish.py` mirrors supported
+posts after Instagram succeeds. Use `--facebook` to force a one-off mirror or
+`--no-facebook` to skip it.
+All-image carousels publish as a Facebook feed post with attached photos; a
+single video publishes to the Page videos endpoint.
+
+To backfill Facebook from already-published Instagram reports without
+reposting to Instagram:
+
+```sh
+uv run python facebook_backfill.py --channel aibrief_jp --dry-run
+uv run python facebook_backfill.py --channel aibrief_jp
+```
+
 Captions default to `instagram_caption` from the manifest, then to topic plus
 source URL. Override when needed:
 
