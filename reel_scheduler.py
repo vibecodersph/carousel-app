@@ -41,6 +41,7 @@ SCHEDULE_VERSION = 1
 # the channel and caption language are encoded in the name reel.<lang>.<channel>.mp4
 CHANNEL_MEDIA_RE = re.compile(r"^reel\.([A-Za-z]{2,5})\.([A-Za-z0-9_-]+)\.mp4$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 # Platform registry: the same ledger + scheduler drives both Instagram reels
 # and TikTok. A platform selects which channel.json publishing block holds its
@@ -1219,6 +1220,32 @@ def unschedule_queued_reel(
         return True, f"Removed '{row['title'] or row['clip_dir']}' from the schedule"
 
 
+def refill_queue_from_now(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    settings_key: str,
+    jitter_minutes: int | None = None,
+) -> tuple[dict[str, int], int, str]:
+    start_at = datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+    reflowed = reflow_queue_rows(
+        db_path=db_path,
+        channel_filter=channel_filter,
+        start_at_text=start_at,
+        jitter_minutes=jitter_minutes,
+        settings_key=settings_key,
+        apply=True,
+        include_start_at_slot=False,
+    )
+    alternated = alternate_source_queue_rows(
+        db_path=db_path,
+        after_text=start_at,
+        channel_filter=channel_filter,
+        apply=True,
+    )
+    return reflowed, alternated, start_at
+
+
 def queue_row_query(row: Any) -> str:
     return urlencode(
         {
@@ -1289,6 +1316,12 @@ def render_queue_ui_html(
     message_html = f"<div class=\"notice ok\">{html.escape(message)}</div>" if message else ""
     error_html = f"<div class=\"notice error\">{html.escape(error)}</div>" if error else ""
     count_html = "".join(count_rows) or "<div class=\"count-row\">No ledger rows</div>"
+    refill_form = (
+        "<form method=\"post\" action=\"/refill\" "
+        "onsubmit=\"return confirm('Refill empty slots and reshuffle the unpublished queue from now?');\">"
+        "<button class=\"refill\" type=\"submit\">Refill Queue</button>"
+        "</form>"
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1332,6 +1365,13 @@ def render_queue_ui_html(
     }}
     h1 {{ margin: 0; font-size: 20px; letter-spacing: 0; }}
     .db {{ color: var(--muted); font-size: 12px; overflow-wrap: anywhere; text-align: right; }}
+    .header-actions {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
     .counts {{
       display: flex;
       flex-wrap: wrap;
@@ -1410,9 +1450,12 @@ def render_queue_ui_html(
       min-width: 76px;
     }}
     button:hover {{ background: var(--danger-hover); }}
+    button.refill {{ background: var(--accent); }}
+    button.refill:hover {{ background: #125543; }}
     @media (max-width: 760px) {{
       .bar {{ align-items: flex-start; flex-direction: column; }}
       .db {{ text-align: left; }}
+      .header-actions {{ justify-content: flex-start; }}
       table, thead, tbody, tr, th, td {{ display: block; }}
       thead {{ display: none; }}
       tr {{ border-bottom: 1px solid var(--line); padding: 10px; }}
@@ -1428,7 +1471,10 @@ def render_queue_ui_html(
     <div class="wrap">
       <div class="bar">
         <h1>Reel Queue</h1>
-        <div class="db">{html.escape(str(db_path))}</div>
+        <div class="header-actions">
+          {refill_form}
+          <div class="db">{html.escape(str(db_path))}</div>
+        </div>
       </div>
     </div>
   </header>
@@ -1451,11 +1497,28 @@ def _first_query_value(values: dict[str, list[str]], key: str) -> str:
     return values.get(key, [""])[0]
 
 
+def stream_http_body(output: Any, handle: Any, length: int, *, chunk_size: int = 64 * 1024) -> bool:
+    remaining = length
+    try:
+        while remaining:
+            chunk = handle.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            output.write(chunk)
+            remaining -= len(chunk)
+    except CLIENT_DISCONNECT_ERRORS:
+        return False
+    return True
+
+
 def make_queue_ui_handler(
     *,
     db_path: Path,
     channel_filter: str | None,
     limit: int | None,
+    settings_key: str,
+    platform: str,
+    report_out: Path,
 ) -> type[BaseHTTPRequestHandler]:
     class QueueUIHandler(BaseHTTPRequestHandler):
         server_version = "ReelQueueUI/1.0"
@@ -1503,27 +1566,53 @@ def make_queue_ui_handler(
                 )
                 return
             if parsed.path == "/media":
-                self.serve_media(parse_qs(parsed.query))
+                try:
+                    self.serve_media(parse_qs(parsed.query))
+                except CLIENT_DISCONNECT_ERRORS:
+                    return
                 return
             self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/unschedule":
-                self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
-                return
             length = int(self.headers.get("Content-Length") or "0")
             body = self.rfile.read(length).decode("utf-8")
             params = parse_qs(body)
-            ok, message = unschedule_queued_reel(
-                db_path=db_path,
-                content_hash=_first_query_value(params, "content_hash"),
-                channel_id=_first_query_value(params, "channel_id"),
-            )
-            if ok:
-                self.redirect_home(message=message)
-            else:
-                self.redirect_home(error=message)
+            if parsed.path == "/unschedule":
+                ok, message = unschedule_queued_reel(
+                    db_path=db_path,
+                    content_hash=_first_query_value(params, "content_hash"),
+                    channel_id=_first_query_value(params, "channel_id"),
+                )
+                if ok:
+                    self.redirect_home(message=message)
+                else:
+                    self.redirect_home(error=message)
+                return
+            if parsed.path == "/refill":
+                reflowed, alternated, start_at = refill_queue_from_now(
+                    db_path=db_path,
+                    channel_filter=channel_filter,
+                    settings_key=settings_key,
+                )
+                report_command(
+                    argparse.Namespace(
+                        db=db_path,
+                        platform=platform,
+                        channel=channel_filter,
+                        limit=0,
+                        out=report_out,
+                    )
+                )
+                moved = sum(reflowed.values())
+                self.redirect_home(
+                    message=(
+                        f"Refilled from {start_at}: moved {moved} queued rows, "
+                        f"re-alternated {alternated} rows"
+                    )
+                )
+                return
+            self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
 
         def serve_media(self, params: dict[str, list[str]]) -> None:
             content_hash = _first_query_value(params, "content_hash")
@@ -1566,13 +1655,7 @@ def make_queue_ui_handler(
             self.end_headers()
             with path.open("rb") as handle:
                 handle.seek(start)
-                remaining = length
-                while remaining:
-                    chunk = handle.read(min(64 * 1024, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+                stream_http_body(self.wfile, handle, length)
 
     return QueueUIHandler
 
@@ -2319,6 +2402,7 @@ def build_parser() -> argparse.ArgumentParser:
     queue_ui.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
     queue_ui.add_argument("--port", type=int, default=8765, help="Port to listen on")
     queue_ui.add_argument("--limit", type=int, default=200, help="Max queued rows to show")
+    queue_ui.add_argument("--report-out", type=Path, default=ROOT / "out" / "reel_report.html")
 
     cleanup = subparsers.add_parser(
         "cleanup-missing", help="Dry-run/delete ledger rows whose media file no longer exists"
@@ -2523,24 +2607,36 @@ def queue_outputs_command(args: argparse.Namespace) -> int:
         print("[reel-scheduler] no new ledger rows to schedule")
 
     if args.mode == "reshuffle":
-        reflow_start = args.start_at or datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
-        alternate_after = args.after or reflow_start
-        print(f"[reel-scheduler] reshuffling queued rows from {reflow_start}")
-        reflow_queue_rows(
-            db_path=db_path,
-            channel_filter=args.channel,
-            start_at_text=reflow_start,
-            jitter_minutes=args.jitter_minutes,
-            settings_key=settings_key,
-            apply=True,
-            include_start_at_slot=False,
-        )
-        alternate_source_queue_rows(
-            db_path=db_path,
-            after_text=alternate_after,
-            channel_filter=args.channel,
-            apply=True,
-        )
+        if args.start_at or args.after:
+            reflow_start = args.start_at or datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+            alternate_after = args.after or reflow_start
+            print(f"[reel-scheduler] reshuffling queued rows from {reflow_start}")
+            reflow_queue_rows(
+                db_path=db_path,
+                channel_filter=args.channel,
+                start_at_text=reflow_start,
+                jitter_minutes=args.jitter_minutes,
+                settings_key=settings_key,
+                apply=True,
+                include_start_at_slot=False,
+            )
+            alternate_source_queue_rows(
+                db_path=db_path,
+                after_text=alternate_after,
+                channel_filter=args.channel,
+                apply=True,
+            )
+        else:
+            reflowed, alternated, start_at = refill_queue_from_now(
+                db_path=db_path,
+                channel_filter=args.channel,
+                settings_key=settings_key,
+                jitter_minutes=args.jitter_minutes,
+            )
+            print(
+                f"[reel-scheduler] refilled queue from {start_at}: "
+                f"channels={len(reflowed)} alternated={alternated}"
+            )
 
     if not args.no_report:
         report_command(
@@ -2743,11 +2839,15 @@ def status_command(args: argparse.Namespace) -> int:
 def queue_ui_command(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be greater than zero")
+    platform = resolve_platform(args)
     db_path = resolve_db(args)
     handler = make_queue_ui_handler(
         db_path=db_path,
         channel_filter=args.channel,
         limit=args.limit,
+        settings_key=settings_key_for(platform),
+        platform=platform,
+        report_out=args.report_out,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}/"

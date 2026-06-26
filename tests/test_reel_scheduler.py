@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import tempfile
 import unittest
@@ -898,6 +899,25 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 row = reel_ledger.get_reel(conn, "published", "aibrief_jp")
                 self.assertEqual(row["status"], reel_ledger.STATUS_PUBLISHED)
                 self.assertEqual(row["scheduled_at"], "2026-06-24T09:45:00+09:00")
+
+    def test_queue_ui_renders_refill_action(self) -> None:
+        html = reel_scheduler.render_queue_ui_html(
+            rows=[],
+            counts={},
+            db_path=Path("/tmp/reels.db"),
+        )
+
+        self.assertIn('action="/refill"', html)
+        self.assertIn("Refill Queue", html)
+
+    def test_media_stream_treats_broken_pipe_as_client_disconnect(self) -> None:
+        class BrokenWriter:
+            def write(self, chunk: bytes) -> None:
+                raise BrokenPipeError()
+
+        ok = reel_scheduler.stream_http_body(BrokenWriter(), io.BytesIO(b"video"), 5)
+
+        self.assertFalse(ok)
 
     def test_sync_insights_records_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
