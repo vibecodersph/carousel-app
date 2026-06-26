@@ -326,6 +326,21 @@ Each run writes to `out/reels/<channel>_<handle>_<status_id>/`:
 - `qa_frame_10.png`, `qa_frame_50.png`, `qa_frame_90.png` — sample frames for review
 - `reel.json` — manifest
 
+For queueing and publishing reel-app outputs, use `reel_scheduler.py`:
+
+```sh
+uv run python reel_scheduler.py queue-outputs /Users/aiagent/GitHub/reel-app/outputs
+uv run python reel_scheduler.py queue-outputs /Users/aiagent/GitHub/reel-app/outputs --mode reshuffle
+uv run python reel_scheduler.py queue-ui --limit 50
+uv run python reel_scheduler.py report --out out/reel_report.html
+```
+
+`queue-outputs` scans each `<VIDEO_ID>/clips/` folder under a reel-app outputs
+root, schedules new rows into the ledger, and can reshuffle the unpublished
+queue after appending. `queue-ui` serves a local review page with unschedule
+actions for unpublished items, and `scripts/run_reel_scheduler_due.sh` now
+refreshes the HTML report after each due-run.
+
 ## Story Scout Automation
 
 `story_scout.py` is the human-in-the-loop front door. It scans configured X
