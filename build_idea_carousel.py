@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Render one idea-engine carousel JSON object into PNG slides.
+"""Render one idea-engine carousel JSON object into carousel media.
 
 Input is the batch JSON produced by ``./idea-engine``. Each carousel object is
 already shaped as cover_page, item_1, item_2, ..., cta. This renderer keeps the
-normal X-carousel title cover and uses concise item pages with generated art.
+normal animated X-carousel title cover and uses concise item pages with generated art.
 """
 from __future__ import annotations
 
@@ -21,12 +21,13 @@ from build_x_carousel import (
     DEFAULT_ACCOUNT_NAME,
     SLIDE_H,
     SLIDE_W,
+    cover_poster_path,
     dot_markup,
     openai_title_image_model,
     openai_title_image_size,
+    render_animated_title_slide,
     render_cta_slide,
     render_html_slide,
-    render_title_slide,
     shared_css,
     string_value,
 )
@@ -442,8 +443,9 @@ def render_carousel(
         "date": string_value(carousel.get("generated_at")),
     }
     slides: list[dict[str, Any]] = []
-    cover_path = out_dir / "slide_01.png"
-    render_title_slide(
+    cover_path = out_dir / "slide_01.mp4"
+    cover_poster = cover_poster_path(cover_path)
+    render_animated_title_slide(
         post,
         cover_path,
         total,
@@ -451,7 +453,15 @@ def render_carousel(
         context,
         channel.account_name or DEFAULT_ACCOUNT_NAME,
     )
-    slides.append({"index": 1, "type": "title", "path": str(cover_path), "image_path": str(cover_image or "")})
+    slides.append(
+        {
+            "index": 1,
+            "type": "title",
+            "path": str(cover_path),
+            "poster": str(cover_poster),
+            "image_path": str(cover_image or ""),
+        }
+    )
 
     for offset, key in enumerate(keys, start=2):
         page = carousel[key]

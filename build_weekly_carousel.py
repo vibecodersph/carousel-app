@@ -49,6 +49,7 @@ from build_x_carousel import (
     SLIDE_H,
     SLIDE_W,
     build_title_enrichment,
+    cover_poster_path,
     dot_markup,
     extract_gemini_text,
     gemini_api_key,
@@ -56,8 +57,8 @@ from build_x_carousel import (
     gemini_text_model,
     load_env_file,
     parse_json_object,
+    render_animated_title_slide,
     render_html_slide,
-    render_title_slide,
     shared_css,
     string_value,
 )
@@ -546,7 +547,7 @@ def render_cover_slide(
     out_dir: Path,
     total: int,
 ) -> dict[str, Any]:
-    """Render the weekly cover as a regular image cover (AI art + CEO mix).
+    """Render the weekly cover as an animated MP4 cover (AI art + CEO mix).
 
     Reuses build_x_carousel's title-cover system so the roundup cover matches the
     look of single-post carousels: an editorial AI image with up to three CEO
@@ -557,7 +558,7 @@ def render_cover_slide(
     title_context = build_title_enrichment(
         posts, title=None, out_dir=out_dir, source_type="x"
     )
-    render_title_slide(posts[0], out_path, total, None, title_context, account_name)
+    render_animated_title_slide(posts[0], out_path, total, None, title_context, account_name)
     return title_context
 
 
@@ -845,16 +846,43 @@ def build_weekly_carousel(
     if verify_only:
         return run_manifest_path
 
-    # Regular image cover (AI editorial art + up to 3 in-the-news CEO portraits).
-    cover_path = out_dir / "slide_01.png"
-    if reuse_cover and cover_path.exists():
-        existing_manifest_path = out_dir / "manifest.json"
-        existing_manifest = {}
-        if existing_manifest_path.exists():
-            try:
-                existing_manifest = json.loads(existing_manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                existing_manifest = {}
+    # Animated cover (AI editorial art + up to 3 in-the-news CEO portraits).
+    cover_path = out_dir / "slide_01.mp4"
+    cover_poster = cover_poster_path(cover_path)
+    legacy_cover_path = out_dir / "slide_01.png"
+    existing_manifest_path = out_dir / "manifest.json"
+    existing_manifest = {}
+    if existing_manifest_path.exists():
+        try:
+            existing_manifest = json.loads(existing_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing_manifest = {}
+    existing_slides = existing_manifest.get("slides") if isinstance(existing_manifest.get("slides"), list) else []
+    existing_cover_slide = next(
+        (
+            slide
+            for slide in existing_slides
+            if isinstance(slide, dict)
+            and int(slide.get("index") or 0) == 1
+            and string_value(slide.get("path"))
+        ),
+        None,
+    )
+    legacy_manifest_cover = (
+        legacy_cover_path
+        if isinstance(existing_cover_slide, dict)
+        and Path(string_value(existing_cover_slide.get("path"))).name == legacy_cover_path.name
+        and legacy_cover_path.exists()
+        else None
+    )
+    reusable_cover_path = cover_path if cover_path.exists() else legacy_manifest_cover
+    if reuse_cover and reusable_cover_path:
+        cover_path = reusable_cover_path
+        cover_poster = (
+            Path(string_value(existing_cover_slide.get("poster")))
+            if isinstance(existing_cover_slide, dict) and string_value(existing_cover_slide.get("poster"))
+            else cover_poster_path(cover_path)
+        )
         title_context = {
             "cover_copy": existing_manifest.get("cover_copy")
             if isinstance(existing_manifest.get("cover_copy"), dict)
@@ -888,7 +916,10 @@ def build_weekly_carousel(
     ceos = [string_value(c.get("name")) for c in (title_context.get("ceos") or []) if isinstance(c, dict)]
     companies = [string_value(c.get("name")) for c in (title_context.get("companies") or []) if isinstance(c, dict)]
     print(f"[weekly] cover: image={title_context.get('image_provider') or 'fallback'} ceos={ceos}")
-    slides.append({"index": 1, "type": "cover", "path": str(cover_path)})
+    cover_slide: dict[str, Any] = {"index": 1, "type": "cover", "path": str(cover_path)}
+    if cover_poster.exists() or cover_path.suffix.lower() == ".mp4":
+        cover_slide["poster"] = str(cover_poster)
+    slides.append(cover_slide)
 
     for offset, story in enumerate(stories):
         index = offset + 2
@@ -1005,7 +1036,7 @@ def main() -> int:
     ap.add_argument(
         "--reuse-cover",
         action="store_true",
-        help="Keep an existing slide_01.png in the output folder instead of regenerating the cover",
+        help="Keep an existing slide_01.mp4 in the output folder instead of regenerating the cover",
     )
     args = ap.parse_args()
 

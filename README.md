@@ -32,7 +32,7 @@ uv sync
 uv run python -m playwright install chromium
 ```
 
-Install `ffmpeg` locally if you need video posts or `build_video_slide.py`.
+Install `ffmpeg` locally; carousel covers render as MP4, and video posts also use it.
 
 Most scripts load `.env` from the repo root. Add only the credentials you need:
 
@@ -178,10 +178,16 @@ uv run python build_article_carousel.py \
 
 The builder writes to `out/article_carousel/`:
 
-- `slide_01.png`: channel-branded title/hook slide
+- `slide_01.mp4`: animated channel-branded title/hook slide
+- `slide_01_poster.png`: poster frame for the animated cover
 - `slide_02.png` and onward: selected high-signal article sections
 - `manifest.json`: slide order, source metadata, curation backend, selected scores
 - `source_article.json`: extracted blocks and candidate scores for review
+
+Animated covers keep the generated cover art visible full-frame from frame one.
+The text floats above it with near-still premium motion: subtle parallax,
+drifting grain, creeping light, and a restrained boxed-to-clean kinetic
+typography morph.
 
 Gemini curation is used when `GOOGLE_API_KEY` or `GEMINI_API_KEY` is available;
 otherwise local scoring is used. Tune the run with:
@@ -520,7 +526,7 @@ source URL. Override when needed:
 ```sh
 uv run python instagram_publish.py out/x_carousel/manifest.json \
   --dry-run \
-  --media-url 1=https://cdn.example.com/slide_01.png \
+  --media-url 1=https://cdn.example.com/slide_01.mp4 \
   --media-url slide_02.png=https://cdn.example.com/slide_02.png \
   --caption-file caption.txt
 ```

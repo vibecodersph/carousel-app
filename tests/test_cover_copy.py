@@ -174,7 +174,7 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("screens, org charts, robots", prompt)
         self.assertIn("the image brief is the richer context", prompt)
 
-    def test_title_slide_art_fades_into_copy_area(self) -> None:
+    def test_title_slide_art_is_full_frame_behind_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.object(
             build_x_carousel, "render_html_slide"
         ):
@@ -196,14 +196,48 @@ class CoverCopyTests(unittest.TestCase):
 
         self.assertIn('class="slide title-slide"', html_text)
         self.assertIn("background-image: url(file://", html_text)
-        self.assertIn(f"height: {build_x_carousel.TITLE_VISUAL_HEIGHT}px", html_text)
-        self.assertIn("mask-image: linear-gradient", html_text)
-        self.assertIn("rgba(var(--bg-rgb), 0) 58%", html_text)
-        self.assertIn("rgba(var(--bg-rgb), 0.36) 100%", html_text)
+        self.assertIn("inset: 0;", html_text)
+        self.assertIn("height: 100%", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0.46) 70%", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0.74) 100%", html_text)
+        self.assertNotIn("mask-image: linear-gradient", html_text)
         self.assertNotIn("var(--bg) 88%", html_text)
         self.assertIn("text-shadow:", html_text)
         self.assertIn(f"font-weight: {build_x_carousel.TITLE_HEADLINE_WEIGHT}", html_text)
         self.assertIn(f"transform: scaleY({build_x_carousel.TITLE_HEADLINE_SCALE_Y})", html_text)
+
+    def test_animated_title_slide_html_has_premium_motion_hooks(self) -> None:
+        html_text = build_x_carousel.title_slide_html(
+            {"text": "OpenAI ships a faster agent.", "url": "https://x.com/a/status/1"},
+            4,
+            None,
+            {"cover_copy": {"headline": "Agent mo, [nagmadali] bigla.", "swipe_line": "See the receipts"}},
+            "vibecodersph",
+            animated=True,
+        )
+
+        self.assertIn('class="slide title-slide animated-cover"', html_text)
+        self.assertIn('data-cover-animation="premium-still"', html_text)
+        self.assertIn("cover-light", html_text)
+        self.assertIn("cover-shadow", html_text)
+        self.assertIn("cover-grain", html_text)
+        self.assertIn("kinetic-title", html_text)
+        self.assertIn("kinetic-token", html_text)
+        self.assertIn("data-token-index", html_text)
+        self.assertIn("--cover-progress", html_text)
+        self.assertIn("__setCoverAnimationProgress", html_text)
+        self.assertIn("__pauseCoverAnimation", html_text)
+        self.assertIn("__fitCoverHeadline", html_text)
+        self.assertIn("will-change: transform, opacity, filter", html_text)
+        self.assertIn("easeInOutSine", html_text)
+        self.assertIn("scaleX(", html_text)
+        self.assertIn("typeResolve", html_text)
+        self.assertIn("See the receipts", html_text)
+
+    def test_cover_poster_path_matches_mp4_cover_name(self) -> None:
+        poster = build_x_carousel.cover_poster_path(Path("/tmp/slide_01.mp4"))
+
+        self.assertEqual(poster, Path("/tmp/slide_01_poster.png"))
 
 
 if __name__ == "__main__":
