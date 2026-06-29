@@ -1451,6 +1451,33 @@ def gemini_post_brief(posts: list[dict[str, str]]) -> list[dict[str, str]]:
     return brief
 
 
+def cover_hook_quality_rules(lang: str, source_description: str) -> str:
+    return f"""
+Cover hook quality bar:
+- Treat cover.headline like a MrBeast-grade thumbnail-title pair, adapted to the
+  channel voice and written in {lang}. Clear, concrete, and swipe-worthy beats
+  clever-but-vague.
+- Before choosing the final cover.headline, internally draft at least 6 options
+  and pick the one with the strongest open loop.
+- The final hook must answer this silently: "Would a stranger understand the
+  stakes in under 2 seconds and feel a need to see slide 2?"
+- Lead with tension, consequence, surprise, or a relatable pain. Do not lead with
+  the company/product/news item unless the name itself creates curiosity.
+- Use one specific object from the source: a number, behavior, failure mode,
+  weird constraint, expensive mistake, promise, or reversal.
+- Pair curiosity with payoff. The viewer should know what kind of answer the
+  carousel gives, without the headline revealing the whole answer.
+- Make slide 2 feel necessary. cover.swipe_line should tease the next beat, not
+  say a generic "learn more."
+- Keep the line faithful to {source_description}. Never invent drama, numbers,
+  danger, or certainty that the source does not support.
+- Reject neutral summaries, launch-note framing, and generic analysis labels:
+  "X launches Y," "what you need to know," "inside the update," "AI news,"
+  "the future of AI," "here's why," "deep dive," "guide," or "breakdown."
+- If the hook could work unchanged for 20 other AI posts, rewrite it.
+""".strip()
+
+
 def gemini_title_analysis(
     posts: list[dict[str, str]],
     fallback_topic: str,
@@ -1502,6 +1529,9 @@ Rules:
   witty {lang} hook that earns the swipe while staying true to the source.
 - cover.headline must contain exactly one bracketed accent word, like [alam].
 - cover.accent_word must match the bracketed word without brackets.
+- cover.headline should be the strongest hook from your internal options, not
+  the most complete summary. Prefer a sharp curiosity gap with a real payoff over
+  "news explainer" language.
 - instagram_caption should be 3 to 4 short blocks separated by blank lines:
   1) one witty {lang} hook,
   2) one useful true line about what the carousel teaches,
@@ -1524,6 +1554,8 @@ Rules:
 - If no company is clearly involved, return an empty companies array.
 - Do not include markdown, comments, source citations, or extra keys.
 - Do not use em dashes.
+
+{cover_hook_quality_rules(lang, source_description)}
 
 {brand} Instagram voice guide:
 {voice_prompt}
