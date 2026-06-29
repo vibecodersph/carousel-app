@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import build_idea_carousel
 
@@ -35,6 +37,30 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             build_idea_carousel.concise_takeaway(page),
             "Mga may access sa GPU na gustong mag-host ng Llama o Qwen.",
         )
+
+    def test_load_reusable_assets_maps_cover_and_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cover = root / "cover.png"
+            vllm = root / "vllm.png"
+            cover.write_bytes(b"cover")
+            vllm.write_bytes(b"vllm")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                """
+{
+  "slides": [
+    {"type": "title", "image_path": "%s"},
+    {"type": "item", "item_name": "vLLM", "image_path": "%s"}
+  ]
+}
+"""
+                % (cover, vllm),
+                encoding="utf-8",
+            )
+            assets = build_idea_carousel.load_reusable_assets(manifest)
+            self.assertEqual(assets["cover"], cover)
+            self.assertEqual(assets["items"]["vllm"], vllm)
 
 
 if __name__ == "__main__":

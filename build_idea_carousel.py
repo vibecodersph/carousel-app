@@ -104,6 +104,31 @@ def generated_image_path(out_dir: Path, topic: str, prompt: str) -> Path:
     return out_dir / "generated_assets" / f"{digest}.png"
 
 
+def load_reusable_assets(path: Path | None) -> dict[str, Any]:
+    if not path:
+        return {"cover": None, "items": {}}
+    manifest = read_json(path)
+    assets: dict[str, Any] = {"cover": None, "items": {}}
+    slides = manifest.get("slides")
+    if not isinstance(slides, list):
+        return assets
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        raw_image_path = string_value(slide.get("image_path"))
+        if not raw_image_path:
+            continue
+        image_path = Path(raw_image_path)
+        if not image_path.exists():
+            continue
+        if slide.get("type") == "title" and assets["cover"] is None:
+            assets["cover"] = image_path
+        item_name = string_value(slide.get("item_name"))
+        if item_name:
+            assets["items"][item_name.lower()] = image_path
+    return assets
+
+
 def maybe_generate_image(
     out_dir: Path,
     *,
@@ -170,22 +195,28 @@ def title_context(
     out_dir: Path,
     *,
     generate_images: bool,
+    reusable_image: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], Path | None]:
+    channel = load_channel()
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
     headline = string_value(cover.get("headline"))
     prompt = image_prompt(string_value(cover.get("image_prompt")), headline)
-    cover_image = maybe_generate_image(
-        out_dir,
-        topic=headline or string_value(carousel.get("id")) or "idea carousel cover",
-        prompt=prompt,
-        generate_images=generate_images,
-    )
+    if reusable_image:
+        cover_image = reusable_image
+        print(f"[asset] reusing title image -> {cover_image}")
+    else:
+        cover_image = maybe_generate_image(
+            out_dir,
+            topic=headline or string_value(carousel.get("id")) or "idea carousel cover",
+            prompt=prompt,
+            generate_images=generate_images,
+        )
     cover_copy = {
         "kicker": string_value(cover.get("kicker")) or "CURATION",
         "headline": headline,
         "accent_words": [],
-        "swipe_line": "Swipe for the stack",
+        "swipe_line": "スワイプで続きへ" if channel.language_name.lower().startswith("japanese") else "Swipe for the stack",
     }
     context = {
         "topic": headline,
@@ -198,7 +229,7 @@ def title_context(
         "topic_entity": None,
         "post_explanations": [],
         "instagram_caption": string_value(carousel.get("instagram_caption")),
-        "brand_voice_doc": load_channel().voice_doc_rel,
+        "brand_voice_doc": channel.voice_doc_rel,
         "google_enabled": False,
         "provider": "idea_engine",
         "openai_image_model": openai_title_image_model() if openai_api_key() else "",
@@ -381,16 +412,20 @@ def render_carousel(
     *,
     out_dir: Path,
     generate_images: bool = True,
+    channel_id: str | None = None,
+    reusable_assets: dict[str, Any] | None = None,
 ) -> Path:
-    channel = load_channel(string_value(carousel.get("channel_id")) or None)
+    channel = load_channel(channel_id or string_value(carousel.get("channel_id")) or None)
     os.environ["CAROUSEL_CHANNEL"] = channel.id
     out_dir.mkdir(parents=True, exist_ok=True)
     keys = item_keys(carousel)
     total = len(keys) + 2
+    reusable_assets = reusable_assets or {"cover": None, "items": {}}
     context, _cover_copy, cover_image = title_context(
         carousel,
         out_dir,
         generate_images=generate_images,
+        reusable_image=reusable_assets.get("cover"),
     )
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
@@ -424,12 +459,17 @@ def render_carousel(
             string_value(page.get("image_prompt")),
             string_value(page.get("item_name")),
         )
-        image_path = maybe_generate_image(
-            out_dir,
-            topic=string_value(page.get("item_name")) or key,
-            prompt=prompt,
-            generate_images=generate_images,
-        )
+        reusable_image = reusable_assets.get("items", {}).get(string_value(page.get("item_name")).lower())
+        if reusable_image:
+            image_path = reusable_image
+            print(f"[asset] reusing {page.get('item_name')} image -> {image_path}")
+        else:
+            image_path = maybe_generate_image(
+                out_dir,
+                topic=string_value(page.get("item_name")) or key,
+                prompt=prompt,
+                generate_images=generate_images,
+            )
         slide_path = out_dir / f"slide_{offset:02d}.png"
         render_item_slide(
             page,
@@ -469,7 +509,7 @@ def render_carousel(
         "carousel_id": string_value(carousel.get("id")),
         "channel_id": channel.id,
         "slide_count": total,
-        "cover_image_provider": "openai" if cover_image else "",
+        "cover_image_provider": "reused" if reusable_assets.get("cover") else "openai" if cover_image else "",
         "slides": slides,
     }
     manifest_path = out_dir / "manifest.json"
@@ -482,6 +522,8 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--index", type=int, default=0, help="0-based carousel index")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--channel", help="Render with a different channel id")
+    parser.add_argument("--asset-manifest", type=Path, help="Reuse generated images from another render manifest")
     parser.add_argument("--no-generate-images", action="store_true")
     args = parser.parse_args()
 
@@ -494,6 +536,8 @@ def main() -> int:
         carousel,
         out_dir=out_dir,
         generate_images=not args.no_generate_images,
+        channel_id=args.channel,
+        reusable_assets=load_reusable_assets(args.asset_manifest),
     )
     print(manifest_path)
     return 0
