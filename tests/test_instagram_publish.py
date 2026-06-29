@@ -16,17 +16,6 @@ def image_item(index: int) -> instagram_publish.MediaItem:
     )
 
 
-def video_item(index: int = 1) -> instagram_publish.MediaItem:
-    return instagram_publish.MediaItem(
-        index=index,
-        kind="video",
-        local_path=f"/tmp/reel_{index:02d}.mp4",
-        public_url=f"https://cdn.example.com/reel_{index:02d}.mp4",
-        slide_type="reel",
-        source_url="",
-    )
-
-
 class InstagramPublishCredentialTests(unittest.TestCase):
     def test_resolves_channel_specific_access_token_before_global_token(self) -> None:
         manifest = {"channel_id": "vibecodersph"}
@@ -59,90 +48,6 @@ class InstagramPublishCredentialTests(unittest.TestCase):
         self.assertEqual(token, "cli-token")
         self.assertEqual(source, "cli")
 
-    def test_resolves_channel_specific_facebook_config_before_global_values(self) -> None:
-        manifest = {"channel_id": "vibecodersph"}
-        env = {
-            "FACEBOOK_PAGE_ID": "global-page",
-            "FACEBOOK_PAGE_ID_VIBECODERSPH": "channel-page",
-            "FACEBOOK_PAGE_ACCESS_TOKEN": "global-token",
-            "FACEBOOK_PAGE_ACCESS_TOKEN_VIBECODERSPH": "channel-token",
-        }
-
-        with patch.dict(instagram_publish.os.environ, env, clear=True):
-            page_id, page_source = instagram_publish.resolve_facebook_page_id(
-                "",
-                manifest,
-                instagram_publish.ROOT / "out" / "manifest.json",
-            )
-            token, token_source = instagram_publish.resolve_facebook_access_token(
-                "",
-                manifest,
-                instagram_publish.ROOT / "out" / "manifest.json",
-            )
-
-        self.assertEqual(page_id, "channel-page")
-        self.assertEqual(page_source, "channel:vibecodersph")
-        self.assertEqual(token, "channel-token")
-        self.assertEqual(token_source, "channel:vibecodersph")
-
-    def test_facebook_publish_auto_enables_when_page_id_resolves(self) -> None:
-        manifest = {"channel_id": "vibecodersph"}
-
-        with patch.dict(instagram_publish.os.environ, {}, clear=True):
-            self.assertTrue(
-                instagram_publish.facebook_publish_enabled(
-                    force=False,
-                    skip=False,
-                    manifest=manifest,
-                    manifest_path=instagram_publish.ROOT / "out" / "manifest.json",
-                    facebook_page_id="12345",
-                )
-            )
-            self.assertFalse(
-                instagram_publish.facebook_publish_enabled(
-                    force=False,
-                    skip=True,
-                    manifest=manifest,
-                    manifest_path=instagram_publish.ROOT / "out" / "manifest.json",
-                    facebook_page_id="12345",
-                )
-            )
-
-    def test_derives_facebook_page_credentials_from_connected_instagram_account(self) -> None:
-        with patch.object(
-            instagram_publish,
-            "graph_request",
-            return_value={
-                "data": [
-                    {
-                        "id": "page_1",
-                        "name": "AI Brief",
-                        "access_token": "page-token",
-                        "instagram_business_account": {
-                            "id": "17841411137200252",
-                            "username": "aibrief.jp",
-                        },
-                    }
-                ]
-            },
-        ) as graph_request:
-            page_id, page_source, token, token_source = instagram_publish.derive_facebook_page_credentials(
-                facebook_page_id="",
-                facebook_page_id_source="env:FACEBOOK_PAGE_ID",
-                access_token="system-token",
-                access_token_source="env:FACEBOOK_PAGE_ACCESS_TOKEN",
-                graph_version="v23.0",
-                graph_api_root="https://graph.facebook.com",
-                instagram_user_id="17841411137200252",
-                instagram_username="aibrief.jp",
-            )
-
-        self.assertEqual(page_id, "page_1")
-        self.assertEqual(page_source, "env:FACEBOOK_PAGE_ACCESS_TOKEN:me/accounts")
-        self.assertEqual(token, "page-token")
-        self.assertEqual(token_source, "env:FACEBOOK_PAGE_ACCESS_TOKEN:me/accounts:page_1")
-        graph_request.assert_called_once()
-
 
 class InstagramPublishMediaItemTests(unittest.TestCase):
     def test_rejects_manifests_over_graph_api_carousel_limit(self) -> None:
@@ -167,79 +72,11 @@ class InstagramPublishMediaItemTests(unittest.TestCase):
                 dry_run=True,
             )
 
+    def test_parser_no_longer_exposes_facebook_publish_flags(self) -> None:
+        help_text = instagram_publish.build_parser().format_help()
 
-class FacebookPublishTests(unittest.TestCase):
-    def test_publishes_images_as_unpublished_photos_attached_to_feed_post(self) -> None:
-        items = [image_item(1), image_item(2)]
-        calls: list[tuple[str, dict]] = []
-        photo_ids = iter(["photo_1", "photo_2"])
-
-        def fake_graph_request(path: str, **kwargs):
-            calls.append((path, kwargs))
-            if path == "page_1/photos":
-                return {"id": next(photo_ids)}
-            if path == "page_1/feed":
-                return {"id": "page_1_post_1"}
-            if path == "page_1_post_1":
-                return {"permalink_url": "https://www.facebook.com/page/posts/1"}
-            raise AssertionError(f"unexpected path {path}")
-
-        with patch.object(instagram_publish, "graph_request", side_effect=fake_graph_request):
-            result = instagram_publish.publish_to_facebook_page(
-                items,
-                message="caption",
-                facebook_page_id="page_1",
-                access_token="page-token",
-                graph_version="v23.0",
-                graph_api_root="https://graph.facebook.com",
-            )
-
-        self.assertEqual(result["kind"], "photo_feed")
-        self.assertEqual(result["published"], {"id": "page_1_post_1"})
-        self.assertEqual([path for path, _ in calls], [
-            "page_1/photos",
-            "page_1/photos",
-            "page_1/feed",
-            "page_1_post_1",
-        ])
-        self.assertEqual(calls[0][1]["params"], {"url": items[0].public_url, "published": "false"})
-        self.assertEqual(calls[1][1]["params"], {"url": items[1].public_url, "published": "false"})
-        feed_params = calls[2][1]["params"]
-        self.assertEqual(feed_params["message"], "caption")
-        self.assertEqual(feed_params["attached_media[0]"], '{"media_fbid":"photo_1"}')
-        self.assertEqual(feed_params["attached_media[1]"], '{"media_fbid":"photo_2"}')
-        self.assertTrue(all(call[1]["api_name"] == "Facebook" for call in calls))
-
-    def test_publishes_single_video_to_page_videos(self) -> None:
-        item = video_item()
-        calls: list[tuple[str, dict]] = []
-
-        def fake_graph_request(path: str, **kwargs):
-            calls.append((path, kwargs))
-            if path == "page_1/videos":
-                return {"id": "video_1"}
-            if path == "video_1":
-                return {"permalink_url": "https://www.facebook.com/page/videos/1"}
-            raise AssertionError(f"unexpected path {path}")
-
-        with patch.object(instagram_publish, "graph_request", side_effect=fake_graph_request):
-            result = instagram_publish.publish_to_facebook_page(
-                [item],
-                message="caption",
-                facebook_page_id="page_1",
-                access_token="page-token",
-                graph_version="v23.0",
-                graph_api_root="https://graph.facebook.com",
-            )
-
-        self.assertEqual(result["kind"], "video")
-        self.assertEqual(result["published"], {"id": "video_1"})
-        self.assertEqual([path for path, _ in calls], ["page_1/videos", "video_1"])
-        self.assertEqual(
-            calls[0][1]["params"],
-            {"file_url": item.public_url, "description": "caption"},
-        )
-        self.assertEqual(calls[0][1]["timeout"], 180)
+        self.assertNotIn("--facebook", help_text)
+        self.assertNotIn("Facebook Page", help_text)
 
 
 class InstagramPublishRetryTests(unittest.TestCase):

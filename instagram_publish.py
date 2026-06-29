@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Publish a generated carousel manifest to Instagram, optionally mirroring to Facebook.
+"""Publish a generated carousel manifest to Instagram.
 
 Instagram's publishing API accepts public HTTPS media URLs, not local files.
 This script reads the carousel manifest written by build_x_carousel.py, maps
 each rendered slide to a public URL, creates Instagram media containers, and
-publishes either a single media post or a carousel post. When a matching
-Facebook Page is configured, the same public media URL(s) can also be published
-to that Page after the Instagram publish succeeds.
+publishes either a single media post or a carousel post.
 
 Dry run:
     uv run python instagram_publish.py out/x_carousel/manifest.json \
@@ -46,7 +44,7 @@ DEFAULT_REPORT_NAME = "instagram_publish.json"
 DEFAULT_GRAPH_API_VERSION = "v23.0"
 DEFAULT_PUBLISH_RETRIES = 2
 DEFAULT_PUBLISH_RETRY_DELAY_SECONDS = 60
-FACEBOOK_GRAPH_API_ROOT = "https://graph.facebook.com"
+META_GRAPH_API_ROOT = "https://graph.facebook.com"
 INSTAGRAM_GRAPH_API_ROOT = "https://graph.instagram.com"
 PLACEHOLDER_MEDIA_BASE_URL = "https://example.com/instagram-media"
 # Meta's Instagram Content Publishing API accepts at most 10 carousel children.
@@ -55,8 +53,6 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 VIDEO_SUFFIXES = {".mp4", ".mov"}
 FINISHED_STATUS_CODES = {"FINISHED", "PUBLISHED"}
 WAIT_STATUS_CODES = {"EXPIRED", "ERROR"}
-TRUE_VALUES = {"1", "true", "yes", "on"}
-FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 @dataclass
@@ -81,10 +77,6 @@ class R2Config:
 
 class InstagramContainerWaitError(RuntimeError):
     """Raised when an Instagram media container fails before publish."""
-
-
-class FacebookPublishUnsupportedError(RuntimeError):
-    """Raised when a manifest is Instagram-publishable but not Facebook-publishable."""
 
 
 def utc_now() -> str:
@@ -121,29 +113,6 @@ def env_int(default: int, *names: str) -> int:
         return int(value)
     except ValueError:
         return default
-
-
-def parse_bool(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if not normalized:
-        return None
-    if normalized in TRUE_VALUES:
-        return True
-    if normalized in FALSE_VALUES:
-        return False
-    return None
-
-
-def env_bool(*names: str) -> bool | None:
-    for name in names:
-        parsed = parse_bool(os.environ.get(name))
-        if parsed is not None:
-            return parsed
-    return None
 
 
 def env_key_suffix(value: str) -> str:
@@ -187,16 +156,6 @@ def channel_env_value(channel_id: str, *bases: str) -> str:
     return env_value(*names)
 
 
-def channel_env_bool(channel_id: str, *bases: str) -> bool | None:
-    suffix = env_key_suffix(channel_id)
-    if not suffix:
-        return None
-    names: list[str] = []
-    for base in bases:
-        names.extend((f"{base}_{suffix}", f"{suffix}_{base}"))
-    return env_bool(*names)
-
-
 def channel_publishing(channel_id: str) -> dict[str, Any]:
     if not channel_id:
         return {}
@@ -222,56 +181,6 @@ def channel_instagram_access_token(channel_id: str) -> str:
         "INSTAGRAM_ACCESS_TOKEN",
         "IG_ACCESS_TOKEN",
     )
-
-
-def channel_facebook_page_id(channel_id: str) -> str:
-    value = channel_env_value(channel_id, "FACEBOOK_PAGE_ID", "FB_PAGE_ID")
-    if value:
-        return value
-    publishing = channel_publishing(channel_id)
-    facebook = publishing.get("facebook") if isinstance(publishing.get("facebook"), dict) else {}
-    return str(
-        facebook.get("page_id")
-        or publishing.get("facebook_page_id")
-        or publishing.get("fb_page_id")
-        or ""
-    ).strip()
-
-
-def channel_facebook_access_token(channel_id: str) -> str:
-    return channel_env_value(
-        channel_id,
-        "FACEBOOK_PAGE_ACCESS_TOKEN",
-        "FB_PAGE_ACCESS_TOKEN",
-        "FACEBOOK_ACCESS_TOKEN",
-        "FB_ACCESS_TOKEN",
-        "META_SYSTEM_USER_ACCESS_TOKEN",
-    )
-
-
-def channel_facebook_publish_enabled(channel_id: str) -> bool | None:
-    channel_value = channel_env_bool(
-        channel_id,
-        "PUBLISH_TO_FACEBOOK",
-        "FACEBOOK_PUBLISH",
-        "FACEBOOK_PUBLISH_ENABLED",
-        "FB_PUBLISH",
-        "FB_PUBLISH_ENABLED",
-    )
-    if channel_value is not None:
-        return channel_value
-    publishing = channel_publishing(channel_id)
-    facebook = publishing.get("facebook") if isinstance(publishing.get("facebook"), dict) else {}
-    for value in (
-        facebook.get("enabled"),
-        facebook.get("publish"),
-        publishing.get("publish_to_facebook"),
-        publishing.get("facebook_publish"),
-    ):
-        parsed = parse_bool(value)
-        if parsed is not None:
-            return parsed
-    return None
 
 
 def resolve_instagram_user_id(explicit: str, manifest: dict[str, Any], manifest_path: Path) -> tuple[str, str]:
@@ -300,141 +209,6 @@ def resolve_instagram_access_token(
     return fallback, "env:META_SYSTEM_USER_ACCESS_TOKEN"
 
 
-def resolve_facebook_page_id(explicit: str, manifest: dict[str, Any], manifest_path: Path) -> tuple[str, str]:
-    if explicit.strip():
-        return explicit.strip(), "cli"
-    channel_id = manifest_channel_id(manifest, manifest_path)
-    channel_value = channel_facebook_page_id(channel_id)
-    if channel_value:
-        return channel_value, f"channel:{channel_id}"
-    fallback = env_value("FACEBOOK_PAGE_ID", "FB_PAGE_ID")
-    return fallback, "env:FACEBOOK_PAGE_ID"
-
-
-def resolve_facebook_access_token(
-    explicit: str,
-    manifest: dict[str, Any],
-    manifest_path: Path,
-) -> tuple[str, str]:
-    if explicit.strip():
-        return explicit.strip(), "cli"
-    channel_id = manifest_channel_id(manifest, manifest_path)
-    channel_value = channel_facebook_access_token(channel_id)
-    if channel_value:
-        return channel_value, f"channel:{channel_id}"
-    fallback = env_value(
-        "FACEBOOK_PAGE_ACCESS_TOKEN",
-        "FB_PAGE_ACCESS_TOKEN",
-        "FACEBOOK_ACCESS_TOKEN",
-        "FB_ACCESS_TOKEN",
-        "META_SYSTEM_USER_ACCESS_TOKEN",
-    )
-    return fallback, "env:FACEBOOK_PAGE_ACCESS_TOKEN"
-
-
-def facebook_page_account_from_accounts(
-    *,
-    access_token: str,
-    graph_version: str,
-    graph_api_root: str,
-    facebook_page_id: str = "",
-    instagram_user_id: str = "",
-    instagram_username: str = "",
-) -> dict[str, Any]:
-    response = graph_request(
-        "me/accounts",
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-        params={
-            "fields": "id,name,instagram_business_account{id,username},access_token",
-            "limit": "100",
-        },
-        method="GET",
-        timeout=30,
-        api_name="Facebook",
-    )
-    pages = response.get("data") if isinstance(response.get("data"), list) else []
-    normalized_username = instagram_username.strip().lstrip("@").lower()
-    for page in pages:
-        if not isinstance(page, dict):
-            continue
-        page_id = str(page.get("id") or "")
-        if facebook_page_id and page_id == facebook_page_id:
-            return page
-        account = page.get("instagram_business_account")
-        if not isinstance(account, dict):
-            continue
-        account_id = str(account.get("id") or "")
-        username = str(account.get("username") or "").strip().lower()
-        if instagram_user_id and account_id == instagram_user_id:
-            return page
-        if normalized_username and username == normalized_username:
-            return page
-    return {}
-
-
-def derive_facebook_page_credentials(
-    *,
-    facebook_page_id: str,
-    facebook_page_id_source: str,
-    access_token: str,
-    access_token_source: str,
-    graph_version: str,
-    graph_api_root: str,
-    instagram_user_id: str = "",
-    instagram_username: str = "",
-) -> tuple[str, str, str, str]:
-    if not access_token:
-        return facebook_page_id, facebook_page_id_source, access_token, access_token_source
-    try:
-        page = facebook_page_account_from_accounts(
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-            facebook_page_id=facebook_page_id,
-            instagram_user_id=instagram_user_id,
-            instagram_username=instagram_username,
-        )
-    except SystemExit as exc:
-        print(f"[facebook] could not derive Page access token from /me/accounts: {exc}")
-        return facebook_page_id, facebook_page_id_source, access_token, access_token_source
-    if not page:
-        return facebook_page_id, facebook_page_id_source, access_token, access_token_source
-    page_id = str(page.get("id") or "").strip()
-    page_token = str(page.get("access_token") or "").strip()
-    if page_id and not facebook_page_id:
-        facebook_page_id = page_id
-        facebook_page_id_source = f"{access_token_source}:me/accounts"
-        print(f"[facebook] using Page {facebook_page_id} from /me/accounts")
-    if page_token:
-        access_token = page_token
-        access_token_source = f"{access_token_source}:me/accounts:{page_id or facebook_page_id}"
-    return facebook_page_id, facebook_page_id_source, access_token, access_token_source
-
-
-def facebook_publish_enabled(
-    *,
-    force: bool,
-    skip: bool,
-    manifest: dict[str, Any],
-    manifest_path: Path,
-    facebook_page_id: str,
-) -> bool:
-    if skip:
-        return False
-    if force:
-        return True
-    env_default = env_bool("PUBLISH_TO_FACEBOOK", "FACEBOOK_PUBLISH", "FACEBOOK_PUBLISH_ENABLED")
-    if env_default is not None:
-        return env_default
-    channel_id = manifest_channel_id(manifest, manifest_path)
-    channel_default = channel_facebook_publish_enabled(channel_id)
-    if channel_default is not None:
-        return channel_default
-    return bool(facebook_page_id)
-
-
 def graph_api_version() -> str:
     return env_value("META_GRAPH_API_VERSION", "INSTAGRAM_GRAPH_API_VERSION") or DEFAULT_GRAPH_API_VERSION
 
@@ -446,11 +220,7 @@ def graph_api_root() -> str:
     domain = env_value("INSTAGRAM_GRAPH_DOMAIN", "META_GRAPH_DOMAIN").lower()
     if domain in {"instagram", "ig", "graph.instagram.com"}:
         return INSTAGRAM_GRAPH_API_ROOT
-    return FACEBOOK_GRAPH_API_ROOT
-
-
-def facebook_graph_api_root() -> str:
-    return env_value("FACEBOOK_GRAPH_API_ROOT", "META_GRAPH_API_ROOT") or FACEBOOK_GRAPH_API_ROOT
+    return META_GRAPH_API_ROOT
 
 
 def normalize_graph_version(value: str) -> str:
@@ -922,180 +692,6 @@ def fetch_permalink(
     )
 
 
-def facebook_publish_support(items: list[MediaItem]) -> tuple[bool, str]:
-    if all(item.kind == "image" for item in items):
-        return True, ""
-    if len(items) == 1 and items[0].kind == "video":
-        return True, ""
-    return (
-        False,
-        "Facebook mirror supports all-image posts or a single video; mixed/video carousels are skipped.",
-    )
-
-
-def facebook_attached_media_params(photo_ids: list[str]) -> dict[str, str]:
-    return {
-        f"attached_media[{index}]": json.dumps({"media_fbid": photo_id}, separators=(",", ":"))
-        for index, photo_id in enumerate(photo_ids)
-    }
-
-
-def fetch_facebook_permalink(
-    object_id: str,
-    *,
-    access_token: str,
-    graph_version: str,
-    graph_api_root: str,
-) -> dict[str, Any]:
-    return graph_request(
-        object_id,
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-        params={"fields": "permalink_url,created_time"},
-        method="GET",
-        timeout=30,
-        api_name="Facebook",
-    )
-
-
-def publish_facebook_images(
-    items: list[MediaItem],
-    *,
-    message: str,
-    facebook_page_id: str,
-    access_token: str,
-    graph_version: str,
-    graph_api_root: str,
-) -> dict[str, Any]:
-    photo_uploads: list[dict[str, Any]] = []
-    photo_ids: list[str] = []
-    for item in items:
-        print(f"[facebook] uploading unpublished photo for slide {item.index}")
-        response = graph_request(
-            f"{facebook_page_id}/photos",
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-            params={"url": item.public_url, "published": "false"},
-            method="POST",
-            api_name="Facebook",
-        )
-        photo_id = str(response.get("id") or "")
-        if not photo_id:
-            raise SystemExit(f"Facebook did not return a photo id: {response}")
-        photo_ids.append(photo_id)
-        photo_uploads.append({"slide_index": item.index, "photo_id": photo_id, "response": response})
-
-    params = facebook_attached_media_params(photo_ids)
-    if message:
-        params["message"] = message
-    print(f"[facebook] creating feed post with {len(photo_ids)} photo(s)")
-    published = graph_request(
-        f"{facebook_page_id}/feed",
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-        params=params,
-        method="POST",
-        api_name="Facebook",
-    )
-    post_id = str(published.get("id") or "")
-    if not post_id:
-        raise SystemExit(f"Facebook did not return a post id: {published}")
-    permalink: dict[str, Any] = {}
-    try:
-        permalink = fetch_facebook_permalink(
-            post_id,
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-        )
-    except SystemExit as exc:
-        print(f"[facebook] published, but permalink lookup failed: {exc}")
-    return {
-        "kind": "photo_feed",
-        "photo_uploads": photo_uploads,
-        "published": published,
-        "permalink": permalink,
-    }
-
-
-def publish_facebook_video(
-    item: MediaItem,
-    *,
-    message: str,
-    facebook_page_id: str,
-    access_token: str,
-    graph_version: str,
-    graph_api_root: str,
-) -> dict[str, Any]:
-    params = {"file_url": item.public_url}
-    if message:
-        params["description"] = message
-    print(f"[facebook] publishing video for slide {item.index}")
-    published = graph_request(
-        f"{facebook_page_id}/videos",
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-        params=params,
-        method="POST",
-        timeout=180,
-        api_name="Facebook",
-    )
-    video_id = str(published.get("id") or "")
-    if not video_id:
-        raise SystemExit(f"Facebook did not return a video id: {published}")
-    permalink: dict[str, Any] = {}
-    try:
-        permalink = fetch_facebook_permalink(
-            video_id,
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-        )
-    except SystemExit as exc:
-        print(f"[facebook] published, but permalink lookup failed: {exc}")
-    return {
-        "kind": "video",
-        "video": {"slide_index": item.index, "video_id": video_id, "response": published},
-        "published": published,
-        "permalink": permalink,
-    }
-
-
-def publish_to_facebook_page(
-    items: list[MediaItem],
-    *,
-    message: str,
-    facebook_page_id: str,
-    access_token: str,
-    graph_version: str,
-    graph_api_root: str,
-) -> dict[str, Any]:
-    supported, reason = facebook_publish_support(items)
-    if not supported:
-        raise FacebookPublishUnsupportedError(reason)
-    if all(item.kind == "image" for item in items):
-        return publish_facebook_images(
-            items,
-            message=message,
-            facebook_page_id=facebook_page_id,
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-        )
-    return publish_facebook_video(
-        items[0],
-        message=message,
-        facebook_page_id=facebook_page_id,
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-    )
-
-
 def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: str) -> list[dict[str, Any]]:
     if len(items) == 1:
         return [
@@ -1133,40 +729,6 @@ def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: 
             },
         },
         {"action": "publish_carousel_container", "creation_id": "<carousel_container_id>"},
-    ]
-
-
-def facebook_api_steps(items: list[MediaItem], message: str) -> list[dict[str, Any]]:
-    supported, reason = facebook_publish_support(items)
-    if not supported:
-        return [{"action": "skip_facebook_publish", "reason": reason}]
-    if all(item.kind == "image" for item in items):
-        return [
-            *[
-                {
-                    "action": "upload_unpublished_photo",
-                    "slide_index": item.index,
-                    "params": {"url": item.public_url, "published": "false"},
-                }
-                for item in items
-            ],
-            {
-                "action": "create_feed_post",
-                "params": {
-                    **({"message": message} if message else {}),
-                    "attached_media": "<uploaded_photo_ids>",
-                },
-            },
-        ]
-    return [
-        {
-            "action": "publish_page_video",
-            "slide_index": items[0].index,
-            "params": {
-                "file_url": items[0].public_url,
-                **({"description": message} if message else {}),
-            },
-        }
     ]
 
 
@@ -1307,34 +869,6 @@ def publish_to_instagram_with_retries(
     raise SystemExit("Instagram publish retry loop ended unexpectedly")
 
 
-def build_facebook_report_section(
-    *,
-    enabled: bool,
-    items: list[MediaItem],
-    message: str,
-    graph_version: str,
-    graph_api_root: str,
-    facebook_page_id: str,
-    facebook_page_id_source: str,
-    access_token_source: str,
-    result: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    supported, reason = facebook_publish_support(items)
-    return {
-        "enabled": enabled,
-        "supported": supported,
-        "skip_reason": "" if supported else reason,
-        "facebook_page_id": facebook_page_id,
-        "facebook_page_id_source": facebook_page_id_source,
-        "access_token_source": access_token_source,
-        "graph_api_version": graph_version,
-        "graph_api_root": graph_api_root,
-        "message": message,
-        "api_steps": facebook_api_steps(items, message) if enabled else [],
-        "result": result or {},
-    }
-
-
 def build_report(
     *,
     manifest_path: Path,
@@ -1350,7 +884,6 @@ def build_report(
     single_video_media_type: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
-    facebook: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "created_at": utc_now(),
@@ -1368,7 +901,6 @@ def build_report(
         "uploads": uploads or [],
         "api_steps": api_steps(items, caption, single_video_media_type=single_video_media_type),
         "result": result or {},
-        "facebook": facebook or {"enabled": False},
     }
 
 
@@ -1427,40 +959,6 @@ def build_parser() -> argparse.ArgumentParser:
             "META_SYSTEM_USER_ACCESS_TOKEN_<CHANNEL>, then global "
             "META_SYSTEM_USER_ACCESS_TOKEN / INSTAGRAM_ACCESS_TOKEN / IG_ACCESS_TOKEN."
         ),
-    )
-    facebook_group = parser.add_mutually_exclusive_group()
-    facebook_group.add_argument(
-        "--facebook",
-        action="store_true",
-        help="Also publish supported media to the configured Facebook Page.",
-    )
-    facebook_group.add_argument(
-        "--no-facebook",
-        action="store_true",
-        help="Skip Facebook publishing even when a Page is configured.",
-    )
-    parser.add_argument(
-        "--facebook-page-id",
-        default="",
-        help=(
-            "Facebook Page ID. Defaults to the manifest channel's "
-            "publishing.facebook.page_id / publishing.facebook_page_id, then "
-            "FACEBOOK_PAGE_ID / FB_PAGE_ID."
-        ),
-    )
-    parser.add_argument(
-        "--facebook-access-token",
-        default="",
-        help=(
-            "Facebook Page access token. Defaults to channel-specific "
-            "FACEBOOK_PAGE_ACCESS_TOKEN_<CHANNEL>, then global "
-            "FACEBOOK_PAGE_ACCESS_TOKEN / FACEBOOK_ACCESS_TOKEN."
-        ),
-    )
-    parser.add_argument(
-        "--facebook-graph-api-root",
-        default=facebook_graph_api_root(),
-        help="Facebook Graph API root for Page publishing.",
     )
     parser.add_argument("--graph-api-version", default=graph_api_version())
     parser.add_argument(
@@ -1524,50 +1022,8 @@ def main() -> int:
         manifest,
         manifest_path,
     )
-    facebook_page_id, facebook_page_id_source = resolve_facebook_page_id(
-        args.facebook_page_id,
-        manifest,
-        manifest_path,
-    )
-    facebook_access_token, facebook_access_token_source = resolve_facebook_access_token(
-        args.facebook_access_token,
-        manifest,
-        manifest_path,
-    )
-
     graph_version = normalize_graph_version(args.graph_api_version)
     graph_root = args.graph_api_root.rstrip("/")
-    facebook_graph_root = args.facebook_graph_api_root.rstrip("/")
-    channel_id = manifest_channel_id(manifest, manifest_path)
-    instagram_username = ""
-    if channel_id:
-        try:
-            instagram_username = load_channel(channel_id).handle
-        except Exception:
-            instagram_username = str(manifest.get("account_name") or "")
-    if not args.no_facebook and not args.dry_run and facebook_access_token:
-        (
-            facebook_page_id,
-            facebook_page_id_source,
-            facebook_access_token,
-            facebook_access_token_source,
-        ) = derive_facebook_page_credentials(
-            facebook_page_id=facebook_page_id,
-            facebook_page_id_source=facebook_page_id_source,
-            access_token=facebook_access_token,
-            access_token_source=facebook_access_token_source,
-            graph_version=graph_version,
-            graph_api_root=facebook_graph_root,
-            instagram_user_id=instagram_user_id,
-            instagram_username=instagram_username,
-        )
-    facebook_enabled = facebook_publish_enabled(
-        force=args.facebook,
-        skip=args.no_facebook,
-        manifest=manifest,
-        manifest_path=manifest_path,
-        facebook_page_id=facebook_page_id,
-    )
     media_base_url = args.media_base_url.strip()
     if args.upload_r2 and not media_base_url:
         media_base_url = args.r2_public_base_url.strip()
@@ -1586,26 +1042,10 @@ def main() -> int:
             timeout=args.r2_timeout,
         )
     caption = read_caption(args, manifest)
-    facebook_supported, facebook_skip_reason = facebook_publish_support(media_items)
-
-    if facebook_enabled and not args.dry_run and facebook_supported:
-        if not facebook_page_id:
-            raise SystemExit(
-                "FACEBOOK_PAGE_ID or --facebook-page-id is required to publish to Facebook "
-                "(or pass --no-facebook)."
-            )
-        if not facebook_access_token:
-            raise SystemExit(
-                "FACEBOOK_PAGE_ACCESS_TOKEN or --facebook-access-token is required to publish to Facebook "
-                "(or pass --no-facebook)."
-            )
 
     result: dict[str, Any] | None = None
-    facebook_result: dict[str, Any] | None = None
     if args.dry_run:
         print(f"[instagram] dry run: validated {len(media_items)} media item(s)")
-        if facebook_enabled and not facebook_supported:
-            print(f"[facebook] dry run: {facebook_skip_reason}")
     else:
         if not instagram_user_id:
             raise SystemExit("INSTAGRAM_USER_ID or --instagram-user-id is required to publish")
@@ -1624,35 +1064,6 @@ def main() -> int:
             publish_retries=args.publish_retries,
             publish_retry_delay=args.publish_retry_delay,
         )
-        if facebook_enabled:
-            if not facebook_supported:
-                print(f"[facebook] skipping mirror: {facebook_skip_reason}")
-                facebook_result = {"skipped": True, "reason": facebook_skip_reason}
-            else:
-                try:
-                    facebook_result = publish_to_facebook_page(
-                        media_items,
-                        message=caption,
-                        facebook_page_id=facebook_page_id,
-                        access_token=facebook_access_token,
-                        graph_version=graph_version,
-                        graph_api_root=facebook_graph_root,
-                    )
-                except SystemExit as exc:
-                    print(f"[facebook] publish failed after Instagram succeeded: {exc}")
-                    facebook_result = {"error": str(exc)}
-
-    facebook_report = build_facebook_report_section(
-        enabled=facebook_enabled,
-        items=media_items,
-        message=caption,
-        graph_version=graph_version,
-        graph_api_root=facebook_graph_root,
-        facebook_page_id=facebook_page_id,
-        facebook_page_id_source=facebook_page_id_source,
-        access_token_source=facebook_access_token_source,
-        result=facebook_result,
-    )
     report = build_report(
         manifest_path=manifest_path,
         manifest=manifest,
@@ -1667,7 +1078,6 @@ def main() -> int:
         single_video_media_type=args.single_video_media_type,
         uploads=uploads,
         result=result,
-        facebook=facebook_report,
     )
     report_path = args.out or manifest_path.with_name(DEFAULT_REPORT_NAME)
     write_json(report_path, report)
