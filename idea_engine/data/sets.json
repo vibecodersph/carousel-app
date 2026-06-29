@@ -1,0 +1,285 @@
+{
+  "items": [
+    {
+      "id": "model_qwen_coder",
+      "name": "Qwen Coder",
+      "category": "models",
+      "attrs": {
+        "costRank": 2,
+        "latencyRank": 3,
+        "selfHostable": true,
+        "enterpriseSafe": 3,
+        "japaneseSupport": 3,
+        "roi": 5,
+        "trendScore": 5,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "model_gemini_flash",
+      "name": "Gemini Flash",
+      "category": "models",
+      "attrs": {
+        "costRank": 2,
+        "latencyRank": 5,
+        "freeTier": true,
+        "enterpriseSafe": 4,
+        "japaneseSupport": 4,
+        "roi": 5,
+        "trendScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "model_claude_sonnet",
+      "name": "Claude Sonnet",
+      "category": "models",
+      "attrs": {
+        "costRank": 4,
+        "latencyRank": 3,
+        "enterpriseSafe": 5,
+        "japaneseSupport": 4,
+        "roi": 4,
+        "trendScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "api_openrouter",
+      "name": "OpenRouter",
+      "category": "apis",
+      "attrs": {
+        "costRank": 2,
+        "latencyRank": 3,
+        "freeTier": true,
+        "enterpriseSafe": 3,
+        "japaneseSupport": 3,
+        "roi": 5,
+        "trendScore": 5,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "api_together",
+      "name": "Together AI",
+      "category": "apis",
+      "attrs": {
+        "costRank": 3,
+        "latencyRank": 4,
+        "enterpriseSafe": 4,
+        "roi": 4,
+        "selfHostable": false,
+        "trendScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "api_fireworks",
+      "name": "Fireworks AI",
+      "category": "apis",
+      "attrs": {
+        "costRank": 3,
+        "latencyRank": 5,
+        "enterpriseSafe": 4,
+        "roi": 4,
+        "trendScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "oss_vllm",
+      "name": "vLLM",
+      "category": "oss",
+      "attrs": {
+        "costRank": 1,
+        "latencyRank": 5,
+        "selfHostable": true,
+        "enterpriseSafe": 4,
+        "roi": 5,
+        "hireSignal": 4,
+        "trendScore": 5
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "oss_litellm",
+      "name": "LiteLLM",
+      "category": "oss",
+      "attrs": {
+        "costRank": 1,
+        "easiest": 4,
+        "selfHostable": true,
+        "enterpriseSafe": 4,
+        "roi": 5,
+        "hireSignal": 4,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "framework_langgraph",
+      "name": "LangGraph",
+      "category": "frameworks",
+      "attrs": {
+        "easiest": 3,
+        "enterpriseSafe": 4,
+        "hireSignal": 5,
+        "roi": 4,
+        "trendScore": 5
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "tool_cursor",
+      "name": "Cursor",
+      "category": "tools",
+      "attrs": {
+        "costRank": 3,
+        "easiest": 5,
+        "freeTier": true,
+        "hireSignal": 5,
+        "roi": 5,
+        "overratedRisk": 3
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "tool_ollama",
+      "name": "Ollama",
+      "category": "tools",
+      "attrs": {
+        "costRank": 1,
+        "easiest": 4,
+        "freeTier": true,
+        "selfHostable": true,
+        "hireSignal": 4,
+        "roi": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "tool_n8n",
+      "name": "n8n",
+      "category": "tools",
+      "attrs": {
+        "costRank": 2,
+        "easiest": 4,
+        "freeTier": true,
+        "selfHostable": true,
+        "hireSignal": 5,
+        "roi": 5,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "dataset_hf",
+      "name": "Hugging Face Datasets",
+      "category": "datasets",
+      "attrs": {
+        "freeTier": true,
+        "selfHostable": true,
+        "enterpriseSafe": 3,
+        "roi": 4,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "technique_eval_first",
+      "name": "eval-first prompting",
+      "category": "techniques",
+      "attrs": {
+        "easiest": 3,
+        "enterpriseSafe": 5,
+        "hireSignal": 4,
+        "roi": 5,
+        "overlookedScore": 5
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "technique_router",
+      "name": "model routing",
+      "category": "techniques",
+      "attrs": {
+        "costRank": 2,
+        "enterpriseSafe": 4,
+        "hireSignal": 4,
+        "roi": 5,
+        "trendScore": 5
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "course_fastai",
+      "name": "Practical Deep Learning",
+      "category": "courses",
+      "attrs": {
+        "freeTier": true,
+        "hireSignal": 4,
+        "roi": 5,
+        "overlookedScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "role_ai_automation_dev",
+      "name": "AI automation developer",
+      "category": "roles",
+      "attrs": {
+        "hireSignal": 5,
+        "roi": 5,
+        "trendScore": 5
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "stack_supabase_modal",
+      "name": "Supabase plus Modal",
+      "category": "stacks",
+      "attrs": {
+        "costRank": 2,
+        "easiest": 4,
+        "freeTier": true,
+        "hireSignal": 4,
+        "roi": 5,
+        "trendScore": 4
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "benchmark_swebench",
+      "name": "SWE-bench",
+      "category": "benchmarks",
+      "attrs": {
+        "enterpriseSafe": 4,
+        "roi": 4,
+        "trendScore": 5,
+        "overratedRisk": 3
+      },
+      "source": "manual seed",
+      "addedAt": "2026-06-29"
+    }
+  ]
+}
