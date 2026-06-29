@@ -31,8 +31,9 @@ Cover anatomy:
 
 - Kicker or handle: the account handle or a short section label.
 - Headline: the hook. Punchy or editorial, depending on the post.
-- One accent keyword: exactly one word in brand accent color. It should be the
-  funny, surprising, or emotional word.
+- Accent keywords: one or more words/short phrases in brand accent color. They
+  should be the funny, surprising, or emotional terms, never more than half the
+  headline.
 - Swipe line: short and natural. Examples: "swipe mo", "tuloy sa slide 2",
   "paano? swipe".
 
@@ -154,15 +155,16 @@ Hard rules:
   one, rewrite.
 - One joke per cover. The joke must carry a real insight, not just be a joke.
 - Punch up at hype or sideways at our own builder habits, never down at people.
-- Exactly one accent word: the funny, surprising, or emotional word. Never a
-  noun-of-convenience like "tools" or "tips." Mark it with [brackets].
+- One or more accent words/short phrases: the funny, surprising, or emotional
+  terms. Never noun-of-convenience highlights like "tools" or "tips." Mark each
+  with [brackets], and keep highlighted text under 50% of the headline.
 - Punchy mode: 4 to 8 words. Editorial mode, for news or launch posts: one
   sentence, up to about 14 words, witty headline cadence.
 - No generic listicle headers, no solution-as-hooks, no vague promises, no hype
   openers like "stop scrolling" or "we are excited to announce."
 - No slay/ate/bestie brand voice. One emoji max, usually zero. No ALL CAPS.
 
-For cover output: kicker line, headline with exactly one accent word in
+For cover output: kicker line, headline with one or more accent words/phrases in
 [brackets], and swipe line.
 
 For caption output: short Taglish Instagram caption with one main idea, one CTA,
@@ -172,7 +174,8 @@ clean hashtags, and source attribution when provided.
 ## Pre-Post Cover Checklist
 
 - Passes the both-audiences test: a non-dev laughs or feels seen, a dev nods.
-- Exactly one accent word, and it is the funny, surprising, or emotional one.
+- One or more accent words/phrases, all funny, surprising, or emotional, with
+  highlighted text under 50% of the headline.
 - One joke, and it carries a true insight.
 - Taglish-native, not English with a Tagalog garnish.
 - Right cover mode for the post.

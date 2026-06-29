@@ -37,6 +37,30 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn('<span class="accent">足場</span>', markup)
         self.assertIn('<span class="term">本番エージェント</span>', markup)
 
+    def test_headline_markup_supports_multiple_highlights(self) -> None:
+        markup, plain, has_accent = build_x_carousel.headline_markup_from_brackets(
+            "エンジニアや[PM]の肩書が[溶ける]と、何が残る？"
+        )
+
+        self.assertTrue(has_accent)
+        self.assertEqual(plain, "エンジニアやPMの肩書が溶けると、何が残る？")
+        self.assertEqual(markup.count('class="accent"'), 2)
+        self.assertIn('<span class="accent">PM</span>', markup)
+        self.assertIn('<span class="accent">溶ける</span>', markup)
+
+    def test_cover_highlights_are_clamped_to_half_the_headline(self) -> None:
+        headline = build_x_carousel.bracket_single_accent_word(
+            "[Ganito mag-survive kapag tunaw] na ang role mo."
+        )
+        highlighted = sum(
+            build_x_carousel.visible_highlight_len(match)
+            for match in build_x_carousel.BRACKETED_HIGHLIGHT_RE.findall(headline)
+        )
+        total = build_x_carousel.visible_highlight_len(headline)
+
+        self.assertLessEqual(highlighted, total // 2)
+        self.assertNotEqual(headline, "[Ganito mag-survive kapag tunaw] na ang role mo.")
+
     def test_japanese_channel_uses_japanese_swipe_cue(self) -> None:
         with patch.dict("os.environ", {"CAROUSEL_CHANNEL": "aibrief_jp"}):
             self.assertEqual(build_x_carousel.dot_markup(2, 5), "<span>スワイプで続きへ</span>")
@@ -79,8 +103,8 @@ class CoverCopyTests(unittest.TestCase):
                                             "topic": "AI browser agent",
                                             "cover": {
                                                 "kicker": "THE CATCH",
-                                                "headline": "Akala mo agent, intern pala na may [browser].",
-                                                "accent_word": "browser",
+                                                "headline": "Akala mo [agent], intern pala na may [browser].",
+                                                "accent_words": ["agent", "browser"],
                                                 "swipe_line": "slide 2 yung sablay",
                                             },
                                             "instagram_caption": "Hook\n\nSource: https://x.com/a/status/1",
@@ -121,6 +145,7 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("Would a stranger understand the", prompt)
         self.assertIn("Make slide 2 feel necessary", prompt)
         self.assertIn("If the hook could work unchanged for 20 other AI posts", prompt)
+        self.assertIn("at most 50% of the visible", prompt)
 
 
 if __name__ == "__main__":

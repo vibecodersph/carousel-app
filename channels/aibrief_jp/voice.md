@@ -31,8 +31,9 @@ Cover anatomy:
 
 - Kicker or handle: the account handle or a short section label.
 - Headline: the hook. Punchy or editorial, depending on the post.
-- One accent keyword: exactly one word in brand accent color, the surprising or
-  emotional word. Mark it with [brackets].
+- Accent keywords: one or more words/short phrases in brand accent color, the
+  surprising or emotional terms. Mark each with [brackets], and keep highlighted
+  text under half the headline.
 - Swipe line: short and natural, e.g. 「スワイプで続き」「次のスライドへ」.
 
 Two cover modes:
@@ -73,16 +74,17 @@ Hard rules:
   for one, rewrite.
 - One joke per cover. The joke must carry a real insight, not just be a joke.
 - Punch up at hype or sideways at our own builder habits, never down at people.
-- Exactly one accent word: the surprising or emotional word, not a noun-of-
-  convenience like「ツール」「コツ」. Mark it with [brackets].
+- One or more accent words/short phrases: the surprising or emotional terms, not
+  noun-of-convenience highlights like「ツール」「コツ」. Mark each with [brackets],
+  and keep highlighted text under 50% of the headline.
 - Punchy mode: a short hook. Editorial mode, for news or launches: one sentence with
   a witty headline cadence.
 - No hype openers like「全てが変わる」「必見」「今すぐ」, no vague promises, no
   listicle headers.
 - One emoji max, usually zero. No ALL CAPS.
 
-For cover output: kicker line, headline with exactly one accent word in [brackets],
-and swipe line.
+For cover output: kicker line, headline with one or more accent words/phrases in
+[brackets], and swipe line.
 
 For caption output: a short Japanese Instagram caption with one main idea, one CTA,
 clean hashtags, and source attribution when provided.
@@ -90,7 +92,8 @@ clean hashtags, and source attribution when provided.
 
 ## Pre-Post Cover Checklist
 
-- One accent word, in [brackets], and it is the interesting word.
+- One or more accent words/phrases, in [brackets], and they are the interesting
+  terms. Highlighted text stays under half the headline.
 - Reads naturally to a Japanese engineer, not machine-translated.
 - No hype, no em dashes, no ALL CAPS.
 - Both a non-engineer and an engineer get something from it.

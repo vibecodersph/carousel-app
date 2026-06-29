@@ -89,7 +89,8 @@ class Channel:
         """Channel-aware fallback used when the voice guide can't be read."""
         return (
             f"Write witty {self.language_name}-native Instagram cover lines for "
-            f"{self.brand_name}. Exactly one accent word must be wrapped in [brackets]."
+            f"{self.brand_name}. Wrap one or more accent words/phrases in [brackets], "
+            "with highlighted text under half the headline."
         )
 
 

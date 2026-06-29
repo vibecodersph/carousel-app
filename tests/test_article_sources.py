@@ -1170,31 +1170,32 @@ class ArticleCoverVoiceTests(unittest.TestCase):
             "Article Title",
         )
 
-    def test_brand_headline_renders_single_two_tone_accent(self) -> None:
+    def test_brand_headline_renders_two_tone_accents(self) -> None:
         import build_x_carousel
 
         markup, plain, has_accent = build_x_carousel.headline_markup_from_brackets(
-            "Kahit AI, marunong na ring mag-[budol] sa digital economy natin."
+            "Kahit [AI], marunong na ring mag-[budol] sa digital economy natin."
         )
         self.assertTrue(has_accent)
-        self.assertEqual(markup.count('class="accent"'), 1)
+        self.assertEqual(markup.count('class="accent"'), 2)
+        self.assertIn("AI", plain)
         self.assertIn("budol", plain)
         self.assertNotIn("[", plain)
 
-    def test_cover_copy_repairs_missing_or_phrase_accent(self) -> None:
+    def test_cover_copy_repairs_missing_or_phrase_accents(self) -> None:
         import build_x_carousel
 
         repaired = build_x_carousel.normalize_cover_copy(
             {
                 "cover": {
                     "headline": "Kahit AI, marunong na ring mag-budol sa atin.",
-                    "accent_word": "budol",
+                    "accent_words": ["AI", "budol"],
                 }
             }
         )
         self.assertEqual(
             repaired["headline"],
-            "Kahit AI, marunong na ring mag-[budol] sa atin.",
+            "Kahit [AI], marunong na ring mag-[budol] sa atin.",
         )
 
         phrase = build_x_carousel.normalize_cover_copy(
@@ -1205,7 +1206,7 @@ class ArticleCoverVoiceTests(unittest.TestCase):
         )
         self.assertTrue(has_accent)
         self.assertEqual(markup.count('class="accent"'), 1)
-        self.assertIn('<span class="accent">slop</span>', markup)
+        self.assertIn('<span class="accent">AI slop</span>', markup)
         self.assertNotIn("[", plain)
 
     def test_article_title_analysis_uses_article_prompt_context(self) -> None:

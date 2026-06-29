@@ -48,6 +48,10 @@ IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
 DEFAULT_OUT = OUT / "x_carousel"
 # Last-resort account label. The active channel's account_name normally supplies this.
 DEFAULT_ACCOUNT_NAME = "vibecodersph"
+# Cover titles should own the lower third of the portrait slide. The browser-side
+# fitter below uses this region after final font metrics and line breaks exist.
+TITLE_CLUSTER_TOP = round(SLIDE_H * 0.65)
+TITLE_CLUSTER_BOTTOM = 118
 # Instagram's app UI can show larger carousels, but the Content Publishing API
 # accepts 10 child items. Keep generated posts inside the publishable API limit.
 DEFAULT_MAX_CAROUSEL_ITEMS = 10
@@ -1117,32 +1121,139 @@ def choose_accent_word(text: str) -> str:
     return (meaningful or candidates)[-1]
 
 
-def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
+BRACKETED_HIGHLIGHT_RE = re.compile(r"\[([^\[\]]+)\]")
+
+
+def visible_highlight_len(text: str) -> int:
+    return len(re.sub(r"\s+", "", text.replace("[", "").replace("]", "")))
+
+
+def highlight_budget(text: str) -> int:
+    # At most half the visible headline. Use floor so 51% cannot sneak through.
+    return max(1, visible_highlight_len(text) // 2)
+
+
+def bracket_target_once(text: str, target: str) -> str:
+    target = target.strip().strip("[]")
+    if not target:
+        return text
+    if not re.search(r"[A-Za-z0-9]", target):
+        start = text.find(target)
+        if start < 0:
+            return text
+        end = start + len(target)
+        return f"{text[:start]}[{text[start:end]}]{text[end:]}"
+    pattern = re.compile(rf"(?<![A-Za-z0-9_'])({re.escape(target)})(?![A-Za-z0-9_'])", re.I)
+    updated, count = pattern.subn(r"[\1]", text, count=1)
+    return updated if count else text
+
+
+def highlight_fragment(text: str, budget: int) -> str:
+    if budget <= 0:
+        return ""
+    text = text.strip().strip("[]")
+    if not text:
+        return ""
+    if visible_highlight_len(text) <= budget:
+        return text
+    ascii_word = choose_accent_word(text)
+    if ascii_word and visible_highlight_len(ascii_word) <= budget:
+        return ascii_word
+    terms = [
+        match.group(0)
+        for match in TERM_RE.finditer(text)
+        if visible_highlight_len(match.group(0)) <= budget
+    ]
+    return terms[-1] if terms else ""
+
+
+def accent_targets_from_value(value: object) -> list[str]:
+    if isinstance(value, list):
+        raw_items = [string_value(item) for item in value]
+    else:
+        raw_value = string_value(value)
+        raw_items = BRACKETED_HIGHLIGHT_RE.findall(raw_value)
+        if not raw_items:
+            raw_items = re.split(r"[,、]+", raw_value) if raw_value else []
+    targets: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        target = item.strip().strip("[]")
+        if not target:
+            continue
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(target)
+    return targets
+
+
+def has_bracketed_highlight(text: str) -> bool:
+    return bool(BRACKETED_HIGHLIGHT_RE.search(text))
+
+
+def clamp_bracketed_highlights(headline: str) -> str:
+    plain = headline.replace("[", "").replace("]", "")
+    budget = highlight_budget(plain)
+    used = 0
+    kept = False
+    parts: list[str] = []
+    position = 0
+    for match in BRACKETED_HIGHLIGHT_RE.finditer(headline):
+        parts.append(headline[position : match.start()].replace("[", "").replace("]", ""))
+        raw_highlight = match.group(1).strip()
+        remaining = budget - used
+        highlight = highlight_fragment(raw_highlight, remaining)
+        if highlight:
+            highlighted = bracket_target_once(raw_highlight, highlight)
+            parts.append(highlighted)
+            used += visible_highlight_len(highlight)
+            kept = True
+        else:
+            parts.append(raw_highlight)
+        position = match.end()
+    parts.append(headline[position:].replace("[", "").replace("]", ""))
+    updated = re.sub(r"\s+", " ", "".join(parts)).strip()
+    if kept:
+        return updated
+    fallback = highlight_fragment(updated, highlight_budget(updated))
+    return bracket_target_once(updated, fallback)
+
+
+def bracket_highlight_text(headline: str, accents: object = "") -> str:
     headline = headline.replace("\u2014", ",").strip()
     if not headline:
         return ""
 
-    bracket_match = re.search(r"\[([^\[\]]+)\]", headline)
-    explicit_accent = (accent_word.strip().strip("[]") if accent_word else "") or (
-        bracket_match.group(1).strip() if bracket_match else ""
-    )
-    target = (
-        choose_accent_word(explicit_accent)
-        or choose_accent_word(headline)
-        or explicit_accent
-    )
     plain = headline.replace("[", "").replace("]", "")
-    if not target:
+    if has_bracketed_highlight(headline):
+        return clamp_bracketed_highlights(headline)
+
+    budget = highlight_budget(plain)
+    used = 0
+    updated = plain
+    for target in accent_targets_from_value(accents):
+        remaining = budget - used
+        highlight = highlight_fragment(target, remaining)
+        if not highlight:
+            continue
+        next_updated = bracket_target_once(updated, highlight)
+        if next_updated == updated:
+            continue
+        updated = next_updated
+        used += visible_highlight_len(highlight)
+    if has_bracketed_highlight(updated):
+        return updated
+
+    fallback = highlight_fragment(plain, budget)
+    if not fallback:
         return plain
-    if not re.search(r"[A-Za-z0-9]", target):
-        start = plain.find(target)
-        if start < 0:
-            return plain
-        end = start + len(target)
-        return f"{plain[:start]}[{plain[start:end]}]{plain[end:]}"
-    pattern = re.compile(rf"(?<![A-Za-z0-9_'])({re.escape(target)})(?![A-Za-z0-9_'])", re.I)
-    updated, count = pattern.subn(r"[\1]", plain, count=1)
-    return updated if count else plain
+    return bracket_target_once(plain, fallback)
+
+
+def bracket_single_accent_word(headline: str, accent_word: str = "") -> str:
+    return bracket_highlight_text(headline, accent_word)
 
 
 def title_from_post(post: dict[str, str]) -> tuple[str, str]:
@@ -1154,8 +1265,8 @@ def title_from_post(post: dict[str, str]) -> tuple[str, str]:
     return split_title_for_two_tone(words)
 
 
-def with_bracketed_accent(headline: str, accent_word: str) -> str:
-    return bracket_single_accent_word(headline, accent_word)
+def with_bracketed_accent(headline: str, accent_word: object) -> str:
+    return bracket_highlight_text(headline, accent_word)
 
 
 def contains_japanese(text: str) -> bool:
@@ -1233,32 +1344,87 @@ def inline_text_markup(text: str) -> str:
     return "".join(pieces)
 
 
-def phrase_text_markup(text: str, *, accent: str = "", max_chars: int = 12) -> str:
-    if not contains_japanese(text):
-        if accent and accent in text:
-            before, after = text.split(accent, 1)
-            return (
-                inline_text_markup(before)
-                + f'<span class="accent">{html.escape(accent)}</span>'
-                + inline_text_markup(after)
-            )
+def first_highlight_span(text: str, accent: str) -> list[tuple[int, int]]:
+    accent = accent.strip()
+    if not accent:
+        return []
+    start = text.find(accent)
+    if start < 0:
+        return []
+    return [(start, start + len(accent))]
+
+
+def bracket_highlight_spans(headline: str) -> tuple[str, list[tuple[int, int]]]:
+    plain_parts: list[str] = []
+    spans: list[tuple[int, int]] = []
+    plain_len = 0
+    position = 0
+    for match in BRACKETED_HIGHLIGHT_RE.finditer(headline):
+        before = headline[position : match.start()].replace("[", "").replace("]", "")
+        plain_parts.append(before)
+        plain_len += len(before)
+        highlight = match.group(1).strip()
+        if highlight:
+            start = plain_len
+            plain_parts.append(highlight)
+            plain_len += len(highlight)
+            spans.append((start, plain_len))
+        position = match.end()
+    after = headline[position:].replace("[", "").replace("]", "")
+    plain_parts.append(after)
+    plain = "".join(plain_parts).strip()
+    return plain, spans
+
+
+def inline_text_markup_with_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
         return inline_text_markup(text)
+    pieces: list[str] = []
+    position = 0
+    for start, end in sorted(spans):
+        start = max(0, min(len(text), start))
+        end = max(start, min(len(text), end))
+        if start > position:
+            pieces.append(inline_text_markup(text[position:start]))
+        if end > start:
+            pieces.append(f'<span class="accent">{html.escape(text[start:end])}</span>')
+        position = max(position, end)
+    if position < len(text):
+        pieces.append(inline_text_markup(text[position:]))
+    return "".join(pieces)
+
+
+def phrase_text_markup_with_spans(
+    text: str,
+    spans: list[tuple[int, int]],
+    *,
+    max_chars: int = 12,
+) -> str:
+    if not contains_japanese(text):
+        return inline_text_markup_with_spans(text, spans)
     chunks = japanese_phrase_chunks(text, max_chars=max_chars)
-    accent_used = False
     phrase_markup: list[str] = []
+    offset = 0
     for chunk in chunks:
-        if accent and not accent_used and accent in chunk:
-            before, after = chunk.split(accent, 1)
-            inner = (
-                inline_text_markup(before)
-                + f'<span class="accent">{html.escape(accent)}</span>'
-                + inline_text_markup(after)
-            )
-            accent_used = True
-        else:
-            inner = inline_text_markup(chunk)
+        chunk_start = offset
+        chunk_end = offset + len(chunk)
+        chunk_spans = [
+            (max(start, chunk_start) - chunk_start, min(end, chunk_end) - chunk_start)
+            for start, end in spans
+            if start < chunk_end and end > chunk_start
+        ]
+        inner = inline_text_markup_with_spans(chunk, chunk_spans)
         phrase_markup.append(f'<span class="jp-phrase">{inner}</span>')
+        offset = chunk_end
     return "".join(phrase_markup)
+
+
+def phrase_text_markup(text: str, *, accent: str = "", max_chars: int = 12) -> str:
+    return phrase_text_markup_with_spans(
+        text,
+        first_highlight_span(text, accent),
+        max_chars=max_chars,
+    )
 
 
 def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
@@ -1272,9 +1438,12 @@ def normalize_cover_copy(analysis: dict[str, object] | None) -> dict[str, str]:
     headline = string_value(raw.get("headline"))
     if not headline:
         return {}
+    accents = raw.get("accent_words")
+    if accents is None:
+        accents = raw.get("accent_word")
     cover = {
         "kicker": string_value(raw.get("kicker") or raw.get("kicker_line")),
-        "headline": with_bracketed_accent(headline, string_value(raw.get("accent_word"))),
+        "headline": with_bracketed_accent(headline, accents),
         "swipe_line": string_value(raw.get("swipe_line") or raw.get("swipe")),
     }
     if "\u2014" in cover["headline"]:
@@ -1377,15 +1546,12 @@ def manual_cover_copy(
 
 
 def headline_markup_from_brackets(headline: str) -> tuple[str, str, bool]:
-    headline = re.sub(r"\s+", " ", bracket_single_accent_word(headline)).strip()
-    match = re.search(r"\[([^\[\]]+)\]", headline)
-    if not match:
+    headline = re.sub(r"\s+", " ", bracket_highlight_text(headline)).strip()
+    if not has_bracketed_highlight(headline):
         return phrase_text_markup(headline), headline, False
-    before = headline[: match.start()].replace("[", "").replace("]", "")
-    accent = match.group(1).strip()
-    after = headline[match.end() :].replace("[", "").replace("]", "")
-    plain = re.sub(r"\s+", " ", f"{before}{accent}{after}").strip()
-    markup = phrase_text_markup(plain, accent=accent, max_chars=11)
+    plain, spans = bracket_highlight_spans(headline)
+    plain = plain.strip()
+    markup = phrase_text_markup_with_spans(plain, spans, max_chars=11)
     return markup, plain, True
 
 
@@ -1416,6 +1582,62 @@ def title_font_size(text: str) -> int:
     if len(text) > 64:
         return 70
     return 84
+
+
+def title_fit_script() -> str:
+    """Grow the cover headline to fill the reserved lower-third title region.
+
+    The final line breaks depend on browser font loading and Japanese phrase
+    wrapping, so this runs in Chromium right before the screenshot is captured.
+    """
+    return """
+<script>
+(() => {
+  function px(value) {
+    return Number.parseFloat(value) || 0;
+  }
+
+  function fitHeadline() {
+    const cluster = document.querySelector('.title-cluster');
+    const headline = document.querySelector('.headline');
+    if (!cluster || !headline) return;
+
+    const rule = cluster.querySelector('.account-rule');
+    const ruleStyle = rule ? getComputedStyle(rule) : null;
+    const ruleSpace = rule
+      ? rule.getBoundingClientRect().height + px(ruleStyle.marginBottom)
+      : 0;
+    const availableHeight = Math.max(128, cluster.clientHeight - ruleSpace);
+    const availableWidth = headline.clientWidth;
+    let low = 52;
+    let high = 150;
+    let best = low;
+
+    headline.style.maxHeight = "";
+    for (let i = 0; i < 24; i += 1) {
+      const mid = (low + high) / 2;
+      headline.style.fontSize = `${mid}px`;
+      const rect = headline.getBoundingClientRect();
+      const verticalOverflow = rect.height > availableHeight + 0.5;
+      const horizontalOverflow = headline.scrollWidth > availableWidth + 1;
+      if (verticalOverflow || horizontalOverflow) {
+        high = mid;
+      } else {
+        best = mid;
+        low = mid;
+      }
+    }
+    headline.style.fontSize = `${Math.floor(best)}px`;
+  }
+
+  requestAnimationFrame(fitHeadline);
+  window.addEventListener('load', fitHeadline);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(fitHeadline);
+  }
+})();
+</script>
+""".strip()
 
 
 def asset_uri(path: object) -> str:
@@ -1503,8 +1725,8 @@ Return JSON only with this exact shape:
   "topic": "short topic, 4 to 10 words",
   "cover": {{
     "kicker": "short section label or handle, 1 to 3 words",
-    "headline": "{lang}-native IG cover line with exactly one [accent] word",
-    "accent_word": "same accent word without brackets",
+    "headline": "{lang}-native IG cover line with one or more [highlighted] words/phrases",
+    "accent_words": ["highlighted word or phrase without brackets"],
     "swipe_line": "short {lang} swipe prompt"
   }},
   "instagram_caption": "short {lang} Instagram caption with one CTA, clean hashtags, and source attribution",
@@ -1521,14 +1743,17 @@ Return JSON only with this exact shape:
 }}
 
 Rules:
-- Write cover.kicker, cover.headline, cover.accent_word, cover.swipe_line, and
+- Write cover.kicker, cover.headline, cover.accent_words, cover.swipe_line, and
   instagram_caption in {lang}.
 - Apply the {brand} Instagram voice guide below when writing cover.kicker,
-  cover.headline, cover.accent_word, and cover.swipe_line.
+  cover.headline, cover.accent_words, and cover.swipe_line.
 - The cover headline must not be a neutral summary of the source. It should be a
   witty {lang} hook that earns the swipe while staying true to the source.
-- cover.headline must contain exactly one bracketed accent word, like [alam].
-- cover.accent_word must match the bracketed word without brackets.
+- cover.headline must contain one or more bracketed highlights, like [tunaw] or
+  [PM] and [shoulder title].
+- The combined highlighted words/phrases must be at most 50% of the visible
+  cover.headline text. Highlight the emotional/surprising terms, not whole clauses.
+- cover.accent_words must list the same highlighted words/phrases without brackets.
 - cover.headline should be the strongest hook from your internal options, not
   the most complete summary. Prefer a sharp curiosity gap with a real payoff over
   "news explainer" language.
@@ -2512,8 +2737,8 @@ def render_title_slide(
   position: absolute;
   left: 56px;
   right: 56px;
-  top: 742px;
-  bottom: 168px;
+  top: {TITLE_CLUSTER_TOP}px;
+  bottom: {TITLE_CLUSTER_BOTTOM}px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -2524,7 +2749,7 @@ def render_title_slide(
   display: flex;
   align-items: center;
   gap: 22px;
-  margin-bottom: 30px;
+  margin-bottom: 24px;
   color: var(--primary);
 }}
 .account-rule::before,
@@ -2536,7 +2761,7 @@ def render_title_slide(
 }}
 .account-rule span {{
   font-size: 24px;
-  font-weight: 820;
+  font-weight: 760;
   letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
@@ -2544,14 +2769,15 @@ def render_title_slide(
 }}
 .headline {{
   font-size: {font_size}px;
-  font-weight: 850;
+  font-weight: 720;
   letter-spacing: 0;
-  line-height: 1.03;
+  line-height: 1.01;
   color: var(--fg);
   line-break: strict;
   overflow-wrap: normal;
   text-wrap: balance;
   word-break: normal;
+  width: 100%;
 }}
 .headline .accent {{
   color: var(--primary);
@@ -2563,7 +2789,7 @@ def render_title_slide(
   white-space: nowrap;
 }}
 .dots {{
-  bottom: 116px;
+  bottom: 62px;
 }}
 </style></head>
 <body>
@@ -2575,6 +2801,7 @@ def render_title_slide(
   </div>
   <div class="dots">{dot_markup(1, count, swipe_line)}</div>
 </div>
+{title_fit_script()}
 </body></html>"""
     html_path.write_text(html_text)
     render_html_slide(html_path, out_path)
@@ -3063,7 +3290,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--cover-headline",
-        help="Override the generated cover headline; wrap the accent word in [brackets]",
+        help="Override the generated cover headline; wrap highlight words/phrases in [brackets]",
     )
     ap.add_argument("--cover-swipe-line", help="Override the generated cover swipe line")
     ap.add_argument(
