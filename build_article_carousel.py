@@ -1444,6 +1444,7 @@ def manifest_title_context(context: dict[str, Any]) -> dict[str, Any]:
     cover_copy = context.get("cover_copy")
     return {
         "topic": context.get("topic", ""),
+        "image_brief": context.get("image_brief", {}),
         "cover_copy": cover_copy if isinstance(cover_copy, dict) else {},
         "instagram_caption": context.get("instagram_caption", ""),
         "brand_voice_doc": context.get("brand_voice_doc", ""),

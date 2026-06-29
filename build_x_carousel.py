@@ -52,6 +52,9 @@ DEFAULT_ACCOUNT_NAME = "vibecodersph"
 # fitter below uses this region after final font metrics and line breaks exist.
 TITLE_CLUSTER_TOP = round(SLIDE_H * 0.65)
 TITLE_CLUSTER_BOTTOM = 118
+TITLE_VISUAL_HEIGHT = round(SLIDE_H * 0.71)
+TITLE_HEADLINE_WEIGHT = 560
+TITLE_HEADLINE_SCALE_Y = 1.1
 # Instagram's app UI can show larger carousels, but the Content Publishing API
 # accepts 10 child items. Keep generated posts inside the publishable API limit.
 DEFAULT_MAX_CAROUSEL_ITEMS = 10
@@ -1641,6 +1644,8 @@ def title_fit_script() -> str:
 
 
 def asset_uri(path: object) -> str:
+    if isinstance(path, str) and path.strip():
+        path = Path(path)
     if isinstance(path, Path) and path.exists():
         return path.resolve().as_uri()
     return ""
@@ -1657,6 +1662,74 @@ def source_profile_asset_uri(context: dict[str, object]) -> str:
         if uri:
             return uri
     return ""
+
+
+def image_brief_value(value: object, *, limit: int = 260) -> str:
+    text = re.sub(r"\s+", " ", string_value(value).replace("\u2014", ",")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].strip()
+
+
+def image_brief_list(value: object, *, limit: int = 5) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    else:
+        raw = string_value(value)
+        items = re.split(r"[,、;]+", raw) if raw else []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = image_brief_value(item, limit=100)
+        key = normalized_key(text)
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def normalize_image_brief(analysis: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(analysis, dict):
+        return {}
+    raw = analysis.get("image_brief")
+    if not isinstance(raw, dict):
+        return {}
+    brief: dict[str, object] = {}
+    for key in ("core_tension", "visual_metaphor", "visual_extreme", "unresolved_moment"):
+        value = image_brief_value(raw.get(key))
+        if value:
+            brief[key] = value
+    avoid = image_brief_list(raw.get("avoid"))
+    if avoid:
+        brief["avoid"] = avoid
+    return brief
+
+
+def image_brief_prompt(analysis: dict[str, object] | None) -> str:
+    brief = normalize_image_brief(analysis)
+    if not brief:
+        return ""
+    labels = {
+        "core_tension": "Core tension",
+        "visual_metaphor": "Visual metaphor",
+        "visual_extreme": "Visual extreme",
+        "unresolved_moment": "Unresolved moment",
+    }
+    lines = ["Image brief for the symbolic metaphor:"]
+    for key, label in labels.items():
+        value = string_value(brief.get(key))
+        if value:
+            lines.append(f"- {label}: {value}")
+    avoid = brief.get("avoid")
+    if isinstance(avoid, list) and avoid:
+        lines.append(f"- Avoid as literal imagery: {', '.join(string_value(item) for item in avoid if string_value(item))}.")
+    lines.append("Use this image brief as the main concept. The topic line is only a label; the image brief is the richer context.")
+    lines.append("Simplify the brief into one iconic print-editorial form with at most one small counterpoint; do not literally render every detail if the brief implies clutter.")
+    lines.append("The brand palette overrides the brief: do not introduce blue, green, purple, rainbow, neon, multicolor glass, or glossy product-render materials. Keep warm cream paper, dark warm ink, and one terracotta accent.")
+    return "\n".join(lines)
 
 
 def gemini_post_brief(posts: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1723,6 +1796,13 @@ Use Google Search grounding when available to identify companies and their curre
 Return JSON only with this exact shape:
 {{
   "topic": "short topic, 4 to 10 words",
+  "image_brief": {{
+    "core_tension": "one sentence naming the real tension or stakes behind the source",
+    "visual_metaphor": "one concrete symbolic metaphor for the image, not literal UI",
+    "visual_extreme": "the scale, quantity, or emptiness anomaly that makes the metaphor surprising",
+    "unresolved_moment": "the mid-change action caught in the frame",
+    "avoid": ["literal visual idea to avoid"]
+  }},
   "cover": {{
     "kicker": "short section label or handle, 1 to 3 words",
     "headline": "{lang}-native IG cover line with one or more [highlighted] words/phrases",
@@ -1747,6 +1827,22 @@ Rules:
   instagram_caption in {lang}.
 - Apply the {brand} Instagram voice guide below when writing cover.kicker,
   cover.headline, cover.accent_words, and cover.swipe_line.
+- Write image_brief in English for the image generator. It should translate the
+  source into one concrete visual metaphor, not a summary label. Make it specific
+  enough that an illustrator could draw the cover without reading the source.
+- image_brief.visual_metaphor must be one familiar object or architectural form
+  made strange. image_brief.unresolved_moment must describe a live transition
+  such as tilting, cracking, dissolving, crossing a threshold, ascending, or
+  eclipsing. image_brief.avoid should list literal traps like screens, code,
+  charts, logos, robots, org charts, or headshots when relevant.
+- Keep image_brief visually simple: one dominant object plus at most one small
+  counterpoint. Do not ask for crowds, many repeated objects, "hundreds" of
+  details, full rooms, desks full of items, or literal workplace scenes.
+- image_brief.visual_extreme should be a simple scale, emptiness, or imbalance
+  contrast that supports one focal element, not a busy quantity prompt.
+- image_brief must respect the brand palette. Do not specify rainbow colors,
+  blue/green/purple objects, multicolor glass, neon, glossy product materials,
+  or any extra accent color beyond warm paper, dark ink, and terracotta.
 - The cover headline must not be a neutral summary of the source. It should be a
   witty {lang} hook that earns the swipe while staying true to the source.
 - cover.headline must contain one or more bracketed highlights, like [tunaw] or
@@ -1961,51 +2057,63 @@ def default_title_image_prompt(
     background_line = (
         f"Deep charcoal / near-black background ({palette['bg']})."
         if is_dark
-        else f"Cream/off-white paper background ({palette['bg']})."
+        else (
+            f"Warm cream / off-white textured paper background ({palette['bg']}), "
+            "with a warm overall color temperature. Do not let the rendering drift "
+            "cool, neutral, or gray: keep the paper, shadows, washes, and midtones warm."
+        )
     )
     ink_line = (
-        f"Paper-white type tones ({palette['fg']}) and a {channel.brand_name} accent color ({palette['primary']})."
+        f"Paper-white type tones ({palette['fg']}) and a {channel.brand_name} accent color ({palette['primary']}) used sparingly as a single accent."
         if is_dark
-        else f"Dark ink ({palette['fg']}) and rust/terracotta accent color ({palette['primary']})."
+        else (
+            f"Dark warm ink ({palette['fg']}) and a rust / terracotta accent ({palette['primary']}) "
+            "used sparingly, as a single concentrated accent that acts as the one bright point the eye lands on first."
+        )
     )
     texture_line = (
         "Abstract geometric composition, premium dark editorial / night-mode magazine aesthetic, "
         "subtle grain, moody contrast, editorial gravitas, intellectual but not cold."
         if is_dark
-        else "Abstract geometric composition, premium print magazine aesthetic, textured paper, "
-        "editorial gravitas, intellectual but not cold."
+        else (
+            "The composition has ONE dominant focal element on clean, uncluttered figure-ground, "
+            "instantly readable at a glance from across a room, surrounded by generous quiet negative space. "
+            "Build it as one bold shape-and-contrast statement against clear ground, not a busy collage of competing parts. "
+            "The focal metaphor is a familiar, recognizable form placed in a surprising or slightly impossible arrangement: "
+            "a known thing made strange, novel enough to break expectation but simple enough to resolve in a single beat. "
+            "Avoid both literal cliche and pure decorative abstraction. Give it weight with a clear visual extreme: "
+            "a dramatic anomaly of scale (something vast set against something tiny), or a stark anomaly of quantity or emptiness. "
+            "Hold one element unresolved: a moment caught mid-change rather than settled. Something tilting, eclipsing, ascending, "
+            "cracking, dissolving, or about to cross a threshold. The frame should read as a live, in-progress instant, "
+            "not a finished, resting still life. Let the composition bleed past one edge so part of the idea continues beyond the frame, "
+            "implying more just out of view. All of this is one idea, not several: a single surprising metaphor, caught mid-moment, on quiet ground. "
+            "Premium print-magazine aesthetic with editorial gravitas: clean architectural and geometric forms suited to the topic "
+            "(drawing as needed from arches, columns, staircases, sun and disc shapes, planes, thresholds, horizons), "
+            "soft ink and watercolor washes, visible paper grain, and long low directional shadows. Warm, intellectual, quietly confident, "
+            "never cold, never loud. High craft throughout. It must not look like a generic AI render, a stock illustration, "
+            "an advertisement, or a busy infographic."
+        )
     )
     parts = [
         f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
         background_line,
         ink_line,
         texture_line,
-        "The image must be visually relevant to the post topic, using symbolic editorial imagery rather than literal app UI.",
+        "The artwork must be a symbolic editorial metaphor for the topic, never literal app UI, screens, dashboards, product shots, charts, or diagrams.",
     ]
     if source_line:
-        if has_source_profile_image:
-            parts.append(
-                "The source post is by this person: "
-                f"{source_line}. Do not generate or invent this person's face. "
-                "Their real X profile image will be composited separately on the title slide; create supporting abstract editorial art that leaves room for that avatar."
-            )
-        else:
-            parts.append(
-                "The source post is by this person: "
-                f"{source_line}. Do not invent a portrait or face for them; use symbolic, non-literal editorial imagery instead."
-            )
-    if ceo_line and not has_source_profile_image:
         parts.append(
-            f"Add a tasteful editorial portrait element of the CEO: {ceo_line}."
+            "Optional source-person context, used only as a conceptual cue for the metaphor, never rendered literally: "
+            f"{source_line}. Do not generate or invent this person's face, body, or silhouette."
         )
-    elif ceo_line:
+    if ceo_line:
         parts.append(
-            f"Company leadership context: {ceo_line}. Represent this context symbolically; do not add any extra realistic human portraits."
+            f"Optional CEO / company-leadership context, used only as a conceptual cue for the metaphor, never rendered literally: {ceo_line}. Do not add any human portrait, face, body, or silhouette."
         )
-    if source_line and ceo_line and not has_source_profile_image:
-        parts.append("Keep any CEO portrait secondary to the source author context.")
     if company_line:
-        parts.append(f"Company context: {company_line}. Do not show logos or brand marks.")
+        parts.append(
+            f"Optional company context, used only as a conceptual cue for the metaphor, never rendered literally: {company_line}. Do not show logos or brand marks."
+        )
     return " ".join(parts)
 
 
@@ -2017,26 +2125,26 @@ def title_image_prompt(
     analysis: dict[str, object] | None,
 ) -> str:
     prompt = default_title_image_prompt(topic, companies, ceos, source_people)
+    brief_prompt = image_brief_prompt(analysis)
     has_source_profile_image = any(
         person.get("profile_image_path") or person.get("profile_image_url")
         for person in source_people
     )
-    people_style = (
-        "- Do not include human faces, portraits, headshots, silhouettes, or figure studies in the generated artwork; the real X avatar will be composited separately."
+    avatar_corner = (
+        "- Keep the bottom-right area quiet and uncluttered, a calm reserved corner where a circular avatar is composited later. Place the focal element elsewhere, and keep it off dead center."
         if has_source_profile_image
-        else "- Keep people as tasteful editorial portrait elements, integrated into the concept rather than corporate headshots."
+        else "- Keep the bottom-right area quiet and uncluttered. Place the focal element elsewhere, and keep it off dead center."
     )
+    brief_block = f"\n\n{brief_prompt}" if brief_prompt else ""
     return f"""
-{prompt}
+{prompt}{brief_block}
 
-Format and style:
-- 16:9 horizontal composition, 2048x1152.
-- Make it feel like the output of generate_cover.py, not a corporate headshot.
-{people_style}
-- Use abstract editorial metaphors, architectural shapes, paper texture, ink wash, grain, and restrained magazine-cover composition.
-- No visible text of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermark.
-- Do not place any graphic or symbol that resembles text.
-- Carousel typography will sit outside the image, not over it.
+Format and composition:
+- 16:9 horizontal, 2048 x 1152.
+{avatar_corner}
+- No human faces, portraits, headshots, silhouettes of people, or figure studies anywhere in the artwork; a real avatar is composited separately.
+- No text or text-like marks of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermarks. Do not place any graphic or symbol that resembles writing.
+- Carousel typography sits outside the image, below it, never over the art.
 """.strip()
 
 
@@ -2104,6 +2212,7 @@ def build_title_enrichment(
         gemini_topic = compact_topic(string_value(analysis.get("topic")))
         if gemini_topic:
             topic = gemini_topic
+    image_brief = normalize_image_brief(analysis)
     cover_copy = normalize_cover_copy(analysis)
     instagram_caption = normalize_instagram_caption(
         analysis,
@@ -2287,6 +2396,7 @@ def build_title_enrichment(
         "source_people": source_people,
         "topic_entity": topic_entity,
         "topic_image_path": topic_image_path,
+        "image_brief": image_brief,
         "cover_copy": cover_copy,
         "post_explanations": post_explanations,
         "instagram_caption": instagram_caption,
@@ -2663,9 +2773,9 @@ def render_title_slide(
   top: 0;
   left: 0;
   width: 100%;
-  height: 790px;
+  height: {TITLE_VISUAL_HEIGHT}px;
   overflow: hidden;
-  background: #151713;
+  background: transparent;
 }}
 .visual-bg, .visual-fallback {{
   position: absolute;
@@ -2676,6 +2786,8 @@ def render_title_slide(
   background-position: center;
   background-size: cover;
   filter: saturate(0.96) contrast(1.02);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
 }}
 .visual-card.is-og-fallback .visual-bg {{
   filter: grayscale(1) contrast(1.06) brightness(1.04);
@@ -2693,14 +2805,14 @@ def render_title_slide(
   z-index: 2;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.24) 62%, var(--bg) 100%);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), 0) 58%, rgba(var(--bg-rgb), 0.24) 78%, rgba(var(--bg-rgb), 0.36) 100%);
   pointer-events: none;
 }}
 .source-avatar {{
   position: absolute;
   z-index: 3;
   right: 72px;
-  bottom: 86px;
+  top: 388px;
   width: 316px;
   height: 316px;
   border-radius: 50%;
@@ -2732,6 +2844,11 @@ def render_title_slide(
   background:
     linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
     repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
+}}
+.title-slide {{
+  background: var(--bg);
 }}
 .title-cluster {{
   position: absolute;
@@ -2769,10 +2886,14 @@ def render_title_slide(
 }}
 .headline {{
   font-size: {font_size}px;
-  font-weight: 720;
+  font-weight: {TITLE_HEADLINE_WEIGHT};
   letter-spacing: 0;
-  line-height: 1.01;
+  line-height: 0.98;
   color: var(--fg);
+  text-shadow:
+    0 1px 3px rgba(var(--bg-rgb), 0.58);
+  transform: scaleY({TITLE_HEADLINE_SCALE_Y});
+  transform-origin: left bottom;
   line-break: strict;
   overflow-wrap: normal;
   text-wrap: balance;
@@ -2793,7 +2914,7 @@ def render_title_slide(
 }}
 </style></head>
 <body>
-<div class="slide">
+<div class="slide title-slide">
   {visual}
   <div class="title-cluster">
     <div class="account-rule"><span>{safe_account_name}</span></div>
@@ -3040,6 +3161,7 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
     topic_entity = context.get("topic_entity")
     return {
         "topic": context.get("topic", ""),
+        "image_brief": context.get("image_brief", {}),
         "cover_copy": context.get("cover_copy", {}),
         "post_explanations": context.get("post_explanations", []),
         "instagram_caption": context.get("instagram_caption", ""),

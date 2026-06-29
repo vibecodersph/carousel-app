@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import build_x_carousel
@@ -146,6 +148,62 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("Make slide 2 feel necessary", prompt)
         self.assertIn("If the hook could work unchanged for 20 other AI posts", prompt)
         self.assertIn("at most 50% of the visible", prompt)
+        self.assertIn('"image_brief"', prompt)
+        self.assertIn("one concrete visual metaphor", prompt)
+
+    def test_title_image_prompt_uses_image_brief(self) -> None:
+        prompt = build_x_carousel.title_image_prompt(
+            "Future of Tech Roles",
+            [],
+            [],
+            [],
+            {
+                "image_brief": {
+                    "core_tension": "Traditional product roles are dissolving into fluid archetypes.",
+                    "visual_metaphor": "A single office nameplate melting into five small architectural blocks.",
+                    "visual_extreme": "One vast title marker set against tiny new role blocks.",
+                    "unresolved_moment": "The marker is mid-dissolve while the blocks cross a threshold.",
+                    "avoid": ["screens", "org charts", "robots"],
+                }
+            },
+        )
+
+        self.assertIn("Image brief for the symbolic metaphor", prompt)
+        self.assertIn("Traditional product roles are dissolving", prompt)
+        self.assertIn("office nameplate melting", prompt)
+        self.assertIn("screens, org charts, robots", prompt)
+        self.assertIn("the image brief is the richer context", prompt)
+
+    def test_title_slide_art_fades_into_copy_area(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            build_x_carousel, "render_html_slide"
+        ):
+            image_path = Path(tmp) / "cover.png"
+            image_path.write_bytes(b"fake image bytes")
+            out_path = Path(tmp) / "slide_01.png"
+            build_x_carousel.render_title_slide(
+                {"text": "OpenAI splits a model into three tiers.", "url": "https://x.com/a/status/1"},
+                out_path,
+                1,
+                None,
+                {
+                    "topic_image_path": str(image_path),
+                    "cover_copy": {"headline": "Bakit [hinati sa tatlo] ang GPT?"},
+                },
+                "vibecodersph",
+            )
+            html_text = out_path.with_suffix(".html").read_text()
+
+        self.assertIn('class="slide title-slide"', html_text)
+        self.assertIn("background-image: url(file://", html_text)
+        self.assertIn(f"height: {build_x_carousel.TITLE_VISUAL_HEIGHT}px", html_text)
+        self.assertIn("mask-image: linear-gradient", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0) 58%", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0.36) 100%", html_text)
+        self.assertNotIn("var(--bg) 88%", html_text)
+        self.assertIn("text-shadow:", html_text)
+        self.assertIn(f"font-weight: {build_x_carousel.TITLE_HEADLINE_WEIGHT}", html_text)
+        self.assertIn(f"transform: scaleY({build_x_carousel.TITLE_HEADLINE_SCALE_Y})", html_text)
 
 
 if __name__ == "__main__":
