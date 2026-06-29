@@ -6,7 +6,7 @@ The workflow mirrors build_x_carousel.py, but the source is an article:
     uv run python build_article_carousel.py https://example.com/story
 
 Outputs go to out/article_carousel by default. The first slide is the same
-vibecodersph title-cover style used by the X workflow. Remaining slides are selected
+animated title-cover style used by the X workflow. Remaining slides are selected
 from high-signal article sections only: concrete facts, benchmarks, launches,
 technical details, strategy shifts, and business implications.
 """
@@ -33,6 +33,7 @@ from build_x_carousel import (
     DEFAULT_ACCOUNT_NAME,
     build_title_enrichment,
     carousel_cta_copy,
+    cover_poster_path,
     dot_markup,
     download_image,
     extract_gemini_text,
@@ -41,9 +42,9 @@ from build_x_carousel import (
     gemini_text_model,
     load_env_file,
     parse_json_object,
+    render_animated_title_slide,
     render_html_slide,
     render_cta_slide,
-    render_title_slide,
     shared_css,
     string_value,
 )
@@ -1420,7 +1421,7 @@ def cover_title_override(
     article_title: str,
     title_context: dict[str, Any],
 ) -> str | None:
-    """Decide what to pass as render_title_slide's ``title`` argument.
+    """Decide what to pass as the shared title-cover renderer's ``title`` argument.
 
     Returning None lets the cover use the VibeCoders PH brand-voice cover copy
     (Taglish IG line with one [accent] word). We only force a literal title when
@@ -1562,10 +1563,19 @@ def render_carousel_from_article(
     maybe_add_article_image(title_context, article, out_dir)
 
     slides: list[dict[str, Any]] = []
-    title_path = out_dir / "slide_01.png"
+    title_path = out_dir / "slide_01.mp4"
+    title_poster_path = cover_poster_path(title_path)
     cover_title = cover_title_override(title, article.title, title_context)
-    render_title_slide(post, title_path, total, cover_title, title_context, account_name)
-    slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": article.url})
+    render_animated_title_slide(post, title_path, total, cover_title, title_context, account_name)
+    slides.append(
+        {
+            "index": 1,
+            "type": "title",
+            "path": str(title_path),
+            "poster": str(title_poster_path),
+            "source_url": article.url,
+        }
+    )
 
     for slide_index, page in enumerate(pages_to_render, start=2):
         slide_path = out_dir / f"slide_{slide_index:02d}.png"

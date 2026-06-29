@@ -1,0 +1,109 @@
+{
+  "categories": [
+    "models",
+    "apis",
+    "oss",
+    "frameworks",
+    "tools",
+    "datasets",
+    "papers",
+    "techniques",
+    "people",
+    "courses",
+    "roles",
+    "mistakes",
+    "jargon",
+    "stacks",
+    "features",
+    "benchmarks"
+  ],
+  "axes": [
+    "cheapest",
+    "fastest",
+    "best_for_task",
+    "easiest",
+    "most_overlooked",
+    "most_overrated",
+    "enterprise_safe",
+    "free_tier",
+    "self_hostable",
+    "most_hireable",
+    "best_japanese",
+    "highest_roi",
+    "about_to_blow_up"
+  ],
+  "twists": [
+    "own_money_tested",
+    "the_one_everyone_ignores",
+    "overseas_arbitrage",
+    "stop_using_x",
+    "ranked_so_you_dont_have_to",
+    "unusual_criterion"
+  ],
+  "axisByCategory": {
+    "cheapest": ["models", "apis", "oss", "frameworks", "tools", "stacks"],
+    "fastest": ["models", "apis", "oss", "frameworks", "tools", "benchmarks"],
+    "best_for_task": ["models", "apis", "oss", "frameworks", "tools", "datasets", "papers", "techniques", "stacks", "features", "benchmarks"],
+    "easiest": ["apis", "oss", "frameworks", "tools", "courses", "techniques", "stacks", "features"],
+    "most_overlooked": ["models", "apis", "oss", "frameworks", "tools", "datasets", "papers", "techniques", "courses", "roles", "jargon", "stacks", "features", "benchmarks"],
+    "most_overrated": ["models", "apis", "frameworks", "tools", "papers", "techniques", "people", "courses", "roles", "jargon", "stacks", "features", "benchmarks"],
+    "enterprise_safe": ["models", "apis", "oss", "frameworks", "tools", "stacks", "features", "benchmarks"],
+    "free_tier": ["models", "apis", "oss", "frameworks", "tools", "stacks"],
+    "self_hostable": ["models", "apis", "oss", "frameworks", "tools", "datasets", "stacks"],
+    "most_hireable": ["tools", "techniques", "courses", "roles", "stacks"],
+    "best_japanese": ["models", "apis", "tools"],
+    "highest_roi": ["models", "apis", "oss", "frameworks", "tools", "techniques", "courses", "roles", "stacks", "features", "benchmarks"],
+    "about_to_blow_up": ["models", "apis", "oss", "frameworks", "tools", "datasets", "papers", "techniques", "people", "courses", "roles", "mistakes", "jargon", "stacks", "features", "benchmarks"]
+  },
+  "lensAxisWeights": {
+    "jp_business": {
+      "enterprise_safe": 1.8,
+      "best_japanese": 1.7,
+      "most_overlooked": 1.45,
+      "highest_roi": 1.35,
+      "about_to_blow_up": 1.2,
+      "cheapest": 1.05,
+      "free_tier": 0.9,
+      "self_hostable": 1.05,
+      "most_hireable": 0.8
+    },
+    "ph_builder": {
+      "cheapest": 1.7,
+      "free_tier": 1.65,
+      "self_hostable": 1.45,
+      "most_hireable": 1.5,
+      "highest_roi": 1.55,
+      "easiest": 1.25,
+      "about_to_blow_up": 1.2,
+      "enterprise_safe": 0.8,
+      "best_japanese": 0.4
+    }
+  },
+  "lensTwistWeights": {
+    "jp_business": {
+      "overseas_arbitrage": 1.8,
+      "ranked_so_you_dont_have_to": 1.35,
+      "own_money_tested": 1.2,
+      "the_one_everyone_ignores": 1.3,
+      "unusual_criterion": 1.25,
+      "stop_using_x": 1.0
+    },
+    "ph_builder": {
+      "own_money_tested": 1.55,
+      "ranked_so_you_dont_have_to": 1.45,
+      "stop_using_x": 1.25,
+      "the_one_everyone_ignores": 1.25,
+      "unusual_criterion": 1.15,
+      "overseas_arbitrage": 0.75
+    }
+  },
+  "twistFlags": {
+    "stop_using_x": {
+      "mildControversy": true
+    }
+  },
+  "scoring": {
+    "minCoreScore": 3,
+    "minTotal": 14
+  }
+}

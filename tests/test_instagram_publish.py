@@ -1,5 +1,6 @@
 import unittest
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import patch
 
 import instagram_publish
@@ -50,6 +51,11 @@ class InstagramPublishCredentialTests(unittest.TestCase):
 
 
 class InstagramPublishMediaItemTests(unittest.TestCase):
+    def test_title_mp4_infers_video_media_kind(self) -> None:
+        kind = instagram_publish.infer_media_kind({"type": "title"}, Path("/tmp/slide_01.mp4"))
+
+        self.assertEqual(kind, "video")
+
     def test_rejects_manifests_over_graph_api_carousel_limit(self) -> None:
         manifest = {
             "slides": [

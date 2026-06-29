@@ -5,8 +5,8 @@ The workflow is intentionally one-input:
 
     uv run python build_x_carousel.py https://x.com/OpenAI/status/2061887650391625870
 
-Outputs go to out/x_carousel by default. The first slide is a branded title
-PNG. Each discovered post becomes either a branded post PNG or a branded
+Outputs go to out/x_carousel by default. The first slide is a branded animated
+MP4 cover. Each discovered post becomes either a branded post PNG or a branded
 post+video MP4 when video is available.
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -35,6 +36,7 @@ from build_video_slide import (
     extract_status_id,
     extract_status_url,
     format_post_date,
+    run,
 )
 from channel import load_channel
 from fetch_tweet_data import fetch_thread, resolve_xai_token
@@ -55,6 +57,8 @@ TITLE_CLUSTER_BOTTOM = 118
 TITLE_VISUAL_HEIGHT = round(SLIDE_H * 0.71)
 TITLE_HEADLINE_WEIGHT = 560
 TITLE_HEADLINE_SCALE_Y = 1.1
+TITLE_ANIMATION_SECONDS = 5.0
+TITLE_ANIMATION_FPS = 30
 # Instagram's app UI can show larger carousels, but the Content Publishing API
 # accepts 10 child items. Keep generated posts inside the publishable API limit.
 DEFAULT_MAX_CAROUSEL_ITEMS = 10
@@ -1633,6 +1637,7 @@ def title_fit_script() -> str:
     headline.style.fontSize = `${Math.floor(best)}px`;
   }
 
+  window.__fitCoverHeadline = fitHeadline;
   requestAnimationFrame(fitHeadline);
   window.addEventListener('load', fitHeadline);
   if (document.fonts && document.fonts.ready) {
@@ -2739,14 +2744,190 @@ def render_cta_slide(
     return out_path
 
 
-def render_title_slide(
+def cover_poster_path(video_path: Path) -> Path:
+    return video_path.with_name(f"{video_path.stem}_poster.png")
+
+
+def kinetic_title_markup(title_text: str) -> str:
+    words = re.findall(r"\S+", title_text)
+    if not words:
+        return ""
+    if contains_japanese(title_text):
+        compact = re.sub(r"\s+", "", title_text)
+        words = [compact[index : index + 4] for index in range(0, len(compact), 4)]
+    words = words[:12]
+    tokens = []
+    for index, word in enumerate(words):
+        tokens.append(
+            f'<span class="kinetic-token" data-token-index="{index}">{html.escape(word)}</span>'
+        )
+    return f'<div class="kinetic-title" aria-hidden="true">{"".join(tokens)}</div>'
+
+
+def cover_animation_script(duration_seconds: float) -> str:
+    return f"""
+<script>
+(() => {{
+  const durationMs = {max(0.1, duration_seconds) * 1000:.0f};
+  const headlineScaleY = {TITLE_HEADLINE_SCALE_Y};
+  let raf = 0;
+
+  function clamp(value) {{
+    return Math.max(0, Math.min(1, Number(value) || 0));
+  }}
+
+  function lerp(start, end, value) {{
+    return start + ((end - start) * value);
+  }}
+
+  function easeOutCubic(value) {{
+    const inv = 1 - clamp(value);
+    return 1 - (inv * inv * inv);
+  }}
+
+  function easeInOutSine(value) {{
+    return -(Math.cos(Math.PI * clamp(value)) - 1) / 2;
+  }}
+
+  function px(value) {{
+    return value.toFixed(2) + "px";
+  }}
+
+  function setCoverAnimationProgress(value) {{
+    const p = clamp(value);
+    document.documentElement.style.setProperty("--cover-progress", p.toFixed(4));
+
+    const bg = document.querySelector(".animated-cover .visual-bg");
+    const fallback = document.querySelector(".animated-cover .visual-fallback");
+    const grain = document.querySelector(".animated-cover .cover-grain");
+    const light = document.querySelector(".animated-cover .cover-light");
+    const shadow = document.querySelector(".animated-cover .cover-shadow");
+    const avatar = document.querySelector(".animated-cover .source-avatar");
+    const account = document.querySelector(".animated-cover .account-rule");
+    const headline = document.querySelector(".animated-cover .headline");
+    const kinetic = document.querySelector(".animated-cover .kinetic-title");
+    const kineticTokens = document.querySelectorAll(".animated-cover .kinetic-token");
+    const dots = document.querySelector(".animated-cover .dots");
+    const accents = document.querySelectorAll(".animated-cover .headline .accent");
+
+    const slow = easeInOutSine(p);
+    const unresolved = p * 0.86;
+    const breath = Math.sin(p * Math.PI * 0.82);
+
+    if (bg) {{
+      bg.style.transform = "scale(" + lerp(1.012, 1.022, slow).toFixed(4) + ") translate3d("
+        + px(lerp(-4.0, 2.5, unresolved)) + ", "
+        + px(lerp(1.8, -2.2, unresolved)) + ", 0)";
+      bg.style.filter = "saturate(" + lerp(0.98, 1.01, slow).toFixed(3) + ") contrast("
+        + lerp(1.02, 1.045, slow).toFixed(3) + ")";
+    }}
+    if (fallback) {{
+      fallback.style.transform = "scale(" + lerp(1.004, 1.012, slow).toFixed(4) + ") translate3d("
+        + px(lerp(2.0, -2.2, unresolved)) + ", "
+        + px(lerp(-1.0, 1.6, unresolved)) + ", 0)";
+      fallback.style.opacity = lerp(0.96, 1, slow).toFixed(3);
+    }}
+    if (grain) {{
+      grain.style.transform = "translate3d(" + px(lerp(-1.5, 2.5, p)) + ", "
+        + px(lerp(1.2, -1.8, p)) + ", 0)";
+      grain.style.opacity = lerp(0.095, 0.135, slow).toFixed(3);
+    }}
+    if (light) {{
+      light.style.transform = "translate3d(" + px(lerp(-34, 24, unresolved))
+        + ", 0, 0) rotate(-4deg)";
+      light.style.opacity = lerp(0.16, 0.28, slow).toFixed(3);
+    }}
+    if (shadow) {{
+      shadow.style.transform = "translate3d(" + px(lerp(-16, 13, unresolved))
+        + ", " + px(lerp(-2, 5, unresolved)) + ", 0) rotate("
+        + lerp(-7.5, -5.4, unresolved).toFixed(3) + "deg)";
+      shadow.style.opacity = lerp(0.10, 0.18, slow).toFixed(3);
+    }}
+    if (avatar) {{
+      avatar.style.opacity = lerp(0.96, 1, slow).toFixed(3);
+      avatar.style.transform = "translate3d(" + px(lerp(2.0, -1.0, unresolved))
+        + ", " + px(lerp(-1.0, 1.0, unresolved)) + ", 0) scale("
+        + lerp(0.996, 1.002, breath).toFixed(4) + ")";
+    }}
+    if (account) {{
+      account.style.opacity = lerp(0.92, 1, easeOutCubic(p)).toFixed(3);
+      account.style.transform = "translate3d(0, " + px(lerp(2.6, 0.4, unresolved)) + ", 0)";
+    }}
+    const typeResolve = easeInOutSine(clamp((p - 0.08) / 0.84));
+    const typeGhost = 1 - typeResolve;
+    if (kinetic) {{
+      kinetic.style.opacity = lerp(0.78, 0, typeResolve).toFixed(3);
+      kinetic.style.filter = "blur(" + lerp(0, 1.6, typeResolve).toFixed(2) + "px)";
+    }}
+    kineticTokens.forEach((token, index) => {{
+      const direction = index % 2 === 0 ? 1 : -1;
+      const lane = (index % 3) - 1;
+      const startX = direction * (18 + (index % 4) * 7);
+      const startY = lane * 22 - 10;
+      const startRot = direction * (index % 3 === 0 ? 4.5 : 2.2);
+      token.style.transform = "translate3d(" + px(lerp(startX, 0, typeResolve))
+        + ", " + px(lerp(startY, 0, typeResolve)) + ", 0) rotate("
+        + lerp(startRot, 0, typeResolve).toFixed(3) + "deg) scaleX("
+        + lerp(1.18, 1.0, typeResolve).toFixed(4) + ") scaleY("
+        + lerp(0.84, 1.0, typeResolve).toFixed(4) + ")";
+      token.style.letterSpacing = px(lerp(2.2, 0, typeResolve));
+      token.style.borderColor = "rgba(var(--fg-rgb), " + lerp(0.42, 0, typeResolve).toFixed(3) + ")";
+      token.style.backgroundColor = "rgba(var(--bg-rgb), " + lerp(0.76, 0, typeResolve).toFixed(3) + ")";
+    }});
+    if (headline) {{
+      headline.style.opacity = lerp(0.46, 1, typeResolve).toFixed(3);
+      headline.style.transform = "translate3d(0, " + px(lerp(6.0, 0.8, unresolved))
+        + ", 0) scaleX(" + lerp(1.035, 1.0, typeResolve).toFixed(4)
+        + ") scaleY(" + headlineScaleY + ")";
+    }}
+    accents.forEach((accent) => {{
+      accent.style.transform = "translate3d(0, " + px(lerp(1.2, -0.6, unresolved))
+        + ", 0) scale(" + lerp(1.000, 1.012 * (1 - typeGhost * 0.4), breath).toFixed(4) + ")";
+      accent.style.filter = "drop-shadow(0 0 " + lerp(1.5, 4.2, breath).toFixed(2)
+        + "px rgba(var(--primary-rgb), 0.20))";
+    }});
+    if (dots) {{
+      dots.style.opacity = lerp(0.84, 1, easeOutCubic(p)).toFixed(3);
+      dots.style.transform = "translate3d(0, " + px(lerp(3.0, 0.5, unresolved)) + ", 0)";
+    }}
+  }}
+
+  function startCoverAnimation() {{
+    let start = 0;
+    window.__pauseCoverAnimation();
+    const tick = (now) => {{
+      if (!start) start = now;
+      const progress = clamp((now - start) / durationMs);
+      setCoverAnimationProgress(progress);
+      if (progress < 1) {{
+        raf = window.requestAnimationFrame(tick);
+      }}
+    }};
+    raf = window.requestAnimationFrame(tick);
+  }}
+
+  window.__setCoverAnimationProgress = setCoverAnimationProgress;
+  window.__pauseCoverAnimation = () => {{
+    if (raf) window.cancelAnimationFrame(raf);
+    raf = 0;
+  }};
+  setCoverAnimationProgress(0);
+  window.__coverAnimationReady = true;
+  window.requestAnimationFrame(startCoverAnimation);
+}})();
+</script>
+""".strip()
+
+
+def title_slide_html(
     post: dict[str, str],
-    out_path: Path,
     count: int,
     title: str | None,
     title_context: dict[str, object],
     account_name: str,
-) -> Path:
+    *,
+    animated: bool = False,
+) -> str:
     cover_copy = title_context.get("cover_copy")
     cover_copy = cover_copy if isinstance(cover_copy, dict) else {}
     if title:
@@ -2760,20 +2941,118 @@ def render_title_slide(
     else:
         headline_markup, title_text = fallback_headline_markup(post, title)
     font_size = title_font_size(title_text)
-    html_path = out_path.with_suffix(".html")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kinetic_markup = kinetic_title_markup(title_text) if animated else ""
     safe_account_name = html.escape(account_name.strip() or DEFAULT_ACCOUNT_NAME)
     swipe_line = string_value(cover_copy.get("swipe_line")) if not title else ""
     visual = title_visual_markup(title_context)
-    html_text = f"""<!doctype html>
+    animation_class = " animated-cover" if animated else ""
+    animation_attr = ' data-cover-animation="premium-still"' if animated else ""
+    animation_layers = """
+  <div class="cover-light" aria-hidden="true"></div>
+  <div class="cover-shadow" aria-hidden="true"></div>
+  <div class="cover-grain" aria-hidden="true"></div>
+""" if animated else ""
+    animation_css = """
+.animated-cover {
+  --cover-progress: 0;
+}
+.animated-cover .visual-bg,
+.animated-cover .visual-fallback,
+.animated-cover .cover-light,
+.animated-cover .cover-shadow,
+.animated-cover .cover-grain,
+.animated-cover .source-avatar,
+.animated-cover .account-rule,
+.animated-cover .kinetic-title,
+.animated-cover .kinetic-token,
+.animated-cover .headline,
+.animated-cover .dots,
+.animated-cover .headline .accent {
+  will-change: transform, opacity, filter;
+}
+.cover-light,
+.cover-shadow,
+.cover-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cover-light {
+  z-index: 2;
+  background:
+    radial-gradient(ellipse at 16% 12%, rgba(255, 255, 255, 0.24), transparent 40%),
+    linear-gradient(104deg, transparent 0%, transparent 35%, rgba(255, 255, 255, 0.17) 49%, transparent 64%, transparent 100%);
+  mix-blend-mode: screen;
+  opacity: 0.18;
+}
+.cover-shadow {
+  z-index: 2;
+  top: -11%;
+  right: auto;
+  bottom: auto;
+  left: -22%;
+  width: 144%;
+  height: 62%;
+  background: linear-gradient(92deg, transparent 0%, rgba(var(--fg-rgb), 0.16) 50%, transparent 76%);
+  filter: blur(18px);
+  mix-blend-mode: multiply;
+  transform-origin: 16% 18%;
+  opacity: 0.12;
+}
+.cover-grain {
+  z-index: 2;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(var(--fg-rgb), 0.16) 0 0.7px, transparent 0.9px),
+    radial-gradient(circle at 70% 60%, rgba(var(--primary-rgb), 0.12) 0 0.6px, transparent 0.85px);
+  background-size: 5px 5px, 7px 7px;
+  mix-blend-mode: multiply;
+  opacity: 0.10;
+}
+.animated-cover .headline .accent {
+  display: inline-block;
+  transform-origin: center bottom;
+}
+.kinetic-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+.kinetic-token {
+  display: inline-block;
+  padding: 1px 9px 3px;
+  border: 2px solid rgba(var(--fg-rgb), 0.38);
+  background: rgba(var(--bg-rgb), 0.72);
+  color: var(--fg);
+  font-size: clamp(42px, 0.86em, 96px);
+  font-weight: 860;
+  line-height: 0.94;
+  transform-origin: center bottom;
+  text-shadow: none;
+}
+.kinetic-token:nth-child(3n) {
+  color: var(--primary);
+}
+.animated-cover .title-cluster,
+.animated-cover .dots {
+  z-index: 3;
+}
+""" if animated else ""
+    animation_script = cover_animation_script(TITLE_ANIMATION_SECONDS) if animated else ""
+    return f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
 {shared_css()}
 .visual-card {{
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100%;
-  height: {TITLE_VISUAL_HEIGHT}px;
+  height: 100%;
   overflow: hidden;
   background: transparent;
 }}
@@ -2786,8 +3065,6 @@ def render_title_slide(
   background-position: center;
   background-size: cover;
   filter: saturate(0.96) contrast(1.02);
-  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
 }}
 .visual-card.is-og-fallback .visual-bg {{
   filter: grayscale(1) contrast(1.06) brightness(1.04);
@@ -2805,7 +3082,8 @@ def render_title_slide(
   z-index: 2;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), 0) 58%, rgba(var(--bg-rgb), 0.24) 78%, rgba(var(--bg-rgb), 0.36) 100%);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0.16) 0%, rgba(var(--bg-rgb), 0.08) 32%, rgba(var(--bg-rgb), 0.46) 70%, rgba(var(--bg-rgb), 0.74) 100%),
+    linear-gradient(90deg, rgba(var(--bg-rgb), 0.52) 0%, rgba(var(--bg-rgb), 0.08) 42%, rgba(var(--bg-rgb), 0.46) 100%);
   pointer-events: none;
 }}
 .source-avatar {{
@@ -2844,8 +3122,6 @@ def render_title_slide(
   background:
     linear-gradient(135deg, rgba(var(--primary-rgb), 0.74), rgba(22, 20, 15, 0.94)),
     repeating-linear-gradient(90deg, rgba(var(--bg-rgb), 0.12) 0 2px, transparent 2px 18px);
-  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0%, #000 78%, rgba(0, 0, 0, 0.55) 90%, transparent 100%);
 }}
 .title-slide {{
   background: var(--bg);
@@ -2912,20 +3188,142 @@ def render_title_slide(
 .dots {{
   bottom: 62px;
 }}
+{animation_css}
 </style></head>
 <body>
-<div class="slide title-slide">
+<div class="slide title-slide{animation_class}"{animation_attr}>
   {visual}
+{animation_layers}
   <div class="title-cluster">
     <div class="account-rule"><span>{safe_account_name}</span></div>
+    {kinetic_markup}
     <h1 class="headline">{headline_markup}</h1>
   </div>
   <div class="dots">{dot_markup(1, count, swipe_line)}</div>
 </div>
 {title_fit_script()}
+{animation_script}
 </body></html>"""
+
+
+def render_title_slide(
+    post: dict[str, str],
+    out_path: Path,
+    count: int,
+    title: str | None,
+    title_context: dict[str, object],
+    account_name: str,
+) -> Path:
+    html_path = out_path.with_suffix(".html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_text = title_slide_html(
+        post,
+        count,
+        title,
+        title_context,
+        account_name,
+        animated=False,
+    )
     html_path.write_text(html_text)
     render_html_slide(html_path, out_path)
+    return out_path
+
+
+def render_animated_title_slide(
+    post: dict[str, str],
+    out_path: Path,
+    count: int,
+    title: str | None,
+    title_context: dict[str, object],
+    account_name: str,
+    *,
+    duration_seconds: float = TITLE_ANIMATION_SECONDS,
+    fps: int = TITLE_ANIMATION_FPS,
+) -> Path:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise SystemExit("playwright is required to render animated carousel covers") from exc
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("ffmpeg is required to render animated cover MP4s")
+
+    duration_seconds = max(0.1, float(duration_seconds))
+    fps = max(1, int(fps))
+    frame_count = max(2, int(round(duration_seconds * fps)))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    poster_path = cover_poster_path(out_path)
+    html_path = out_path.with_suffix(".html")
+    html_path.write_text(
+        title_slide_html(
+            post,
+            count,
+            title,
+            title_context,
+            account_name,
+            animated=True,
+        )
+    )
+
+    print(f"[cover] rendering animated cover -> {out_path}")
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"{out_path.stem}_frames_") as tmp:
+            frames_dir = Path(tmp)
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page(
+                    viewport={"width": SLIDE_W, "height": SLIDE_H},
+                    device_scale_factor=1,
+                )
+                page.goto(html_path.resolve().as_uri())
+                page.wait_for_load_state("networkidle")
+                page.evaluate(
+                    "() => (document.fonts && document.fonts.ready ? "
+                    "document.fonts.ready.then(() => true) : true)"
+                )
+                page.evaluate("() => window.__fitCoverHeadline && window.__fitCoverHeadline()")
+                page.wait_for_function("() => window.__coverAnimationReady === true")
+                page.evaluate("() => window.__pauseCoverAnimation && window.__pauseCoverAnimation()")
+                slide = page.locator(".slide")
+                final_frame = frames_dir / f"frame_{frame_count - 1:04d}.png"
+                for frame_index in range(frame_count):
+                    progress = frame_index / (frame_count - 1)
+                    frame_path = frames_dir / f"frame_{frame_index:04d}.png"
+                    page.evaluate(
+                        "(progress) => window.__setCoverAnimationProgress(progress)",
+                        progress,
+                    )
+                    slide.screenshot(path=str(frame_path))
+                browser.close()
+
+            shutil.copyfile(final_frame, poster_path)
+            run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-framerate",
+                    str(fps),
+                    "-start_number",
+                    "0",
+                    "-i",
+                    str(frames_dir / "frame_%04d.png"),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    str(out_path),
+                ]
+            )
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(
+            "could not render the animated cover. If this is a fresh setup, run "
+            "`uv run python -m playwright install chromium` once."
+        ) from exc
     return out_path
 
 
@@ -3275,7 +3673,8 @@ def build_x_carousel(
             f"{item_limit}; reduce --max-thread-posts"
         )
     slides: list[dict[str, object]] = []
-    title_path = out_dir / "slide_01.png"
+    title_path = out_dir / "slide_01.mp4"
+    title_poster_path = cover_poster_path(title_path)
     title_context = build_title_enrichment(
         posts,
         title=title,
@@ -3284,8 +3683,16 @@ def build_x_carousel(
         cover_headline=cover_headline,
         cover_swipe_line=cover_swipe_line,
     )
-    render_title_slide(posts[0], title_path, total, title, title_context, account_name)
-    slides.append({"index": 1, "type": "title", "path": str(title_path), "source_url": posts[0]["url"]})
+    render_animated_title_slide(posts[0], title_path, total, title, title_context, account_name)
+    slides.append(
+        {
+            "index": 1,
+            "type": "title",
+            "path": str(title_path),
+            "poster": str(title_poster_path),
+            "source_url": posts[0]["url"],
+        }
+    )
 
     if first_page_only:
         posts_to_render: list[dict[str, str]] = []
@@ -3467,7 +3874,7 @@ def main() -> int:
     account_name = args.account_name or channel.account_name
 
     if not shutil.which("ffmpeg"):
-        print("warning: ffmpeg not found; video posts will fail to render", file=sys.stderr)
+        raise SystemExit("ffmpeg is required to render animated cover MP4s")
 
     build_x_carousel(
         args.url,

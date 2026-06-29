@@ -1,0 +1,44 @@
+{
+  "questions": [
+    {
+      "id": "q_jp_enterprise_model_choice",
+      "question": "社内AI導入で、最初に比較すべきモデルとAPIは何ですか？",
+      "lens": "jp_business",
+      "categoryHints": ["models", "apis", "tools"],
+      "axisHints": ["enterprise_safe", "best_japanese", "highest_roi"],
+      "tags": ["enterprise", "adoption", "model-choice"],
+      "source": "manual cohort seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "q_jp_risk",
+      "question": "海外では使われているのに、日本企業がまだ見落としているAIツールは何ですか？",
+      "lens": "jp_business",
+      "categoryHints": ["apis", "oss", "tools"],
+      "axisHints": ["most_overlooked", "enterprise_safe"],
+      "tags": ["overseas-arbitrage", "tools"],
+      "source": "manual client seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "q_ph_budget_stack",
+      "question": "Which AI stack can a small PH dev shop use when every dollar matters?",
+      "lens": "ph_builder",
+      "categoryHints": ["apis", "tools", "stacks"],
+      "axisHints": ["cheapest", "free_tier", "highest_roi"],
+      "tags": ["budget", "freelance", "stack"],
+      "source": "manual cohort seed",
+      "addedAt": "2026-06-29"
+    },
+    {
+      "id": "q_ph_remote_hire",
+      "question": "Ano ang skills and tools na pinaka-sulit aralin para makakuha ng remote AI work?",
+      "lens": "ph_builder",
+      "categoryHints": ["tools", "techniques", "roles", "courses"],
+      "axisHints": ["most_hireable", "highest_roi", "easiest"],
+      "tags": ["career", "remote-work", "skills"],
+      "source": "manual cohort seed",
+      "addedAt": "2026-06-29"
+    }
+  ]
+}
