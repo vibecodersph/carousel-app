@@ -44,6 +44,7 @@ from generate_cover import DEFAULT_OPENAI_IMAGE_MODEL, generate_openai, openai_a
 
 ROOT = Path(__file__).resolve().parent
 FONTS = ROOT / "assets" / "archivo.css"
+TEXT_MOTION_LIBRARY = ROOT / "assets" / "text-motion-library.js"
 # Legacy voice-doc path, kept for the default channel's backward-compatible fallback.
 # The active channel's voice guide is resolved via load_channel(); see channel.py.
 IG_VOICE_DOC = ROOT / "brand" / "VIBECODERS_IG_VOICE.md"
@@ -90,7 +91,7 @@ X_COOKIE_DOMAINS = ("x.com", "twitter.com")
 GOOGLE_KG_ENDPOINT = "https://kgsearch.googleapis.com/v1/entities:search"
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com"
 DEFAULT_GEMINI_TEXT_MODEL = "gemini-3.5-flash"
-DEFAULT_OPENAI_TITLE_IMAGE_SIZE = "2048x1152"
+DEFAULT_OPENAI_TITLE_IMAGE_SIZE = "1024x1280"
 GOOGLE_WARNED: set[str] = set()
 IMAGE_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
@@ -1604,6 +1605,45 @@ def title_fit_script() -> str:
     return Number.parseFloat(value) || 0;
   }
 
+  function canvasContext() {
+    if (!window.__coverMeasureCanvas) {
+      window.__coverMeasureCanvas = document.createElement('canvas');
+    }
+    return window.__coverMeasureCanvas.getContext('2d');
+  }
+
+  function canvasFont(style, fontSize) {
+    return [
+      style.fontStyle || 'normal',
+      style.fontVariant || 'normal',
+      style.fontWeight || '800',
+      `${fontSize}px`,
+      style.fontFamily || 'sans-serif',
+    ].join(' ');
+  }
+
+  function motionLineWidth(line, fontSize, style) {
+    const context = canvasContext();
+    if (!context) return String(line || "").length * fontSize * 0.58;
+    context.font = canvasFont(style, fontSize);
+    return context.measureText(String(line || "")).width;
+  }
+
+  function motionHeadlineWidth(headline, fontSize) {
+    const motion = headline.querySelector('.cover-motion-lines');
+    if (!motion) return headline.scrollWidth;
+    const style = getComputedStyle(headline);
+    try {
+      const lines = JSON.parse(motion.dataset.lines || "[]");
+      if (Array.isArray(lines) && lines.length) {
+        return Math.max(...lines.map((line) => motionLineWidth(line, fontSize, style)));
+      }
+    } catch (_error) {
+      return headline.scrollWidth;
+    }
+    return headline.scrollWidth;
+  }
+
   function fitHeadline() {
     const cluster = document.querySelector('.title-cluster');
     const headline = document.querySelector('.headline');
@@ -1616,8 +1656,9 @@ def title_fit_script() -> str:
       : 0;
     const availableHeight = Math.max(128, cluster.clientHeight - ruleSpace);
     const availableWidth = headline.clientWidth;
-    let low = 52;
-    let high = 150;
+    const isTextMotionCover = Boolean(document.querySelector('.text-motion-cover'));
+    let low = isTextMotionCover ? 72 : 52;
+    let high = isTextMotionCover ? 215 : 150;
     let best = low;
 
     headline.style.maxHeight = "";
@@ -1626,7 +1667,7 @@ def title_fit_script() -> str:
       headline.style.fontSize = `${mid}px`;
       const rect = headline.getBoundingClientRect();
       const verticalOverflow = rect.height > availableHeight + 0.5;
-      const horizontalOverflow = headline.scrollWidth > availableWidth + 1;
+      const horizontalOverflow = motionHeadlineWidth(headline, mid) > availableWidth + 1;
       if (verticalOverflow || horizontalOverflow) {
         high = mid;
       } else {
@@ -1654,6 +1695,46 @@ def asset_uri(path: object) -> str:
     if isinstance(path, Path) and path.exists():
         return path.resolve().as_uri()
     return ""
+
+
+def image_dimensions(path: object) -> tuple[int, int] | None:
+    if isinstance(path, str) and path.strip():
+        path = Path(path)
+    if not isinstance(path, Path) or not path.exists():
+        return None
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(32)
+            if header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) >= 24:
+                return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+            if header.startswith(b"\xff\xd8"):
+                handle.seek(2)
+                while True:
+                    marker_head = handle.read(2)
+                    if len(marker_head) < 2:
+                        return None
+                    while marker_head[0] != 0xFF:
+                        marker_head = marker_head[1:] + handle.read(1)
+                        if len(marker_head) < 2:
+                            return None
+                    marker = marker_head[1]
+                    if marker in (0xD8, 0xD9):
+                        continue
+                    length_bytes = handle.read(2)
+                    if len(length_bytes) < 2:
+                        return None
+                    segment_length = int.from_bytes(length_bytes, "big")
+                    if segment_length < 2:
+                        return None
+                    if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                        segment = handle.read(5)
+                        if len(segment) < 5:
+                            return None
+                        return int.from_bytes(segment[3:5], "big"), int.from_bytes(segment[1:3], "big")
+                    handle.seek(segment_length - 2, 1)
+    except OSError:
+        return None
+    return None
 
 
 def source_profile_asset_uri(context: dict[str, object]) -> str:
@@ -2100,7 +2181,7 @@ def default_title_image_prompt(
         )
     )
     parts = [
-        f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
+        f"Vertical 4:5 editorial cover art for an Instagram carousel about '{topic}'.",
         background_line,
         ink_line,
         texture_line,
@@ -2145,11 +2226,12 @@ def title_image_prompt(
 {prompt}{brief_block}
 
 Format and composition:
-- 16:9 horizontal, 2048 x 1152.
+- 4:5 vertical portrait, 1024 x 1280. The slide itself is the image frame.
+- Keep the primary symbolic focal element in the upper 58% of the frame. The lower 38% should be quiet warm background that softly vanishes into the brand paper color with no hard edge, no busy details, and no important objects.
 {avatar_corner}
 - No human faces, portraits, headshots, silhouettes of people, or figure studies anywhere in the artwork; a real avatar is composited separately.
 - No text or text-like marks of any kind: no letters, words, numbers, labels, captions, logos, app icons, brand marks, code, UI, screenshots, charts, diagrams, flowchart boxes, badges, posters, glass-board writing, or watermarks. Do not place any graphic or symbol that resembles writing.
-- Carousel typography sits outside the image, below it, never over the art.
+- Carousel typography is composited later in the lower portion, over the quiet vanishing gradient, never over the focal art.
 """.strip()
 
 
@@ -2418,11 +2500,17 @@ def build_title_enrichment(
 
 
 def title_visual_markup(context: dict[str, object]) -> str:
-    topic_image_uri = asset_uri(context.get("topic_image_path"))
+    topic_image_path = context.get("topic_image_path")
+    topic_image_uri = asset_uri(topic_image_path)
     bg_style = f' style="background-image: url({topic_image_uri})"' if topic_image_uri else ""
     source_profile_uri = source_profile_asset_uri(context)
     avatar_markup = ""
     visual_class = "visual-card"
+    dimensions = image_dimensions(topic_image_path)
+    if dimensions:
+        width, height = dimensions
+        if height and (width / height) > 1.1:
+            visual_class += " is-wide-art"
     if str(context.get("image_provider") or "") == "article_og_image":
         # Raw article OG images are usually literal stock photos whose palette
         # clashes with the cream/terracotta brand. Duotone them so the fallback
@@ -2764,6 +2852,391 @@ def kinetic_title_markup(title_text: str) -> str:
     return f'<div class="kinetic-title" aria-hidden="true">{"".join(tokens)}</div>'
 
 
+def cover_animation_mode(title_context: dict[str, object]) -> str:
+    mode = string_value(title_context.get("cover_animation"))
+    return mode or "premium-still"
+
+
+def uses_text_motion_lines(title_context: dict[str, object]) -> bool:
+    return cover_animation_mode(title_context) == "text-motion-lines"
+
+
+def text_motion_headline_lines(title_text: str) -> list[str]:
+    title_text = re.sub(r"\s+", " ", title_text).strip()
+    if not title_text:
+        return []
+    if contains_japanese(title_text):
+        chunks = japanese_phrase_chunks(title_text, max_chars=11)
+        if len(chunks) <= 3:
+            return chunks
+        return [chunks[0], chunks[1], "".join(chunks[2:])]
+
+    words = re.findall(r"\S+", title_text)
+    if len(words) <= 3:
+        return [" ".join(words)]
+    line_count = 3 if len(words) >= 6 else 2
+    target = max(8, round((len(title_text) + line_count - 1) / line_count))
+    lines: list[str] = []
+    current: list[str] = []
+    for index, word in enumerate(words):
+        candidate = " ".join([*current, word])
+        remaining_words = len(words) - index - 1
+        remaining_slots = line_count - len(lines) - 1
+        if (
+            current
+            and len(candidate) > target
+            and remaining_slots > 0
+            and remaining_words >= remaining_slots
+        ):
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+    if len(lines) > line_count:
+        lines = [*lines[: line_count - 1], " ".join(lines[line_count - 1 :])]
+    return lines
+
+
+def headline_lines_markup(
+    title_text: str,
+    lines: list[str],
+    spans: list[tuple[int, int]],
+) -> str:
+    if not lines:
+        return inline_text_markup_with_spans(title_text, spans)
+    pieces: list[str] = []
+    position = 0
+    for line in lines:
+        start = title_text.find(line, position)
+        if start < 0:
+            start = position
+        end = min(len(title_text), start + len(line))
+        line_spans = [
+            (max(span_start, start) - start, min(span_end, end) - start)
+            for span_start, span_end in spans
+            if span_start < end and span_end > start
+        ]
+        pieces.append(
+            f'<span class="headline-line">{inline_text_markup_with_spans(line, line_spans)}</span>'
+        )
+        position = end
+    return "".join(pieces)
+
+
+def text_motion_line_payload(
+    title_text: str,
+    lines: list[str],
+    spans: list[tuple[int, int]],
+) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    position = 0
+    for line in lines:
+        start = title_text.find(line, position)
+        if start < 0:
+            start = position
+        end = min(len(title_text), start + len(line))
+        highlights = [
+            [max(span_start, start) - start, min(span_end, end) - start]
+            for span_start, span_end in spans
+            if span_start < end and span_end > start
+        ]
+        payload.append({"text": line, "highlights": highlights})
+        position = end
+    return payload
+
+
+def cover_text_motion_markup(lines: list[dict[str, object]]) -> str:
+    if not lines:
+        return ""
+    lines_json = html.escape(json.dumps(lines), quote=True)
+    rows = "\n".join(
+        f'      <span class="cover-motion-line" data-line-index="{index}"></span>'
+        for index, _line in enumerate(lines)
+    )
+    return f"""
+    <span class="cover-motion-lines" id="cover-motion-lines" data-lines="{lines_json}">
+{rows}
+    </span>
+"""
+
+
+def cover_text_motion_css() -> str:
+    return """
+.text-motion-cover .headline {
+  position: relative;
+  z-index: 4;
+}
+.text-motion-cover .title-cluster {
+  top: max(600px, calc(__TITLE_CLUSTER_TOP__px - 278px));
+}
+.text-motion-cover .account-rule {
+  position: relative;
+  z-index: 5;
+  margin-bottom: 46px;
+}
+.text-motion-cover .cover-shadow {
+  display: none;
+}
+.cover-motion-lines {
+  position: relative;
+  display: block;
+  width: 100%;
+  pointer-events: none;
+  opacity: 1;
+  --tm-style-one: var(--fg);
+  --tm-style-two: var(--bg);
+  --tm-style-two-bg: var(--primary);
+  --tm-style-two-bg-inset-y: 0.018em;
+  --tm-style-two-bg-inset-x: 0.014em;
+}
+.cover-motion-line {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 0.98em;
+  overflow: visible;
+}
+.cover-motion-lines .tm-viewport {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: visible;
+}
+.cover-motion-lines .tm-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: transparent;
+  overflow: visible;
+  transform: scale(var(--tm-scale, 1));
+  transform-origin: left top;
+}
+.cover-motion-lines .tm-row {
+  position: absolute;
+  left: var(--tm-row-left, 0);
+  width: var(--tm-row-width, 100%);
+  height: var(--tm-row-height, 120px);
+}
+.cover-motion-lines .tm-phrase {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.34em;
+  color: var(--fg);
+  font-family: var(--tm-font-family, inherit);
+  font-size: var(--tm-font-size, 88px);
+  font-weight: var(--tm-font-weight, 860);
+  line-height: 0.82;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  filter: drop-shadow(0 2px 8px rgba(var(--bg-rgb), 0.42));
+}
+.cover-motion-lines .tm-word {
+  display: flex;
+  align-items: flex-start;
+}
+.cover-motion-lines .tm-letter {
+  position: relative;
+  display: inline-grid;
+  width: var(--tm-char-width);
+  height: var(--tm-char-height);
+  place-items: center;
+  opacity: 1;
+  transform: translate(0, 0);
+  will-change: opacity, transform;
+  filter: drop-shadow(0 2px 4px rgba(var(--fg-rgb), 0.10));
+}
+.cover-motion-lines .tm-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  line-height: inherit;
+}
+.cover-motion-lines .tm-style-one {
+  color: var(--tm-style-one, var(--fg));
+  opacity: 1;
+}
+.cover-motion-lines .tm-style-two {
+  color: var(--tm-style-two, var(--bg));
+  opacity: 0;
+  z-index: 1;
+}
+.cover-motion-lines .tm-style-two::before {
+  position: absolute;
+  inset: var(--tm-style-two-bg-inset-y, 0.018em) var(--tm-style-two-bg-inset-x, 0.014em);
+  content: "";
+  background: var(--tm-style-two-bg, var(--primary));
+  z-index: -1;
+}
+""".replace("__TITLE_CLUSTER_TOP__", str(TITLE_CLUSTER_TOP))
+
+
+def cover_text_motion_script(duration_seconds: float) -> str:
+    duration_ms = max(0.1, duration_seconds) * 1000
+    return f"""
+<script>
+{TEXT_MOTION_LIBRARY.read_text()}
+</script>
+<script>
+(() => {{
+  const mount = document.querySelector("#cover-motion-lines");
+  const headline = document.querySelector(".headline");
+  if (!mount || !headline || !window.TextMotion) return;
+
+  function parseLines() {{
+    try {{
+      const parsed = JSON.parse(mount.dataset.lines || "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((entry) => {{
+        if (typeof entry === "string") {{
+          return {{ text: entry, highlights: [] }};
+        }}
+        const text = String(entry && entry.text ? entry.text : "");
+        const highlights = Array.isArray(entry && entry.highlights)
+          ? entry.highlights.map((range) => {{
+            if (!Array.isArray(range) || range.length < 2) return null;
+            const start = Number.parseInt(range[0], 10);
+            const end = Number.parseInt(range[1], 10);
+            return Number.isFinite(start) && Number.isFinite(end) && end > start
+              ? [start, end]
+              : null;
+          }}).filter(Boolean)
+          : [];
+        return {{ text, highlights }};
+      }}).filter((entry) => entry.text);
+    }} catch (_error) {{
+      return [];
+    }}
+  }}
+
+  const measureCanvas = document.createElement("canvas");
+  const measureContext = measureCanvas.getContext("2d");
+
+  function canvasFont(style, fontSize) {{
+    return [
+      style.fontStyle || "normal",
+      style.fontVariant || "normal",
+      style.fontWeight || "800",
+      fontSize + "px",
+      style.fontFamily || "sans-serif",
+    ].join(" ");
+  }}
+
+  function metricsForWord(word, style, fontSize) {{
+    if (!measureContext) {{
+      return Array.from(word).map((char) => (
+        window.TextMotion && typeof window.TextMotion.metricFor === "function"
+          ? window.TextMotion.metricFor(char)
+          : 0.62
+      ));
+    }}
+    measureContext.font = canvasFont(style, fontSize);
+    return Array.from(word).map((char) => (
+      Math.max(0.08, measureContext.measureText(char).width / fontSize)
+    ));
+  }}
+
+  function wordsForLine(lineData, style, fontSize) {{
+    const text = String(lineData.text || "");
+    const highlights = Array.isArray(lineData.highlights) ? lineData.highlights : [];
+    const words = [];
+    const matcher = /\\S+/g;
+    let match = matcher.exec(text);
+    while (match) {{
+      const word = match[0];
+      const start = match.index;
+      const end = start + word.length;
+      const isHighlightedWord = highlights.some((range) => range[0] < end && range[1] > start);
+      words.push({{
+        text: word,
+        reverse: isHighlightedWord,
+        metrics: metricsForWord(word, style, fontSize)
+      }});
+      match = matcher.exec(text);
+    }}
+    return words;
+  }}
+
+  function mountCoverTextMotionLines() {{
+    const dataLines = parseLines();
+    const rows = Array.from(mount.querySelectorAll(".cover-motion-line"));
+    const lines = dataLines;
+    const motionStyle = "rubber-lead";
+    const motionScale = 1.4;
+    const motionLoopMs = Math.round({duration_ms:.0f});
+    const motionActiveMs = Math.round(motionLoopMs * 0.72);
+    const motionPauseMs = Math.max(80, Math.round((motionLoopMs - motionActiveMs) / 2));
+    const motionLineDelayMs = 95;
+    const headlineStyle = window.getComputedStyle(headline);
+    const fittedFontSize = Number.parseFloat(headlineStyle.fontSize) || 84;
+    const fontSize = fittedFontSize * motionScale;
+    const lineHeight = (Number.parseFloat(headlineStyle.lineHeight) || fittedFontSize * 0.98) * motionScale;
+    const width = headline.clientWidth || headline.getBoundingClientRect().width || 960;
+
+    window.__coverTextMotionLines = [];
+
+    lines.forEach((lineData, index) => {{
+      const line = String(lineData.text || "");
+      const row = rows[index] || document.createElement("span");
+      const rowHeight = Math.ceil(lineHeight);
+      if (!row.parentElement) {{
+        row.className = "cover-motion-line";
+        row.dataset.lineIndex = String(index);
+        mount.appendChild(row);
+      }}
+      row.style.height = rowHeight + "px";
+      row.dataset.motion = motionStyle;
+      const board = window.TextMotion.createBoard({{
+        mount: row,
+        width,
+        height: rowHeight,
+        fitTo: "none",
+        autoStart: false,
+        showLabels: false,
+        activeMs: motionActiveMs,
+        pauseMs: motionPauseMs,
+        pull: Math.max(72, Math.min(128, fontSize * 0.78)),
+        fontSize,
+        fontFamily: headlineStyle.fontFamily,
+        fontWeight: headlineStyle.fontWeight,
+        rowLeft: 0,
+        rowWidth: width,
+        rowHeight,
+        viewportClassName: "tm-viewport tm-viewport--embedded",
+        stageClassName: "tm-stage tm-stage--transparent",
+        ariaLabel: "Animated headline line",
+        words: wordsForLine(lineData, headlineStyle, fontSize),
+        styles: [{{
+          name: motionStyle,
+          y: Math.max(0, (rowHeight - fontSize) * 0.42)
+        }}]
+      }});
+      if (typeof board.setProgress === "function") {{
+        board.setProgress(0, index * motionLineDelayMs);
+      }} else {{
+        board.setTime(0);
+      }}
+      window.__coverTextMotionLines.push(board);
+    }});
+  }}
+
+  window.__mountCoverTextMotionLines = mountCoverTextMotionLines;
+  const ready = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+  ready.then(() => window.requestAnimationFrame(mountCoverTextMotionLines));
+}})();
+</script>
+""".strip()
+
+
 def cover_animation_script(duration_seconds: float) -> str:
     return f"""
 <script>
@@ -2807,12 +3280,31 @@ def cover_animation_script(duration_seconds: float) -> str:
     const headline = document.querySelector(".animated-cover .headline");
     const kinetic = document.querySelector(".animated-cover .kinetic-title");
     const kineticTokens = document.querySelectorAll(".animated-cover .kinetic-token");
+    const motionLines = document.querySelector(".animated-cover .cover-motion-lines");
+    const motionLineBoards = Array.isArray(window.__coverTextMotionLines) ? window.__coverTextMotionLines : [];
     const dots = document.querySelector(".animated-cover .dots");
     const accents = document.querySelectorAll(".animated-cover .headline .accent");
+    const fixedFurniture = Boolean(document.querySelector(".text-motion-cover"));
 
-    const slow = easeInOutSine(p);
-    const unresolved = p * 0.86;
-    const breath = Math.sin(p * Math.PI * 0.82);
+    const loopArc = Math.sin(p * Math.PI);
+    const loopEase = easeInOutSine(loopArc);
+    const slow = fixedFurniture ? loopEase : easeInOutSine(p);
+    const unresolved = fixedFurniture ? loopEase : p * 0.86;
+    const breath = fixedFurniture ? loopArc : Math.sin(p * Math.PI * 0.82);
+    const grainDrift = fixedFurniture ? loopEase : p;
+    const motionLineDelayMs = 95;
+    motionLineBoards.forEach((board, index) => {{
+      if (board && (typeof board.setProgress === "function" || typeof board.setTime === "function")) {{
+        if (typeof board.setProgress === "function") {{
+          board.setProgress(p, index * motionLineDelayMs);
+        }} else {{
+          const loopMs = durationMs;
+          const rawTime = (p * loopMs) - (index * motionLineDelayMs);
+          const boardTime = ((rawTime % loopMs) + loopMs) % loopMs;
+          board.setTime(boardTime);
+        }}
+      }}
+    }});
 
     if (bg) {{
       bg.style.transform = "scale(" + lerp(1.012, 1.022, slow).toFixed(4) + ") translate3d("
@@ -2828,8 +3320,8 @@ def cover_animation_script(duration_seconds: float) -> str:
       fallback.style.opacity = lerp(0.96, 1, slow).toFixed(3);
     }}
     if (grain) {{
-      grain.style.transform = "translate3d(" + px(lerp(-1.5, 2.5, p)) + ", "
-        + px(lerp(1.2, -1.8, p)) + ", 0)";
+      grain.style.transform = "translate3d(" + px(lerp(-1.5, 2.5, grainDrift)) + ", "
+        + px(lerp(1.2, -1.8, grainDrift)) + ", 0)";
       grain.style.opacity = lerp(0.095, 0.135, slow).toFixed(3);
     }}
     if (light) {{
@@ -2849,12 +3341,19 @@ def cover_animation_script(duration_seconds: float) -> str:
         + ", " + px(lerp(-1.0, 1.0, unresolved)) + ", 0) scale("
         + lerp(0.996, 1.002, breath).toFixed(4) + ")";
     }}
-    if (account) {{
-      account.style.opacity = lerp(0.92, 1, easeOutCubic(p)).toFixed(3);
+    if (account && fixedFurniture) {{
+      account.style.opacity = "1";
+      account.style.transform = "none";
+    }} else if (account) {{
+      account.style.opacity = lerp(0.92, 1, fixedFurniture ? loopEase : easeOutCubic(p)).toFixed(3);
       account.style.transform = "translate3d(0, " + px(lerp(2.6, 0.4, unresolved)) + ", 0)";
     }}
-    const typeResolve = easeInOutSine(clamp((p - 0.08) / 0.84));
+    const typeResolve = fixedFurniture ? loopEase : easeInOutSine(clamp((p - 0.08) / 0.84));
     const typeGhost = 1 - typeResolve;
+    if (motionLines) {{
+      motionLines.style.opacity = "1";
+      motionLines.style.transform = "translate3d(0, " + px(lerp(2.0, 0.2, unresolved)) + ", 0)";
+    }}
     if (kinetic) {{
       kinetic.style.opacity = lerp(0.78, 0, typeResolve).toFixed(3);
       kinetic.style.filter = "blur(" + lerp(0, 1.6, typeResolve).toFixed(2) + "px)";
@@ -2875,7 +3374,7 @@ def cover_animation_script(duration_seconds: float) -> str:
       token.style.backgroundColor = "rgba(var(--bg-rgb), " + lerp(0.76, 0, typeResolve).toFixed(3) + ")";
     }});
     if (headline) {{
-      headline.style.opacity = lerp(0.46, 1, typeResolve).toFixed(3);
+      headline.style.opacity = motionLines ? "1" : lerp(0.46, 1, typeResolve).toFixed(3);
       headline.style.transform = "translate3d(0, " + px(lerp(6.0, 0.8, unresolved))
         + ", 0) scaleX(" + lerp(1.035, 1.0, typeResolve).toFixed(4)
         + ") scaleY(" + headlineScaleY + ")";
@@ -2887,7 +3386,7 @@ def cover_animation_script(duration_seconds: float) -> str:
         + "px rgba(var(--primary-rgb), 0.20))";
     }});
     if (dots) {{
-      dots.style.opacity = lerp(0.84, 1, easeOutCubic(p)).toFixed(3);
+      dots.style.opacity = lerp(0.84, 1, fixedFurniture ? loopEase : easeOutCubic(p)).toFixed(3);
       dots.style.transform = "translate3d(0, " + px(lerp(3.0, 0.5, unresolved)) + ", 0)";
     }}
   }}
@@ -2930,23 +3429,53 @@ def title_slide_html(
 ) -> str:
     cover_copy = title_context.get("cover_copy")
     cover_copy = cover_copy if isinstance(cover_copy, dict) else {}
+    accent_spans: list[tuple[int, int]] = []
     if title:
         headline_markup, title_text = fallback_headline_markup(post, title)
     elif string_value(cover_copy.get("headline")):
+        raw_cover_headline = string_value(cover_copy.get("headline"))
         headline_markup, title_text, has_accent = headline_markup_from_brackets(
-            string_value(cover_copy.get("headline"))
+            raw_cover_headline
         )
+        if has_accent:
+            plain_for_spans, accent_spans = bracket_highlight_spans(
+                bracket_highlight_text(raw_cover_headline)
+            )
+            if plain_for_spans != title_text:
+                accent_spans = []
         if not has_accent:
             headline_markup, title_text = fallback_headline_markup(post, title)
     else:
         headline_markup, title_text = fallback_headline_markup(post, title)
     font_size = title_font_size(title_text)
-    kinetic_markup = kinetic_title_markup(title_text) if animated else ""
+    animation_mode = cover_animation_mode(title_context)
+    text_motion_lines = animated and uses_text_motion_lines(title_context)
+    motion_lines = text_motion_headline_lines(title_text) if text_motion_lines else []
+    kinetic_markup = kinetic_title_markup(title_text) if animated and not text_motion_lines else ""
     safe_account_name = html.escape(account_name.strip() or DEFAULT_ACCOUNT_NAME)
     swipe_line = string_value(cover_copy.get("swipe_line")) if not title else ""
     visual = title_visual_markup(title_context)
     animation_class = " animated-cover" if animated else ""
-    animation_attr = ' data-cover-animation="premium-still"' if animated else ""
+    if text_motion_lines:
+        animation_class += " text-motion-cover"
+    animation_attr = (
+        f' data-cover-animation="{html.escape(animation_mode, quote=True)}"'
+        if animated
+        else ""
+    )
+    account_rule_markup = f'<div class="account-rule"><span>{safe_account_name}</span></div>'
+    motion_line_payload = (
+        text_motion_line_payload(title_text, motion_lines, accent_spans)
+        if motion_lines
+        else []
+    )
+    text_motion_markup = cover_text_motion_markup(motion_line_payload) if motion_lines else ""
+    headline_inner = text_motion_markup if motion_lines else headline_markup
+    headline_aria = (
+        f' aria-label="{html.escape(title_text, quote=True)}"'
+        if motion_lines
+        else ""
+    )
     animation_layers = """
   <div class="cover-light" aria-hidden="true"></div>
   <div class="cover-shadow" aria-hidden="true"></div>
@@ -3041,9 +3570,16 @@ def title_slide_html(
 }
 .animated-cover .title-cluster,
 .animated-cover .dots {
-  z-index: 3;
+  z-index: 4;
 }
 """ if animated else ""
+    if motion_lines:
+        animation_css += cover_text_motion_css()
+    text_motion_script = (
+        cover_text_motion_script(TITLE_ANIMATION_SECONDS)
+        if motion_lines
+        else ""
+    )
     animation_script = cover_animation_script(TITLE_ANIMATION_SECONDS) if animated else ""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -3054,7 +3590,7 @@ def title_slide_html(
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: transparent;
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 100%);
 }}
 .visual-bg, .visual-fallback {{
   position: absolute;
@@ -3062,9 +3598,17 @@ def title_slide_html(
 }}
 .visual-bg {{
   z-index: 1;
-  background-position: center;
-  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-size: 100% auto;
   filter: saturate(0.96) contrast(1.02);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 54%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.22) 83%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 54%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.22) 83%, transparent 100%);
+}}
+.visual-card.is-wide-art .visual-bg {{
+  background-size: auto 63%;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 34%, rgba(0, 0, 0, 0.72) 43%, rgba(0, 0, 0, 0.18) 54%, transparent 64%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 34%, rgba(0, 0, 0, 0.72) 43%, rgba(0, 0, 0, 0.18) 54%, transparent 64%);
 }}
 .visual-card.is-og-fallback .visual-bg {{
   filter: grayscale(1) contrast(1.06) brightness(1.04);
@@ -3079,12 +3623,17 @@ def title_slide_html(
 .visual-card::after {{
   content: '';
   position: absolute;
-  z-index: 2;
+  z-index: 3;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(var(--bg-rgb), 0.16) 0%, rgba(var(--bg-rgb), 0.08) 32%, rgba(var(--bg-rgb), 0.46) 70%, rgba(var(--bg-rgb), 0.74) 100%),
-    linear-gradient(90deg, rgba(var(--bg-rgb), 0.52) 0%, rgba(var(--bg-rgb), 0.08) 42%, rgba(var(--bg-rgb), 0.46) 100%);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.30) 60%, rgba(var(--bg-rgb), 0.82) 78%, rgba(var(--bg-rgb), 0.98) 100%),
+    linear-gradient(90deg, rgba(var(--bg-rgb), 0.18) 0%, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.18) 100%);
   pointer-events: none;
+}}
+.visual-card.is-wide-art::after {{
+  background:
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), 0) 28%, rgba(var(--bg-rgb), 0.24) 44%, rgba(var(--bg-rgb), 0.78) 62%, rgba(var(--bg-rgb), 0.98) 100%),
+    linear-gradient(90deg, rgba(var(--bg-rgb), 0.16) 0%, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.16) 100%);
 }}
 .source-avatar {{
   position: absolute;
@@ -3136,7 +3685,7 @@ def title_slide_html(
   flex-direction: column;
   justify-content: flex-end;
   text-align: left;
-  z-index: 3;
+  z-index: 4;
 }}
 .account-rule {{
   display: flex;
@@ -3179,6 +3728,9 @@ def title_slide_html(
 .headline .accent {{
   color: var(--primary);
 }}
+.headline .headline-line {{
+  display: block;
+}}
 .headline .jp-phrase {{
   display: inline-block;
 }}
@@ -3195,13 +3747,14 @@ def title_slide_html(
   {visual}
 {animation_layers}
   <div class="title-cluster">
-    <div class="account-rule"><span>{safe_account_name}</span></div>
+    {account_rule_markup}
     {kinetic_markup}
-    <h1 class="headline">{headline_markup}</h1>
+    <h1 class="headline"{headline_aria}>{headline_inner}</h1>
   </div>
   <div class="dots">{dot_markup(1, count, swipe_line)}</div>
 </div>
 {title_fit_script()}
+{text_motion_script}
 {animation_script}
 </body></html>"""
 
@@ -3282,6 +3835,9 @@ def render_animated_title_slide(
                     "document.fonts.ready.then(() => true) : true)"
                 )
                 page.evaluate("() => window.__fitCoverHeadline && window.__fitCoverHeadline()")
+                page.evaluate(
+                    "() => window.__mountCoverTextMotionLines && window.__mountCoverTextMotionLines()"
+                )
                 page.wait_for_function("() => window.__coverAnimationReady === true")
                 page.evaluate("() => window.__pauseCoverAnimation && window.__pauseCoverAnimation()")
                 slide = page.locator(".slide")

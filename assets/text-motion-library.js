@@ -74,10 +74,17 @@
 
   const metricFor = (char) => glyphMetrics[char] || 0.68;
 
-  const normalizeWords = (words) => words.map((word) => ({
-    text: word.text,
-    metrics: word.metrics || Array.from(word.text).map(metricFor)
-  }));
+  const normalizeWords = (words) => words
+    .map((word) => {
+      const text = typeof word === "string" ? word : word && word.text;
+      const metrics = word && typeof word === "object" ? word.metrics : null;
+      return {
+        text: String(text || ""),
+        metrics: metrics || Array.from(String(text || "")).map(metricFor),
+        reverse: Boolean(word && typeof word === "object" && (word.reverse || word.highlighted))
+      };
+    })
+    .filter((word) => word.text);
 
   const createLayer = (className, char) => {
     const layer = document.createElement("span");
@@ -99,9 +106,16 @@
         pauseMs: 2000,
         pull: DEFAULT_PULL,
         fontSize: DEFAULT_FONT_SIZE,
+        fontFamily: "",
+        fontWeight: 780,
         rowLeft: 92,
         rowWidth: 1048,
         rowHeight: 250,
+        fitTo: "window",
+        autoStart: true,
+        showLabels: true,
+        viewportClassName: "tm-viewport",
+        stageClassName: "tm-stage",
         styles: defaultStyles,
         words: [
           { text: "Vibe" },
@@ -121,11 +135,20 @@
       this.words = normalizeWords(this.options.words);
       this.rows = [];
       this.frame = null;
+      this.resizeObserver = null;
       this.startTime = null;
       this.build();
       this.resize();
       window.addEventListener("resize", () => this.resize(), { passive: true });
-      this.start();
+      if (this.options.fitTo === "mount" && typeof ResizeObserver !== "undefined") {
+        this.resizeObserver = new ResizeObserver(() => this.resize());
+        this.resizeObserver.observe(this.mount);
+      }
+      if (this.options.autoStart === false) {
+        this.setTime(this.options.startMs || 0);
+      } else {
+        this.start();
+      }
     }
 
     build() {
@@ -133,15 +156,19 @@
 
       this.viewport = document.createElement("main");
       this.stage = document.createElement("section");
-      this.viewport.className = "tm-viewport";
+      this.viewport.className = this.options.viewportClassName;
       this.viewport.setAttribute("aria-label", this.options.ariaLabel || "Animated typography styles");
-      this.stage.className = "tm-stage";
+      this.stage.className = this.options.stageClassName;
       this.stage.style.setProperty("--tm-width", this.options.width);
       this.stage.style.setProperty("--tm-height", this.options.height);
       this.stage.style.setProperty("--tm-row-left", `${this.options.rowLeft}px`);
       this.stage.style.setProperty("--tm-row-width", `${this.options.rowWidth}px`);
       this.stage.style.setProperty("--tm-row-height", `${this.options.rowHeight}px`);
       this.stage.style.setProperty("--tm-font-size", `${this.options.fontSize}px`);
+      if (this.options.fontFamily) {
+        this.stage.style.setProperty("--tm-font-family", this.options.fontFamily);
+      }
+      this.stage.style.setProperty("--tm-font-weight", `${this.options.fontWeight}`);
       this.viewport.appendChild(this.stage);
       this.mount.appendChild(this.viewport);
 
@@ -168,14 +195,14 @@
 
       this.words.forEach((word) => {
         const wordNode = document.createElement("div");
-        wordNode.className = "tm-word";
+        wordNode.className = word.reverse ? "tm-word tm-word--reverse" : "tm-word";
 
         Array.from(word.text).forEach((char, index) => {
           const letter = document.createElement("span");
           const s1 = createLayer("tm-style-one", char);
           const s2 = createLayer("tm-style-two", char);
 
-          letter.className = "tm-letter";
+          letter.className = word.reverse ? "tm-letter tm-letter--reverse" : "tm-letter";
           letter.style.setProperty("--tm-char-width", `${word.metrics[index]}em`);
           letter.style.setProperty("--tm-char-height", "0.86em");
           letter.append(s1, s2);
@@ -190,6 +217,7 @@
             pullY: 0,
             leadX: lineLead,
             leadY: 0,
+            reverse: word.reverse,
             el: letter,
             s1,
             s2
@@ -200,16 +228,24 @@
         phrase.appendChild(wordNode);
       });
 
-      row.append(label, phrase);
+      if (this.options.showLabels !== false) {
+        row.appendChild(label);
+      }
+      row.appendChild(phrase);
       this.stage.appendChild(row);
       return { name: style.name, letters };
     }
 
     resize() {
-      const scale = Math.min(
-        window.innerWidth / this.options.width,
-        window.innerHeight / this.options.height
-      );
+      const fitWidth = this.options.fitTo === "mount"
+        ? (this.mount.clientWidth || this.options.width)
+        : window.innerWidth;
+      const fitHeight = this.options.fitTo === "mount"
+        ? (this.mount.clientHeight || this.options.height)
+        : window.innerHeight;
+      const scale = this.options.fitTo === "none"
+        ? 1
+        : Math.min(fitWidth / this.options.width, fitHeight / this.options.height);
       this.stage.style.setProperty("--tm-scale", scale.toString());
     }
 
@@ -230,26 +266,51 @@
       }
     }
 
+    setTime(timeMs) {
+      this.render(Math.max(0, Number(timeMs) || 0));
+    }
+
+    loopDurationMs() {
+      const halfActiveMs = Math.max(1, this.options.activeMs / 2);
+      return (halfActiveMs + this.options.pauseMs) * 2;
+    }
+
+    setProgress(progress, delayMs = 0) {
+      const loopMs = this.loopDurationMs();
+      const rawTime = (clamp(progress) * loopMs) - (Number(delayMs) || 0);
+      const loopedTime = ((rawTime % loopMs) + loopMs) % loopMs;
+      this.setTime(loopedTime);
+    }
+
     render(time) {
-      const totalMs = this.options.activeMs + this.options.pauseMs;
+      const halfActiveMs = Math.max(1, this.options.activeMs / 2);
+      const totalMs = this.loopDurationMs();
       const elapsed = time % totalMs;
 
-      if (elapsed >= this.options.activeMs) {
-        this.rows.forEach((row) => this.renderRest(row));
+      if (elapsed < halfActiveMs) {
+        const progress = elapsed / halfActiveMs;
+        this.rows.forEach((row) => this.renderHalfCycle(row, progress, "s1", "s2"));
         return;
       }
 
-      const cycle = elapsed / this.options.activeMs;
-      this.rows.forEach((row) => {
-        if (cycle < 0.5) {
-          this.renderHalfCycle(row, cycle * 2, "s1", "s2");
-        } else {
-          this.renderHalfCycle(row, (cycle - 0.5) * 2, "s2", "s1");
-        }
-      });
+      if (elapsed < halfActiveMs + this.options.pauseMs) {
+        this.rows.forEach((row) => this.renderRest(row, "s2"));
+        return;
+      }
+
+      if (elapsed < halfActiveMs * 2 + this.options.pauseMs) {
+        const progress = (elapsed - halfActiveMs - this.options.pauseMs) / halfActiveMs;
+        this.rows.forEach((row) => this.renderHalfCycle(row, progress, "s2", "s1"));
+        return;
+      }
+
+      this.rows.forEach((row) => this.renderRest(row, "s1"));
     }
 
     setLetter(letter, s1Opacity, s2Opacity, x = 0, y = 0) {
+      if (letter.reverse) {
+        [s1Opacity, s2Opacity] = [s2Opacity, s1Opacity];
+      }
       letter.el.style.opacity = "1";
       letter.el.style.transform = `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px)`;
       letter.s1.style.opacity = s1Opacity.toFixed(3);
@@ -263,8 +324,9 @@
       return [letter.leadX * nudge, letter.leadY * nudge];
     }
 
-    renderRest(row) {
-      row.letters.forEach((letter) => this.setLetter(letter, 1, 0, 0, 0));
+    renderRest(row, styleName) {
+      const [s1Opacity, s2Opacity] = styleOpacity(styleName, 1);
+      row.letters.forEach((letter) => this.setLetter(letter, s1Opacity, s2Opacity, 0, 0));
     }
 
     renderRubberHalfCycle(row, progress, fromStyle, toStyle) {

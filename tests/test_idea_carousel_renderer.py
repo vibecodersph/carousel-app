@@ -40,6 +40,15 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             "Mga may access sa GPU na gustong mag-host ng Llama o Qwen.",
         )
 
+    def test_cover_prompt_is_portrait_but_item_prompt_stays_horizontal(self) -> None:
+        cover_prompt = build_idea_carousel.cover_image_prompt("A glowing server", "OSS stack")
+        item_prompt = build_idea_carousel.image_prompt("A model router", "LiteLLM")
+
+        self.assertIn("4:5 vertical portrait cover artwork", cover_prompt)
+        self.assertIn("lower 38% is a quiet warm paper vanishing gradient", cover_prompt)
+        self.assertIn("16:9 horizontal editorial artwork", item_prompt)
+        self.assertNotIn("4:5 vertical portrait", item_prompt)
+
     def test_load_reusable_assets_maps_cover_and_items(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -101,6 +110,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertTrue(cover["path"].endswith("slide_01.mp4"))
         self.assertTrue(cover["poster"].endswith("slide_01_poster.png"))
         render_cover.assert_called_once()
+        title_context = render_cover.call_args.args[4]
+        self.assertEqual(title_context["cover_animation"], "text-motion-lines")
 
 
 if __name__ == "__main__":

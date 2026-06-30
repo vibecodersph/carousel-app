@@ -18,6 +18,10 @@ body {
 }
 
 body {
+  margin: 0;
+}
+
+body.text-motion-demo {
   display: grid;
   place-items: center;
 }
@@ -69,8 +73,9 @@ body {
   align-items: flex-start;
   gap: 0.38em;
   color: #fff;
+  font-family: var(--tm-font-family, inherit);
   font-size: var(--tm-font-size, 118px);
-  font-weight: 780;
+  font-weight: var(--tm-font-weight, 780);
   line-height: 0.82;
   letter-spacing: 0;
   white-space: nowrap;
@@ -104,22 +109,32 @@ body {
 }
 
 .tm-style-one {
-  color: #fff;
+  color: var(--tm-style-one, #fff);
   opacity: 1;
 }
 
 .tm-style-two {
-  color: #000;
+  color: var(--tm-style-two, #000);
   opacity: 0;
   z-index: 1;
 }
 
 .tm-style-two::before {
   position: absolute;
-  inset: 0;
+  inset: var(--tm-style-two-bg-inset-y, 0.018em) var(--tm-style-two-bg-inset-x, 0.014em);
   content: "";
-  background: #fff;
+  background: var(--tm-style-two-bg, #fff);
   z-index: -1;
+}
+
+.tm-viewport--embedded {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+.tm-stage--transparent {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

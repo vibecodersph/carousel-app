@@ -37,6 +37,7 @@ from generate_cover import generate_openai, openai_api_key
 ROOT = Path(__file__).resolve().parent
 DEFAULT_INPUT = ROOT / "out" / "idea-engine" / "gemini_ph_builder_carousels.json"
 DEFAULT_OUT = ROOT / "out" / "idea-engine" / "idea_carousel_render"
+DEFAULT_IDEA_ITEM_IMAGE_SIZE = "2048x1152"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -100,6 +101,25 @@ def image_prompt(base: str, topic: str) -> str:
     )
 
 
+def cover_image_prompt(base: str, topic: str) -> str:
+    base = normalize_space(base)
+    topic = normalize_space(topic)
+    if not base:
+        base = f"Editorial cover illustration for {topic}"
+    return normalize_space(
+        f"{base}. 4:5 vertical portrait cover artwork for an Instagram carousel. "
+        "The main symbolic focal element lives in the upper 58% of the frame. "
+        "The lower 38% is a quiet warm paper vanishing gradient for later typography, "
+        "with no hard edge, no busy details, and no important object. "
+        "Cream paper, dark ink, terracotta accent, warm print texture. "
+        "No text, no logos, no UI, no charts, no readable marks, no neon, no rainbow colors."
+    )
+
+
+def openai_item_image_size() -> str:
+    return os.environ.get("OPENAI_ITEM_IMAGE_SIZE") or DEFAULT_IDEA_ITEM_IMAGE_SIZE
+
+
 def generated_image_path(out_dir: Path, topic: str, prompt: str) -> Path:
     digest = hashlib.sha1(f"{topic}\n{prompt}".encode("utf-8")).hexdigest()[:10]
     return out_dir / "generated_assets" / f"{digest}.png"
@@ -136,6 +156,7 @@ def maybe_generate_image(
     topic: str,
     prompt: str,
     generate_images: bool,
+    size: str | None = None,
 ) -> Path | None:
     if not generate_images:
         return None
@@ -151,7 +172,7 @@ def maybe_generate_image(
             prompt,
             path,
             model=openai_title_image_model(),
-            size=openai_title_image_size(),
+            size=size or openai_title_image_size(),
         )
     except (SystemExit, Exception) as exc:
         print(f"[openai] image generation failed for {topic}; using fallback ({exc})")
@@ -202,7 +223,7 @@ def title_context(
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
     headline = string_value(cover.get("headline"))
-    prompt = image_prompt(string_value(cover.get("image_prompt")), headline)
+    prompt = cover_image_prompt(string_value(cover.get("image_prompt")), headline)
     if reusable_image:
         cover_image = reusable_image
         print(f"[asset] reusing title image -> {cover_image}")
@@ -212,6 +233,7 @@ def title_context(
             topic=headline or string_value(carousel.get("id")) or "idea carousel cover",
             prompt=prompt,
             generate_images=generate_images,
+            size=openai_title_image_size(),
         )
     cover_copy = {
         "kicker": string_value(cover.get("kicker")) or "CURATION",
@@ -224,6 +246,7 @@ def title_context(
         "topic_image_path": cover_image,
         "image_provider": "openai" if cover_image else "",
         "cover_copy": cover_copy,
+        "cover_animation": "text-motion-lines",
         "companies": [],
         "ceos": [],
         "source_people": [],
@@ -479,6 +502,7 @@ def render_carousel(
                 topic=string_value(page.get("item_name")) or key,
                 prompt=prompt,
                 generate_images=generate_images,
+                size=openai_item_image_size(),
             )
         slide_path = out_dir / f"slide_{offset:02d}.png"
         render_item_slide(
