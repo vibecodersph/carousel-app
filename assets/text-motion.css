@@ -1,0 +1,129 @@
+:root {
+  color-scheme: dark;
+  font-family: Archivo, Helvetica, Arial, sans-serif;
+  background: #000;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.tm-viewport {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #000;
+}
+
+.tm-stage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--tm-width) * 1px);
+  height: calc(var(--tm-height) * 1px);
+  overflow: hidden;
+  background: #000;
+  transform: translate(-50%, -50%) scale(var(--tm-scale, 1));
+  transform-origin: center;
+  isolation: isolate;
+}
+
+.tm-row {
+  position: absolute;
+  left: var(--tm-row-left, 92px);
+  width: var(--tm-row-width, 1048px);
+  height: var(--tm-row-height, 250px);
+}
+
+.tm-label {
+  position: absolute;
+  top: -54px;
+  left: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 26px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.tm-phrase {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.38em;
+  color: #fff;
+  font-size: var(--tm-font-size, 118px);
+  font-weight: 780;
+  line-height: 0.82;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tm-word {
+  display: flex;
+  align-items: flex-start;
+}
+
+.tm-letter {
+  position: relative;
+  display: inline-grid;
+  width: var(--tm-char-width);
+  height: var(--tm-char-height);
+  place-items: center;
+  opacity: 1;
+  transform: translate(0, 0);
+  will-change: opacity, transform;
+}
+
+.tm-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  line-height: inherit;
+}
+
+.tm-style-one {
+  color: #fff;
+  opacity: 1;
+}
+
+.tm-style-two {
+  color: #000;
+  opacity: 0;
+  z-index: 1;
+}
+
+.tm-style-two::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: #fff;
+  z-index: -1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-letter {
+    transform: none !important;
+  }
+}
