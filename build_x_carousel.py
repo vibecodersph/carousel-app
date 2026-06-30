@@ -55,6 +55,9 @@ DEFAULT_ACCOUNT_NAME = "vibecodersph"
 # fitter below uses this region after final font metrics and line breaks exist.
 TITLE_CLUSTER_TOP = round(SLIDE_H * 0.65)
 TITLE_CLUSTER_BOTTOM = 118
+TITLE_TEXT_TOP = round(SLIDE_H * 0.54)
+TITLE_TEXT_MIN_TOP = round(SLIDE_H * 0.48)
+TITLE_TEXT_DYNAMIC_BOTTOM = round(SLIDE_H * 0.89)
 TITLE_VISUAL_HEIGHT = round(SLIDE_H * 0.71)
 TITLE_HEADLINE_WEIGHT = 560
 TITLE_HEADLINE_SCALE_Y = 1.1
@@ -91,7 +94,7 @@ X_COOKIE_DOMAINS = ("x.com", "twitter.com")
 GOOGLE_KG_ENDPOINT = "https://kgsearch.googleapis.com/v1/entities:search"
 GEMINI_API_ROOT = "https://generativelanguage.googleapis.com"
 DEFAULT_GEMINI_TEXT_MODEL = "gemini-3.5-flash"
-DEFAULT_OPENAI_TITLE_IMAGE_SIZE = "1024x1280"
+DEFAULT_OPENAI_TITLE_IMAGE_SIZE = "2048x1152"
 GOOGLE_WARNED: set[str] = set()
 IMAGE_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
@@ -1622,11 +1625,45 @@ def title_fit_script() -> str:
     ].join(' ');
   }
 
+  const TEXT_MOTION_FIT_SCALE = 1.4;
+  const TEXT_MOTION_ROW_SCALE = 0.86;
+  const TEXT_MOTION_DEFAULT_PULL = 50;
+
+  function motionLineText(line) {
+    if (typeof line === "string") return line;
+    if (line && typeof line.text === "string") return line.text;
+    return "";
+  }
+
+  function motionDefaultPull() {
+    return window.TextMotion && Number.isFinite(window.TextMotion.defaultPull)
+      ? window.TextMotion.defaultPull
+      : TEXT_MOTION_DEFAULT_PULL;
+  }
+
   function motionLineWidth(line, fontSize, style) {
+    const text = motionLineText(line);
+    const words = text.match(/\S+/g) || [];
     const context = canvasContext();
-    if (!context) return String(line || "").length * fontSize * 0.58;
-    context.font = canvasFont(style, fontSize);
-    return context.measureText(String(line || "")).width;
+    const pullSpace = motionDefaultPull();
+    if (context) {
+      context.font = canvasFont(style, fontSize);
+      const glyphWidth = words.reduce((total, word) => (
+        total + Array.from(word).reduce(
+          (sum, char) => sum + Math.max(fontSize * 0.08, context.measureText(char).width),
+          0
+        )
+      ), 0);
+      return glyphWidth + (Math.max(0, words.length - 1) * fontSize * 0.34) + pullSpace;
+    }
+    if (window.TextMotion && typeof window.TextMotion.metricFor === "function" && words.length) {
+      const glyphUnits = words.reduce((total, word) => (
+        total + Array.from(word).reduce((sum, char) => sum + window.TextMotion.metricFor(char), 0)
+      ), 0);
+      const gapUnits = Math.max(0, words.length - 1) * 0.34;
+      return ((glyphUnits + gapUnits) * fontSize * 1.08) + pullSpace;
+    }
+    return (text.length * fontSize * 0.64) + pullSpace;
   }
 
   function motionHeadlineWidth(headline, fontSize) {
@@ -1636,7 +1673,7 @@ def title_fit_script() -> str:
     try {
       const lines = JSON.parse(motion.dataset.lines || "[]");
       if (Array.isArray(lines) && lines.length) {
-        return Math.max(...lines.map((line) => motionLineWidth(line, fontSize, style)));
+        return Math.max(...lines.map((line) => motionLineWidth(line, fontSize * TEXT_MOTION_FIT_SCALE, style)));
       }
     } catch (_error) {
       return headline.scrollWidth;
@@ -1644,10 +1681,29 @@ def title_fit_script() -> str:
     return headline.scrollWidth;
   }
 
+  function motionHeadlineHeight(headline, fontSize) {
+    const motion = headline.querySelector('.cover-motion-lines');
+    if (!motion) return headline.getBoundingClientRect().height;
+    try {
+      const lines = JSON.parse(motion.dataset.lines || "[]");
+      const lineCount = Array.isArray(lines) && lines.length
+        ? lines.length
+        : Math.max(1, motion.querySelectorAll('.cover-motion-line').length);
+      return lineCount * fontSize * TEXT_MOTION_FIT_SCALE * TEXT_MOTION_ROW_SCALE;
+    } catch (_error) {
+      return headline.getBoundingClientRect().height;
+    }
+  }
+
   function fitHeadline() {
     const cluster = document.querySelector('.title-cluster');
     const headline = document.querySelector('.headline');
     if (!cluster || !headline) return;
+
+    const isTextMotionCover = Boolean(document.querySelector('.text-motion-cover'));
+    if (isTextMotionCover) {
+      cluster.style.top = "__TITLE_TEXT_TOP__px";
+    }
 
     const rule = cluster.querySelector('.account-rule');
     const ruleStyle = rule ? getComputedStyle(rule) : null;
@@ -1656,8 +1712,7 @@ def title_fit_script() -> str:
       : 0;
     const availableHeight = Math.max(128, cluster.clientHeight - ruleSpace);
     const availableWidth = headline.clientWidth;
-    const isTextMotionCover = Boolean(document.querySelector('.text-motion-cover'));
-    let low = isTextMotionCover ? 72 : 52;
+    let low = isTextMotionCover ? 42 : 52;
     let high = isTextMotionCover ? 215 : 150;
     let best = low;
 
@@ -1666,7 +1721,8 @@ def title_fit_script() -> str:
       const mid = (low + high) / 2;
       headline.style.fontSize = `${mid}px`;
       const rect = headline.getBoundingClientRect();
-      const verticalOverflow = rect.height > availableHeight + 0.5;
+      const measuredHeight = isTextMotionCover ? motionHeadlineHeight(headline, mid) : rect.height;
+      const verticalOverflow = measuredHeight > availableHeight + 0.5;
       const horizontalOverflow = motionHeadlineWidth(headline, mid) > availableWidth + 1;
       if (verticalOverflow || horizontalOverflow) {
         high = mid;
@@ -1676,6 +1732,17 @@ def title_fit_script() -> str:
       }
     }
     headline.style.fontSize = `${Math.floor(best)}px`;
+    if (isTextMotionCover) {
+      const fittedHeight = motionHeadlineHeight(headline, Math.floor(best));
+      const blockHeight = ruleSpace + fittedHeight;
+      const desiredTop = __TITLE_TEXT_DYNAMIC_BOTTOM__ - blockHeight;
+      const maxTop = __TITLE_TEXT_DYNAMIC_BOTTOM__ - ruleSpace - 48;
+      const nextTop = Math.max(
+        __TITLE_TEXT_MIN_TOP__,
+        Math.min(maxTop, desiredTop)
+      );
+      cluster.style.top = `${Math.round(nextTop)}px`;
+    }
   }
 
   window.__fitCoverHeadline = fitHeadline;
@@ -1686,7 +1753,9 @@ def title_fit_script() -> str:
   }
 })();
 </script>
-""".strip()
+""".replace("__TITLE_TEXT_TOP__", str(TITLE_TEXT_TOP)).replace(
+        "__TITLE_TEXT_MIN_TOP__", str(TITLE_TEXT_MIN_TOP)
+    ).replace("__TITLE_TEXT_DYNAMIC_BOTTOM__", str(TITLE_TEXT_DYNAMIC_BOTTOM)).strip()
 
 
 def asset_uri(path: object) -> str:
@@ -2181,7 +2250,7 @@ def default_title_image_prompt(
         )
     )
     parts = [
-        f"Vertical 4:5 editorial cover art for an Instagram carousel about '{topic}'.",
+        f"Horizontal editorial cover art for an Instagram carousel about '{topic}'.",
         background_line,
         ink_line,
         texture_line,
@@ -2226,7 +2295,7 @@ def title_image_prompt(
 {prompt}{brief_block}
 
 Format and composition:
-- 4:5 vertical portrait, 1024 x 1280. The slide itself is the image frame.
+- 16:9 horizontal, 2048 x 1152.
 - Keep the primary symbolic focal element in the upper 58% of the frame. The lower 38% should be quiet warm background that softly vanishes into the brand paper color with no hard edge, no busy details, and no important objects.
 {avatar_corner}
 - No human faces, portraits, headshots, silhouettes of people, or figure studies anywhere in the artwork; a real avatar is composited separately.
@@ -2503,11 +2572,14 @@ def title_visual_markup(context: dict[str, object]) -> str:
     topic_image_path = context.get("topic_image_path")
     topic_image_uri = asset_uri(topic_image_path)
     bg_style = f' style="background-image: url({topic_image_uri})"' if topic_image_uri else ""
+    image_composition = str(context.get("image_composition") or "")
     source_profile_uri = source_profile_asset_uri(context)
     avatar_markup = ""
     visual_class = "visual-card"
+    if image_composition == "top_art":
+        visual_class += " is-top-art"
     dimensions = image_dimensions(topic_image_path)
-    if dimensions:
+    if dimensions and image_composition != "top_art":
         width, height = dimensions
         if height and (width / height) > 1.1:
             visual_class += " is-wide-art"
@@ -2861,21 +2933,111 @@ def uses_text_motion_lines(title_context: dict[str, object]) -> bool:
     return cover_animation_mode(title_context) == "text-motion-lines"
 
 
+def text_motion_word_width(word: str) -> float:
+    width = 0.0
+    for char in word:
+        if char in "MW@%":
+            width += 0.92
+        elif char in "ijlI!|'.,:":
+            width += 0.34
+        elif char.isupper() or char.isdigit():
+            width += 0.68
+        elif ord(char) > 127:
+            width += 0.82
+        else:
+            width += 0.56
+    return width
+
+
+def balanced_text_motion_lines(
+    words: list[str],
+    line_count: int,
+    *,
+    separator: str = " ",
+) -> list[str]:
+    if line_count <= 1:
+        return [separator.join(words).strip()]
+    if len(words) <= line_count:
+        return [word.strip() for word in words if word.strip()]
+
+    word_widths = [text_motion_word_width(word) for word in words]
+    prefix = [0.0]
+    for width in word_widths:
+        prefix.append(prefix[-1] + width)
+    separator_width = 0.34 if separator.strip() else 0.0
+
+    def line_width(start: int, end: int) -> float:
+        if end <= start:
+            return 0.0
+        return (prefix[end] - prefix[start]) + max(0, end - start - 1) * separator_width
+
+    total_width = line_width(0, len(words))
+    target = total_width / line_count
+    states: dict[tuple[int, int], tuple[float, float, list[int]]] = {(0, 0): (0.0, 0.0, [])}
+
+    for row in range(1, line_count + 1):
+        for end in range(row, len(words) + 1):
+            best: tuple[float, float, list[int]] | None = None
+            for start in range(row - 1, end):
+                previous = states.get((row - 1, start))
+                if previous is None:
+                    continue
+                width = line_width(start, end)
+                single_short_penalty = target if end - start == 1 and width < target * 0.78 else 0.0
+                score = (
+                    max(previous[0], width),
+                    previous[1] + ((width - target) ** 2) + single_short_penalty,
+                    [*previous[2], start],
+                )
+                if best is None or score[:2] < best[:2]:
+                    best = score
+            if best is not None:
+                states[(row, end)] = best
+
+    best_state = states.get((line_count, len(words)))
+    if best_state is None:
+        return []
+    starts = [*best_state[2], len(words)]
+    return [separator.join(words[starts[index] : starts[index + 1]]).strip() for index in range(line_count)]
+
+
+def japanese_text_motion_line_count(text: str, chunks: list[str]) -> int:
+    if not chunks:
+        return 0
+    visible_chars = len(re.sub(r"\s+", "", text))
+    if visible_chars >= 38:
+        preferred = 5
+    elif visible_chars >= 28:
+        preferred = 4
+    elif visible_chars >= 18:
+        preferred = 3
+    else:
+        preferred = 2
+    return max(1, min(preferred, len(chunks)))
+
+
 def text_motion_headline_lines(title_text: str) -> list[str]:
     title_text = re.sub(r"\s+", " ", title_text).strip()
     if not title_text:
         return []
     if contains_japanese(title_text):
-        chunks = japanese_phrase_chunks(title_text, max_chars=11)
-        if len(chunks) <= 3:
-            return chunks
-        return [chunks[0], chunks[1], "".join(chunks[2:])]
+        visible_chars = len(re.sub(r"\s+", "", title_text))
+        max_chars = 7 if visible_chars >= 38 else 9
+        chunks = japanese_phrase_chunks(title_text, max_chars=max_chars)
+        line_count = japanese_text_motion_line_count(title_text, chunks)
+        balanced = balanced_text_motion_lines(chunks, line_count, separator="")
+        return balanced or chunks
 
     words = re.findall(r"\S+", title_text)
     if len(words) <= 3:
         return [" ".join(words)]
-    line_count = 3 if len(words) >= 6 else 2
+    line_count = 5 if len(words) >= 10 else 4 if len(words) >= 7 else 3 if len(words) >= 6 else 2
+    if line_count >= 5:
+        balanced = balanced_text_motion_lines(words, line_count)
+        if balanced:
+            return balanced
     target = max(8, round((len(title_text) + line_count - 1) / line_count))
+    max_line_chars = round(target * (1.35 if line_count >= 4 else 1))
     lines: list[str] = []
     current: list[str] = []
     for index, word in enumerate(words):
@@ -2884,7 +3046,7 @@ def text_motion_headline_lines(title_text: str) -> list[str]:
         remaining_slots = line_count - len(lines) - 1
         if (
             current
-            and len(candidate) > target
+            and len(candidate) > max_line_chars
             and remaining_slots > 0
             and remaining_words >= remaining_slots
         ):
@@ -2894,6 +3056,20 @@ def text_motion_headline_lines(title_text: str) -> list[str]:
             current.append(word)
     if current:
         lines.append(" ".join(current))
+    while len(lines) < line_count:
+        splittable = [
+            (len(line), index, line.split())
+            for index, line in enumerate(lines)
+            if len(line.split()) > 1
+        ]
+        if not splittable:
+            break
+        _length, index, line_words = max(splittable)
+        split_at = max(1, (len(line_words) + 1) // 2)
+        lines[index : index + 1] = [
+            " ".join(line_words[:split_at]),
+            " ".join(line_words[split_at:]),
+        ]
     if len(lines) > line_count:
         lines = [*lines[: line_count - 1], " ".join(lines[line_count - 1 :])]
     return lines
@@ -2969,15 +3145,31 @@ def cover_text_motion_css() -> str:
   z-index: 4;
 }
 .text-motion-cover .title-cluster {
-  top: max(600px, calc(__TITLE_CLUSTER_TOP__px - 278px));
+  top: __TITLE_TEXT_TOP__px;
+  justify-content: flex-start;
 }
 .text-motion-cover .account-rule {
   position: relative;
   z-index: 5;
   margin-bottom: 46px;
 }
-.text-motion-cover .cover-shadow {
+.text-motion-cover .cover-light,
+.text-motion-cover .cover-shadow,
+.text-motion-cover .cover-grain {
   display: none;
+}
+.text-motion-cover .visual-bg {
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 46%, rgba(0, 0, 0, 0.72) 52%, rgba(0, 0, 0, 0.24) 60%, transparent 68%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 46%, rgba(0, 0, 0, 0.72) 52%, rgba(0, 0, 0, 0.24) 60%, transparent 68%);
+}
+.text-motion-cover .visual-card.is-top-art .visual-bg {
+  background-size: auto 70%;
+  background-position: center top;
+}
+.text-motion-cover .visual-card::after {
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.28) 49%, rgba(var(--bg-rgb), 0.72) 56%, rgba(var(--bg-rgb), 0.95) 64%, var(--bg) 78%, var(--bg) 100%);
 }
 .cover-motion-lines {
   position: relative;
@@ -3077,7 +3269,7 @@ def cover_text_motion_css() -> str:
   background: var(--tm-style-two-bg, var(--primary));
   z-index: -1;
 }
-""".replace("__TITLE_CLUSTER_TOP__", str(TITLE_CLUSTER_TOP))
+""".replace("__TITLE_CLUSTER_TOP__", str(TITLE_CLUSTER_TOP)).replace("__TITLE_TEXT_TOP__", str(TITLE_TEXT_TOP))
 
 
 def cover_text_motion_script(duration_seconds: float) -> str:
@@ -3170,16 +3362,13 @@ def cover_text_motion_script(duration_seconds: float) -> str:
     const dataLines = parseLines();
     const rows = Array.from(mount.querySelectorAll(".cover-motion-line"));
     const lines = dataLines;
-    const motionStyle = "rubber-lead";
+    const motionStyle = "anchored-lead";
     const motionScale = 1.4;
-    const motionLoopMs = Math.round({duration_ms:.0f});
-    const motionActiveMs = Math.round(motionLoopMs * 0.72);
-    const motionPauseMs = Math.max(80, Math.round((motionLoopMs - motionActiveMs) / 2));
+    const motionRowScale = 0.86;
     const motionLineDelayMs = 95;
     const headlineStyle = window.getComputedStyle(headline);
     const fittedFontSize = Number.parseFloat(headlineStyle.fontSize) || 84;
     const fontSize = fittedFontSize * motionScale;
-    const lineHeight = (Number.parseFloat(headlineStyle.lineHeight) || fittedFontSize * 0.98) * motionScale;
     const width = headline.clientWidth || headline.getBoundingClientRect().width || 960;
 
     window.__coverTextMotionLines = [];
@@ -3187,7 +3376,7 @@ def cover_text_motion_script(duration_seconds: float) -> str:
     lines.forEach((lineData, index) => {{
       const line = String(lineData.text || "");
       const row = rows[index] || document.createElement("span");
-      const rowHeight = Math.ceil(lineHeight);
+      const rowHeight = Math.ceil(fontSize * motionRowScale);
       if (!row.parentElement) {{
         row.className = "cover-motion-line";
         row.dataset.lineIndex = String(index);
@@ -3202,9 +3391,6 @@ def cover_text_motion_script(duration_seconds: float) -> str:
         fitTo: "none",
         autoStart: false,
         showLabels: false,
-        activeMs: motionActiveMs,
-        pauseMs: motionPauseMs,
-        pull: Math.max(72, Math.min(128, fontSize * 0.78)),
         fontSize,
         fontFamily: headlineStyle.fontFamily,
         fontWeight: headlineStyle.fontWeight,
@@ -3306,14 +3492,20 @@ def cover_animation_script(duration_seconds: float) -> str:
       }}
     }});
 
-    if (bg) {{
+    if (bg && fixedFurniture) {{
+      bg.style.transform = "none";
+      bg.style.filter = "";
+    }} else if (bg) {{
       bg.style.transform = "scale(" + lerp(1.012, 1.022, slow).toFixed(4) + ") translate3d("
         + px(lerp(-4.0, 2.5, unresolved)) + ", "
         + px(lerp(1.8, -2.2, unresolved)) + ", 0)";
       bg.style.filter = "saturate(" + lerp(0.98, 1.01, slow).toFixed(3) + ") contrast("
         + lerp(1.02, 1.045, slow).toFixed(3) + ")";
     }}
-    if (fallback) {{
+    if (fallback && fixedFurniture) {{
+      fallback.style.transform = "none";
+      fallback.style.opacity = "1";
+    }} else if (fallback) {{
       fallback.style.transform = "scale(" + lerp(1.004, 1.012, slow).toFixed(4) + ") translate3d("
         + px(lerp(2.0, -2.2, unresolved)) + ", "
         + px(lerp(-1.0, 1.6, unresolved)) + ", 0)";
@@ -3335,7 +3527,10 @@ def cover_animation_script(duration_seconds: float) -> str:
         + lerp(-7.5, -5.4, unresolved).toFixed(3) + "deg)";
       shadow.style.opacity = lerp(0.10, 0.18, slow).toFixed(3);
     }}
-    if (avatar) {{
+    if (avatar && fixedFurniture) {{
+      avatar.style.opacity = "1";
+      avatar.style.transform = "none";
+    }} else if (avatar) {{
       avatar.style.opacity = lerp(0.96, 1, slow).toFixed(3);
       avatar.style.transform = "translate3d(" + px(lerp(2.0, -1.0, unresolved))
         + ", " + px(lerp(-1.0, 1.0, unresolved)) + ", 0) scale("
@@ -3352,7 +3547,7 @@ def cover_animation_script(duration_seconds: float) -> str:
     const typeGhost = 1 - typeResolve;
     if (motionLines) {{
       motionLines.style.opacity = "1";
-      motionLines.style.transform = "translate3d(0, " + px(lerp(2.0, 0.2, unresolved)) + ", 0)";
+      motionLines.style.transform = "none";
     }}
     if (kinetic) {{
       kinetic.style.opacity = lerp(0.78, 0, typeResolve).toFixed(3);
@@ -3375,9 +3570,11 @@ def cover_animation_script(duration_seconds: float) -> str:
     }});
     if (headline) {{
       headline.style.opacity = motionLines ? "1" : lerp(0.46, 1, typeResolve).toFixed(3);
-      headline.style.transform = "translate3d(0, " + px(lerp(6.0, 0.8, unresolved))
-        + ", 0) scaleX(" + lerp(1.035, 1.0, typeResolve).toFixed(4)
-        + ") scaleY(" + headlineScaleY + ")";
+      headline.style.transform = motionLines
+        ? "scaleY(" + headlineScaleY + ")"
+        : "translate3d(0, " + px(lerp(6.0, 0.8, unresolved))
+          + ", 0) scaleX(" + lerp(1.035, 1.0, typeResolve).toFixed(4)
+          + ") scaleY(" + headlineScaleY + ")";
     }}
     accents.forEach((accent) => {{
       accent.style.transform = "translate3d(0, " + px(lerp(1.2, -0.6, unresolved))
@@ -3387,7 +3584,7 @@ def cover_animation_script(duration_seconds: float) -> str:
     }});
     if (dots) {{
       dots.style.opacity = lerp(0.84, 1, fixedFurniture ? loopEase : easeOutCubic(p)).toFixed(3);
-      dots.style.transform = "translate3d(0, " + px(lerp(3.0, 0.5, unresolved)) + ", 0)";
+      dots.style.transform = fixedFurniture ? "none" : "translate3d(0, " + px(lerp(3.0, 0.5, unresolved)) + ", 0)";
     }}
   }}
 
@@ -3476,7 +3673,7 @@ def title_slide_html(
         if motion_lines
         else ""
     )
-    animation_layers = """
+    animation_layers = "" if text_motion_lines else """
   <div class="cover-light" aria-hidden="true"></div>
   <div class="cover-shadow" aria-hidden="true"></div>
   <div class="cover-grain" aria-hidden="true"></div>
@@ -3609,6 +3806,20 @@ def title_slide_html(
   background-size: auto 63%;
   -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 34%, rgba(0, 0, 0, 0.72) 43%, rgba(0, 0, 0, 0.18) 54%, transparent 64%);
   mask-image: linear-gradient(180deg, #000 0%, #000 34%, rgba(0, 0, 0, 0.72) 43%, rgba(0, 0, 0, 0.18) 54%, transparent 64%);
+}}
+.visual-card.is-top-art {{
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 100%);
+}}
+.visual-card.is-top-art .visual-bg {{
+  inset: 0;
+  background-position: center top;
+  background-size: 100% auto;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 54%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.22) 83%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 54%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.22) 83%, transparent 100%);
+  filter: saturate(0.96) contrast(1.02);
+}}
+.visual-card.is-top-art .visual-fallback {{
+  display: none;
 }}
 .visual-card.is-og-fallback .visual-bg {{
   filter: grayscale(1) contrast(1.06) brightness(1.04);
@@ -4122,6 +4333,7 @@ def manifest_title_context(context: dict[str, object]) -> dict[str, object]:
         "brand_voice_doc": context.get("brand_voice_doc", ""),
         "provider": context.get("provider", ""),
         "image_provider": context.get("image_provider", ""),
+        "image_composition": context.get("image_composition", ""),
         "google_enabled": bool(context.get("google_enabled")),
         "gemini_text_model": context.get("gemini_text_model", ""),
         "openai_image_model": context.get("openai_image_model", ""),

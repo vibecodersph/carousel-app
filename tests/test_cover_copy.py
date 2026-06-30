@@ -169,8 +169,11 @@ class CoverCopyTests(unittest.TestCase):
         )
 
         self.assertIn("Image brief for the symbolic metaphor", prompt)
-        self.assertIn("4:5 vertical portrait", prompt)
+        self.assertIn("16:9 horizontal", prompt)
         self.assertIn("lower 38% should be quiet warm background", prompt)
+        self.assertIn("quiet vanishing gradient", prompt)
+        self.assertNotIn("Do not create a fade, vanishing gradient", prompt)
+        self.assertNotIn("directly over the artwork", prompt)
         self.assertIn("Traditional product roles are dissolving", prompt)
         self.assertIn("office nameplate melting", prompt)
         self.assertIn("screens, org charts, robots", prompt)
@@ -250,6 +253,42 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("typeResolve", html_text)
         self.assertIn("See the receipts", html_text)
 
+    def test_long_text_motion_headlines_can_use_four_rows(self) -> None:
+        lines = build_x_carousel.text_motion_headline_lines(
+            "Bakit biglang hinati sa tatlo ang bagong GPT-5.6?"
+        )
+
+        self.assertEqual(len(lines), 4)
+        self.assertIn("hinati sa tatlo", lines)
+        self.assertIn("ang bagong", lines)
+        self.assertIn("GPT-5.6?", lines[-1])
+
+    def test_very_long_text_motion_headlines_use_balanced_five_rows(self) -> None:
+        lines = build_x_carousel.text_motion_headline_lines(
+            "Walang sponcon: Pinakamurang LLM stack na sinubukan ko gamit ang sariling pera"
+        )
+
+        self.assertEqual(len(lines), 5)
+        self.assertIn("Pinakamurang", lines)
+        self.assertIn("LLM stack na", lines)
+        self.assertEqual(lines[-1], "ang sariling pera")
+
+    def test_long_japanese_text_motion_headlines_use_balanced_rows(self) -> None:
+        headline = "「セキュリティ審査、通る？」に[震えずに即答する]。グローバル基準を低コストで揃える最新スタック"
+        plain, spans = build_x_carousel.bracket_highlight_spans(headline)
+        lines = build_x_carousel.text_motion_headline_lines(plain)
+        payload = build_x_carousel.text_motion_line_payload(plain, lines, spans)
+        highlighted = "".join(
+            str(line["text"])[start:end]
+            for line in payload
+            for start, end in line["highlights"]
+        )
+
+        self.assertEqual(len(lines), 5)
+        self.assertLessEqual(max(len(line) for line in lines), 12)
+        self.assertNotIn("」に震えずに即答する。グローバル基準を低コストで揃える最新スタック", lines)
+        self.assertEqual(highlighted, "震えずに即答する")
+
     def test_text_motion_cover_keeps_brand_rule_and_animates_headline_lines(self) -> None:
         html_text = build_x_carousel.title_slide_html(
             {"text": "OpenAI ships a faster agent.", "url": "https://x.com/a/status/1"},
@@ -279,24 +318,65 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("window.TextMotion.createBoard", html_text)
         self.assertIn("__coverTextMotionLines", html_text)
         self.assertIn("__mountCoverTextMotionLines", html_text)
-        self.assertIn('"rubber-lead"', html_text)
-        self.assertIn('const motionStyle = "rubber-lead"', html_text)
+        self.assertIn("const TEXT_MOTION_FIT_SCALE = 1.4", html_text)
+        self.assertIn("const TEXT_MOTION_ROW_SCALE = 0.86", html_text)
+        self.assertIn("const TEXT_MOTION_DEFAULT_PULL = 50", html_text)
+        self.assertIn("function motionLineText(line)", html_text)
+        self.assertIn("function motionDefaultPull()", html_text)
+        self.assertIn("fontSize * TEXT_MOTION_FIT_SCALE", html_text)
+        self.assertIn("TEXT_MOTION_FIT_SCALE * TEXT_MOTION_ROW_SCALE", html_text)
+        self.assertIn(f'cluster.style.top = "{build_x_carousel.TITLE_TEXT_TOP}px"', html_text)
+        self.assertIn(f"const desiredTop = {build_x_carousel.TITLE_TEXT_DYNAMIC_BOTTOM} - blockHeight", html_text)
+        self.assertIn(f"{build_x_carousel.TITLE_TEXT_MIN_TOP},", html_text)
+        self.assertIn("cluster.style.top = `${Math.round(nextTop)}px`", html_text)
+        self.assertIn("window.TextMotion.metricFor", html_text)
+        self.assertIn("defaultPull: DEFAULT_PULL", html_text)
+        self.assertIn("const pullSpace = motionDefaultPull()", html_text)
+        self.assertIn("let low = isTextMotionCover ? 42 : 52", html_text)
+        self.assertNotIn('<div class="cover-light"', html_text)
+        self.assertNotIn('<div class="cover-shadow"', html_text)
+        self.assertNotIn('<div class="cover-grain"', html_text)
+        self.assertIn('"anchored-lead"', html_text)
+        self.assertIn('const motionStyle = "anchored-lead"', html_text)
         self.assertIn("const motionScale = 1.4", html_text)
-        self.assertIn("const motionLoopMs = Math.round(5000)", html_text)
-        self.assertIn("const motionActiveMs = Math.round(motionLoopMs * 0.72)", html_text)
-        self.assertIn("const motionPauseMs = Math.max(80, Math.round((motionLoopMs - motionActiveMs) / 2))", html_text)
+        self.assertIn("const motionRowScale = 0.86", html_text)
         self.assertIn("const motionLineDelayMs = 95", html_text)
-        self.assertIn("activeMs: motionActiveMs", html_text)
-        self.assertIn("pauseMs: motionPauseMs", html_text)
+        self.assertIn("const rowHeight = Math.ceil(fontSize * motionRowScale)", html_text)
+        self.assertNotIn("activeMs: motionActiveMs", html_text)
+        self.assertNotIn("outActiveMs: motionOutActiveMs", html_text)
+        self.assertNotIn("returnActiveMs: motionReturnActiveMs", html_text)
+        self.assertNotIn("pauseMs: motionPauseMs", html_text)
+        self.assertNotIn("pull: motionPull", html_text)
         self.assertIn("board.setProgress(0, index * motionLineDelayMs)", html_text)
         self.assertIn("board.setProgress(p, index * motionLineDelayMs)", html_text)
         self.assertIn("const loopArc = Math.sin(p * Math.PI)", html_text)
         self.assertIn("const grainDrift = fixedFurniture ? loopEase : p", html_text)
         self.assertIn("const typeResolve = fixedFurniture ? loopEase", html_text)
+        self.assertIn("if (bg && fixedFurniture)", html_text)
+        self.assertIn('bg.style.transform = "none"', html_text)
+        self.assertIn("if (fallback && fixedFurniture)", html_text)
+        self.assertIn("if (avatar && fixedFurniture)", html_text)
+        self.assertIn('motionLines.style.transform = "none"', html_text)
+        self.assertIn('? "scaleY(" + headlineScaleY + ")"', html_text)
+        self.assertIn('dots.style.transform = fixedFurniture ? "none"', html_text)
         self.assertIn(".text-motion-cover .account-rule", html_text)
         self.assertIn("margin-bottom: 46px", html_text)
+        self.assertIn(".text-motion-cover .cover-light", html_text)
         self.assertIn(".text-motion-cover .cover-shadow", html_text)
+        self.assertIn(".text-motion-cover .cover-grain", html_text)
         self.assertIn("display: none;", html_text)
+        self.assertIn(f"top: {build_x_carousel.TITLE_TEXT_TOP}px", html_text)
+        self.assertIn(".text-motion-cover .visual-card::after", html_text)
+        self.assertIn(".text-motion-cover .visual-bg", html_text)
+        self.assertIn(".text-motion-cover .visual-card.is-top-art .visual-bg", html_text)
+        self.assertIn("background-size: auto 70%", html_text)
+        self.assertIn("justify-content: flex-start", html_text)
+        self.assertIn("mask-image: linear-gradient", html_text)
+        self.assertIn("#000 46%, rgba(0, 0, 0, 0.72) 52%", html_text)
+        self.assertIn("rgba(0, 0, 0, 0.24) 60%, transparent 68%", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0) 42%, rgba(var(--bg-rgb), 0.28) 49%", html_text)
+        self.assertIn("rgba(var(--bg-rgb), 0.95) 64%, var(--bg) 78%", html_text)
+        self.assertNotIn("rgba(var(--bg-rgb), 0.94) 0%", html_text)
         self.assertIn("--tm-style-two: var(--bg)", html_text)
         self.assertIn("--tm-style-two-bg: var(--primary)", html_text)
         self.assertIn("--tm-style-two-bg-inset-y: 0.018em", html_text)
@@ -310,6 +390,41 @@ class CoverCopyTests(unittest.TestCase):
         self.assertIn("nagmadali bigla.", html_text)
         self.assertNotIn('class="headline-static"', html_text)
         self.assertNotIn("visibility: hidden", html_text)
+
+    def test_top_art_cover_fits_background_image_above_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "cover.png"
+            image_path.write_bytes(b"cover")
+            html_text = build_x_carousel.title_slide_html(
+                {"text": "OpenAI ships a faster agent.", "url": "https://x.com/a/status/1"},
+                4,
+                None,
+                {
+                    "cover_animation": "text-motion-lines",
+                    "topic_image_path": image_path,
+                    "image_composition": "top_art",
+                    "cover_copy": {
+                        "headline": "Agent mo, [nagmadali] bigla.",
+                        "swipe_line": "See the receipts",
+                    },
+                },
+                "vibecodersph",
+                animated=True,
+            )
+
+        self.assertIn('class="visual-card is-top-art"', html_text)
+        self.assertIn('<div class="visual-bg" style="background-image:', html_text)
+        self.assertIn(".visual-card.is-top-art .visual-bg", html_text)
+        self.assertIn("background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 100%)", html_text)
+        self.assertIn("inset: 0;", html_text)
+        self.assertIn("background-position: center top", html_text)
+        self.assertIn("background-size: 100% auto", html_text)
+        self.assertIn("mask-image: linear-gradient", html_text)
+        self.assertIn(".visual-card.is-top-art .visual-fallback", html_text)
+        self.assertNotIn(".visual-card.is-top-art::after {{\n  display: none;", html_text)
+        self.assertIn("display: none;", html_text)
+        self.assertNotIn("visual-spot-art", html_text)
+        self.assertNotIn("is-spot-art", html_text)
         self.assertNotIn("cover-motion-brand", html_text)
         self.assertNotIn('<div class="kinetic-title"', html_text)
 

@@ -107,10 +107,10 @@ def cover_image_prompt(base: str, topic: str) -> str:
     if not base:
         base = f"Editorial cover illustration for {topic}"
     return normalize_space(
-        f"{base}. 4:5 vertical portrait cover artwork for an Instagram carousel. "
-        "The main symbolic focal element lives in the upper 58% of the frame. "
-        "The lower 38% is a quiet warm paper vanishing gradient for later typography, "
-        "with no hard edge, no busy details, and no important object. "
+        f"{base}. 16:9 horizontal landscape editorial artwork for the top of an Instagram carousel cover. "
+        "Create a complete landscape illustration with clear subject detail in the upper portion; "
+        "the rendered cover will place animated title text below the focal art. "
+        "Keep the lower portion quiet, warm, and uncluttered so it can softly vanish into the brand paper color; no hard edge, no busy details, and no important objects there. "
         "Cream paper, dark ink, terracotta accent, warm print texture. "
         "No text, no logos, no UI, no charts, no readable marks, no neon, no rainbow colors."
     )
@@ -125,11 +125,15 @@ def generated_image_path(out_dir: Path, topic: str, prompt: str) -> Path:
     return out_dir / "generated_assets" / f"{digest}.png"
 
 
+def cover_image_composition(path: Path | None) -> str:
+    return "top_art" if path else ""
+
+
 def load_reusable_assets(path: Path | None) -> dict[str, Any]:
     if not path:
-        return {"cover": None, "items": {}}
+        return {"cover": None, "cover_composition": "", "items": {}}
     manifest = read_json(path)
-    assets: dict[str, Any] = {"cover": None, "items": {}}
+    assets: dict[str, Any] = {"cover": None, "cover_composition": "", "items": {}}
     slides = manifest.get("slides")
     if not isinstance(slides, list):
         return assets
@@ -144,6 +148,10 @@ def load_reusable_assets(path: Path | None) -> dict[str, Any]:
             continue
         if slide.get("type") == "title" and assets["cover"] is None:
             assets["cover"] = image_path
+            assets["cover_composition"] = (
+                string_value(slide.get("image_composition")).replace("spot_illustration", "top_art")
+                or cover_image_composition(image_path)
+            )
         item_name = string_value(slide.get("item_name"))
         if item_name:
             assets["items"][item_name.lower()] = image_path
@@ -218,6 +226,7 @@ def title_context(
     *,
     generate_images: bool,
     reusable_image: Path | None = None,
+    reusable_image_composition: str = "",
 ) -> tuple[dict[str, Any], dict[str, str], Path | None]:
     channel = load_channel()
     cover = carousel.get("cover_page")
@@ -245,6 +254,7 @@ def title_context(
         "topic": headline,
         "topic_image_path": cover_image,
         "image_provider": "openai" if cover_image else "",
+        "image_composition": string_value(reusable_image_composition) or cover_image_composition(cover_image),
         "cover_copy": cover_copy,
         "cover_animation": "text-motion-lines",
         "companies": [],
@@ -450,6 +460,7 @@ def render_carousel(
         out_dir,
         generate_images=generate_images,
         reusable_image=reusable_assets.get("cover"),
+        reusable_image_composition=string_value(reusable_assets.get("cover_composition")),
     )
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
@@ -483,6 +494,7 @@ def render_carousel(
             "path": str(cover_path),
             "poster": str(cover_poster),
             "image_path": str(cover_image or ""),
+            "image_composition": string_value(context.get("image_composition")),
         }
     )
 
