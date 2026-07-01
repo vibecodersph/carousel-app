@@ -38,7 +38,7 @@ const VIDEO_DOMAINS = [
   "twitter.com",
 ];
 
-interface RedditListing {
+export interface RedditListing {
   kind: "top" | "rising";
   time?: "day" | "week";
 }
@@ -57,6 +57,8 @@ export interface RedditConnectorOptions {
   limitPerListing?: number;
   maxItems?: number;
   concurrency?: number;
+  rssDelayMs?: number;
+  rssOnly?: boolean;
   includeTopReply?: boolean;
   topReplyConcurrency?: number;
   onListing?: (event: RedditListingEvent) => void;
@@ -68,18 +70,50 @@ const LISTINGS: RedditListing[] = [
   { kind: "rising" },
 ];
 
-function redditListingUrl(subreddit: string, listing: RedditListing, limit: number): string {
-  const params = new URLSearchParams({ limit: String(limit), raw_json: "1" });
-  if (listing.time) params.set("t", listing.time);
-  const base = (process.env.REDDIT_JSON_BASE_URL || "https://www.reddit.com").replace(/\/$/, "");
-  return `${base}/r/${encodeURIComponent(subreddit)}/${listing.kind}.json?${params.toString()}`;
+interface RedditRequestContext {
+  oauth: boolean;
+  headers: Record<string, string>;
 }
 
-function redditHeaders(): Record<string, string> {
+let redditTokenCache: { token: string; expiresAt: number } | undefined;
+
+export function redditListingUrl(
+  subreddit: string,
+  listing: RedditListing,
+  limit: number,
+  options: { oauth?: boolean } = {},
+): string {
+  const params = new URLSearchParams({ limit: String(limit), raw_json: "1" });
+  if (listing.time) params.set("t", listing.time);
+  const base = (options.oauth ? "https://oauth.reddit.com" : process.env.REDDIT_JSON_BASE_URL || "https://www.reddit.com").replace(/\/$/, "");
+  const suffix = options.oauth ? "" : ".json";
+  return `${base}/r/${encodeURIComponent(subreddit)}/${listing.kind}${suffix}?${params.toString()}`;
+}
+
+export function redditRssListingUrl(subreddit: string, listing: RedditListing, limit: number): string {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (listing.time) params.set("t", listing.time);
+  const base = (process.env.REDDIT_RSS_BASE_URL || "https://www.reddit.com").replace(/\/$/, "");
+  return `${base}/r/${encodeURIComponent(subreddit)}/${listing.kind}/.rss?${params.toString()}`;
+}
+
+function redditBaseHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "User-Agent": process.env.REDDIT_USER_AGENT || "carousel-app-ai-news-bot/0.1",
     Accept: "application/json,text/json;q=0.9,*/*;q=0.5",
   };
+  return headers;
+}
+
+function redditRssHeaders(): Record<string, string> {
+  return {
+    ...redditBaseHeaders(),
+    Accept: "application/atom+xml,application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.5",
+  };
+}
+
+function redditPublicHeaders(): Record<string, string> {
+  const headers = redditBaseHeaders();
   if (process.env.REDDIT_AUTHORIZATION) {
     headers.Authorization = process.env.REDDIT_AUTHORIZATION;
   }
@@ -87,6 +121,188 @@ function redditHeaders(): Record<string, string> {
     headers.Cookie = process.env.REDDIT_COOKIE;
   }
   return headers;
+}
+
+async function redditOAuthToken(): Promise<string | undefined> {
+  if (process.env.REDDIT_BEARER_TOKEN) return process.env.REDDIT_BEARER_TOKEN;
+  if (redditTokenCache && redditTokenCache.expiresAt > Date.now() + 60_000) {
+    return redditTokenCache.token;
+  }
+  const clientId = process.env.REDDIT_CLIENT_ID;
+  if (!clientId) return undefined;
+  const clientSecret = process.env.REDDIT_CLIENT_SECRET ?? "";
+  const params = new URLSearchParams();
+  if (clientSecret) {
+    params.set("grant_type", "client_credentials");
+  } else {
+    params.set("grant_type", "https://oauth.reddit.com/grants/installed_client");
+    params.set("device_id", process.env.REDDIT_DEVICE_ID || "DO_NOT_TRACK_THIS_DEVICE");
+  }
+
+  const response = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      ...redditBaseHeaders(),
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+  if (!response.ok) {
+    throw new Error(`Reddit OAuth token returned HTTP ${response.status}: ${await response.text()}`);
+  }
+  const data = await response.json() as { access_token?: string; expires_in?: number };
+  if (!data.access_token) throw new Error("Reddit OAuth token response did not include access_token");
+  redditTokenCache = {
+    token: data.access_token,
+    expiresAt: Date.now() + Math.max(60, Number(data.expires_in ?? 3600) - 60) * 1000,
+  };
+  return redditTokenCache.token;
+}
+
+async function redditRequestContext(): Promise<RedditRequestContext> {
+  if (process.env.REDDIT_AUTHORIZATION?.toLowerCase().startsWith("bearer ")) {
+    return {
+      oauth: true,
+      headers: {
+        ...redditBaseHeaders(),
+        Authorization: process.env.REDDIT_AUTHORIZATION,
+      },
+    };
+  }
+  const token = await redditOAuthToken();
+  if (token) {
+    return {
+      oauth: true,
+      headers: {
+        ...redditBaseHeaders(),
+        Authorization: `Bearer ${token}`,
+      },
+    };
+  }
+  return {
+    oauth: false,
+    headers: redditPublicHeaders(),
+  };
+}
+
+export function clearRedditTokenCacheForTests(): void {
+  redditTokenCache = undefined;
+}
+
+async function fetchText(url: string, options: { timeoutMs?: number; headers?: Record<string, string> } = {}): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 25_000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "carousel-app/1.0 ai-news-source-pipeline",
+        Accept: "text/plain,*/*",
+        ...options.headers,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
+    }
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_match, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'");
+}
+
+function stripXmlHtml(value: string): string {
+  return normalizeWhitespace(
+    decodeXmlEntities(value)
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<[^>]*>/g, " "),
+  );
+}
+
+function xmlTag(block: string, tag: string): string {
+  const match = block.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match ? decodeXmlEntities(match[1]) : "";
+}
+
+function xmlTagText(block: string, tag: string): string {
+  return stripXmlHtml(xmlTag(block, tag));
+}
+
+function xmlLink(block: string): string {
+  const atom = block.match(/<link\b[^>]*\bhref=(["'])(.*?)\1[^>]*\/?>/i);
+  if (atom) return decodeXmlEntities(atom[2]);
+  return xmlTagText(block, "link");
+}
+
+function redditIdFromUrl(url: string): string {
+  const match = url.match(/\/comments\/([a-z0-9]+)/i);
+  return match ? `t3_${match[1]}` : "";
+}
+
+function rssAuthor(block: string): string {
+  const authorBlock = xmlTag(block, "author");
+  const atomName = authorBlock ? xmlTagText(authorBlock, "name") : "";
+  return normalizeWhitespace(atomName || xmlTagText(block, "dc:creator") || xmlTagText(block, "author")).replace(/^\/?u\//i, "");
+}
+
+export function redditRssEntryToSourceItem(
+  block: string,
+  options: { subreddit: string; listing: RedditListing; feedUrl: string },
+): SourceItem | null {
+  const title = xmlTagText(block, "title");
+  const url = xmlLink(block);
+  const externalId = normalizeWhitespace(xmlTagText(block, "id") || xmlTagText(block, "guid") || redditIdFromUrl(url));
+  if (!title || !url || !externalId) return null;
+  const body = normalizeWhitespace(
+    stripXmlHtml(xmlTag(block, "content") || xmlTag(block, "description") || xmlTag(block, "summary")),
+  );
+  return {
+    id: stableSourceItemId("reddit", externalId),
+    source: "reddit",
+    externalId,
+    url,
+    title,
+    body,
+    author: rssAuthor(block),
+    createdAt: toIsoDate(xmlTagText(block, "published") || xmlTagText(block, "updated") || xmlTagText(block, "pubDate")),
+    subreddit: options.subreddit,
+    metrics: {
+      upvotes: 1,
+      score: 1,
+      comments: 0,
+    },
+    media: detectRedditMedia({ url }),
+    raw: {
+      connector: "rss",
+      feedUrl: options.feedUrl,
+      listing: options.listing,
+    },
+  };
+}
+
+export function redditRssFeedToSourceItems(
+  xml: string,
+  options: { subreddit: string; listing: RedditListing; feedUrl: string },
+): SourceItem[] {
+  const blocks = xml.match(/<entry\b[\s\S]*?<\/entry>/gi)
+    ?? xml.match(/<item\b[\s\S]*?<\/item>/gi)
+    ?? [];
+  return blocks
+    .map((block) => redditRssEntryToSourceItem(block, options))
+    .filter((item): item is SourceItem => Boolean(item));
 }
 
 function nestedValue(data: Record<string, unknown>, path: string[]): unknown {
@@ -162,16 +378,48 @@ export function redditPostToSourceItem(post: Record<string, unknown>): SourceIte
   };
 }
 
-async function fetchListing(subreddit: string, listing: RedditListing, limit: number): Promise<SourceItem[]> {
-  const url = redditListingUrl(subreddit, listing, limit);
-  const json = await fetchJson(url, {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchRssListing(subreddit: string, listing: RedditListing, limit: number): Promise<SourceItem[]> {
+  const feedUrl = redditRssListingUrl(subreddit, listing, limit);
+  const xml = await fetchText(feedUrl, {
     timeoutMs: 25_000,
-    headers: redditHeaders(),
+    headers: redditRssHeaders(),
   });
-  const children = (json as { data?: { children?: Array<{ data?: Record<string, unknown> }> } }).data?.children ?? [];
-  return children
-    .map((child) => child.data ? redditPostToSourceItem(child.data) : null)
-    .filter((item): item is SourceItem => Boolean(item));
+  const items = redditRssFeedToSourceItems(xml, { subreddit, listing, feedUrl });
+  if (items.length) return items;
+  throw new Error(`RSS feed returned no parseable entries for ${feedUrl}`);
+}
+
+async function fetchListing(
+  subreddit: string,
+  listing: RedditListing,
+  limit: number,
+  options: { rssOnly?: boolean } = {},
+): Promise<SourceItem[]> {
+  if (options.rssOnly) {
+    return fetchRssListing(subreddit, listing, limit);
+  }
+  try {
+    const context = await redditRequestContext();
+    const url = redditListingUrl(subreddit, listing, limit, { oauth: context.oauth });
+    const json = await fetchJson(url, {
+      timeoutMs: 25_000,
+      headers: context.headers,
+    });
+    const children = (json as { data?: { children?: Array<{ data?: Record<string, unknown> }> } }).data?.children ?? [];
+    return children
+      .map((child) => child.data ? redditPostToSourceItem(child.data) : null)
+      .filter((item): item is SourceItem => Boolean(item));
+  } catch (jsonError) {
+    try {
+      return await fetchRssListing(subreddit, listing, limit);
+    } catch (rssError) {
+      throw new Error(`json failed: ${(jsonError as Error).message}; rss failed: ${(rssError as Error).message}`);
+    }
+  }
 }
 
 function isHumanComment(comment: Record<string, unknown>): boolean {
@@ -188,10 +436,13 @@ export async function fetchRedditTopReply(item: SourceItem): Promise<TopReply | 
   const redditId = item.externalId.replace(/^t3_/, "");
   if (!item.subreddit || !redditId) return undefined;
   const params = new URLSearchParams({ sort: "top", limit: "30", raw_json: "1" });
-  const url = `https://www.reddit.com/r/${encodeURIComponent(item.subreddit)}/comments/${encodeURIComponent(redditId)}.json?${params}`;
+  const context = await redditRequestContext();
+  const base = context.oauth ? "https://oauth.reddit.com" : "https://www.reddit.com";
+  const suffix = context.oauth ? "" : ".json";
+  const url = `${base}/r/${encodeURIComponent(item.subreddit)}/comments/${encodeURIComponent(redditId)}${suffix}?${params}`;
   const json = await fetchJson(url, {
     timeoutMs: 25_000,
-    headers: redditHeaders(),
+    headers: context.headers,
   });
   const commentsListing = Array.isArray(json) ? json[1] : undefined;
   const children = (commentsListing as { data?: { children?: Array<{ kind?: string; data?: Record<string, unknown> }> } } | undefined)
@@ -241,11 +492,20 @@ export async function fetchRedditSourceItems(options: RedditConnectorOptions = {
   const subreddits = options.subreddits ?? DEFAULT_REDDIT_SUBREDDITS;
   const limit = options.limitPerListing ?? 35;
   const tasks = subreddits.flatMap((subreddit) => LISTINGS.map((listing) => ({ subreddit, listing })));
-  const batches = await mapLimit(tasks, options.concurrency ?? 4, async (task) => {
-    const url = redditListingUrl(task.subreddit, task.listing, limit);
+  const batches = await mapLimit(tasks, options.concurrency ?? 4, async (task, index) => {
+    if (options.rssDelayMs && index > 0) {
+      await sleep(options.rssDelayMs * index);
+    }
+    const url = redditListingUrl(task.subreddit, task.listing, limit, {
+      oauth: Boolean(
+        process.env.REDDIT_BEARER_TOKEN
+          || process.env.REDDIT_CLIENT_ID
+          || process.env.REDDIT_AUTHORIZATION?.toLowerCase().startsWith("bearer "),
+      ),
+    });
     const listingLabel = `${task.listing.kind}${task.listing.time ? `/${task.listing.time}` : ""}`;
     try {
-      const items = await fetchListing(task.subreddit, task.listing, limit);
+      const items = await fetchListing(task.subreddit, task.listing, limit, { rssOnly: options.rssOnly });
       options.onListing?.({
         subreddit: task.subreddit,
         listing: listingLabel,

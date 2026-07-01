@@ -1,0 +1,76 @@
+{
+  "audience": "ai_builders",
+  "redditSubreddits": [
+    "LocalLLaMA",
+    "ChatGPTCoding",
+    "ai_agents",
+    "OpenAI",
+    "ClaudeAI",
+    "Cursor",
+    "MachineLearning",
+    "programming"
+  ],
+  "hookStyles": ["list", "contrarian", "curiosity"],
+  "topics": [
+    {
+      "id": "coding_agents",
+      "label": "AI coding agents",
+      "keywords": ["coding agent", "claude code", "cursor", "openhands", "swe-bench", "devin", "code review"],
+      "githubQueries": [
+        "coding agent stars:>50 pushed:>={sinceDate} fork:false archived:false",
+        "claude code in:readme stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "ai code review agent stars:>20 pushed:>={sinceDate} fork:false archived:false"
+      ],
+      "hnQueries": ["coding agent", "claude code", "ai code review", "cursor ai"],
+      "angles": ["what builders are actually shipping", "where coding agents still break", "how teams are wiring review workflows"]
+    },
+    {
+      "id": "model_routing",
+      "label": "LLM routing and cost control",
+      "keywords": ["llm router", "model routing", "litellm", "openrouter", "cheap inference", "prompt caching", "fallback model"],
+      "githubQueries": [
+        "llm router stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "openai compatible proxy stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "model routing llm stars:>20 pushed:>={sinceDate} fork:false archived:false"
+      ],
+      "hnQueries": ["llm router", "model routing", "cheap llm api", "prompt caching"],
+      "angles": ["unit economics", "routing instead of one-model loyalty", "fallbacks and reliability"]
+    },
+    {
+      "id": "local_private_ai",
+      "label": "Local and private AI workflows",
+      "keywords": ["local llm", "ollama", "vllm", "llamacpp", "private ai", "on device", "self hosted"],
+      "githubQueries": [
+        "local llm stars:>100 pushed:>={sinceDate} fork:false archived:false",
+        "ollama workflow stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "vllm inference stars:>100 pushed:>={sinceDate} fork:false archived:false"
+      ],
+      "hnQueries": ["local llm", "ollama", "private ai", "self hosted llm"],
+      "angles": ["privacy constraints", "when local beats API", "ops burden vs control"]
+    },
+    {
+      "id": "agent_workflows",
+      "label": "Agentic automation workflows",
+      "keywords": ["browser agent", "computer use", "mcp", "agent workflow", "tool calling", "workflow automation"],
+      "githubQueries": [
+        "browser agent stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "mcp server stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "agent workflow tool calling stars:>20 pushed:>={sinceDate} fork:false archived:false"
+      ],
+      "hnQueries": ["browser agent", "computer use agent", "mcp server", "agent workflow"],
+      "angles": ["boring automation that works", "where agents need guardrails", "new glue-code stacks"]
+    },
+    {
+      "id": "rag_evals_observability",
+      "label": "RAG, evals, and observability",
+      "keywords": ["rag", "evals", "observability", "vector database", "llm monitoring", "retrieval"],
+      "githubQueries": [
+        "llm evals stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "rag observability stars:>20 pushed:>={sinceDate} fork:false archived:false",
+        "llm monitoring stars:>20 pushed:>={sinceDate} fork:false archived:false"
+      ],
+      "hnQueries": ["llm evals", "rag observability", "vector database", "llm monitoring"],
+      "angles": ["quality control", "production reliability", "why demos fail in real apps"]
+    }
+  ]
+}

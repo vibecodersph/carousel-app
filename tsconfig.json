@@ -11,6 +11,7 @@
   "include": [
     "sourcing/**/*.ts",
     "ranking/**/*.ts",
+    "research_idea_generator/**/*.ts",
     "tests/ts-pipeline/**/*.ts"
   ]
 }
