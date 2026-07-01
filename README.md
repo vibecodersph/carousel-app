@@ -383,7 +383,20 @@ uv run python reel_scheduler.py report --out out/reel_report.html
 root, schedules new rows into the ledger, and can reshuffle the unpublished
 queue after appending. `queue-ui` serves a local review page with unschedule
 actions for unpublished items, and `scripts/run_reel_scheduler_due.sh` now
-refreshes the HTML report after each due-run.
+refreshes the HTML report after each due-run. The report writes LLM-ready
+`reel_report.insights.json` and readable `reel_report.insights.md` sidecars.
+The Markdown table uses the actual reel subtitle transcript from
+`/Users/aiagent/GitHub/reel-app/outputs/<youtube_id>/clips/.../subtitles.<lang>.ass`
+when available, matched from the reel's YouTube source id, plus the latest
+Instagram metrics. When `queue-ui` is running, the report's **Update Instagram
+Insights** button fetches fresh Graph API insights and regenerates all report
+artifacts.
+
+To rebuild only the readable table from an existing JSON export:
+
+```sh
+uv run python reel_scheduler.py insights-md out/reel_report.insights.json
+```
 
 ## Story Scout Automation
 

@@ -509,8 +509,10 @@ def latest_insight_rows(
     query = """
         SELECT
           r.content_hash, r.channel_id, r.title, r.published_at, r.permalink, r.media_id,
+          r.lang, r.clip_dir, r.media_path, r.source_video, r.caption, r.scheduled_at,
+          r.manifest_path,
           i.captured_at, i.views, i.reach, i.likes, i.comments, i.saved, i.shares,
-          i.total_interactions
+          i.total_interactions, i.raw
         FROM reels r
         LEFT JOIN insights i
           ON i.id = (

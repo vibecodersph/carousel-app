@@ -1,6 +1,8 @@
 import argparse
+import http.client
 import io
 import json
+import threading
 import tempfile
 import unittest
 from datetime import datetime
@@ -966,6 +968,359 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 row = conn.execute("SELECT * FROM insights WHERE media_id='178900002'").fetchone()
                 self.assertEqual(row["views"], 1200)
                 self.assertEqual(row["saved"], 44)
+
+    def test_sync_insights_skips_one_graph_error_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="h-bad",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir="/clip-bad",
+                    media_path="/clip-bad/reel.mp4",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    published_at="2026-06-24T00:00:00+00:00",
+                    media_id="18234800344311426",
+                )
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="h-good",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir="/clip-good",
+                    media_path="/clip-good/reel.mp4",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    published_at="2026-06-23T00:00:00+00:00",
+                    media_id="178900002",
+                )
+            args = argparse.Namespace(
+                platform="instagram",
+                channel=None,
+                db=db,
+                limit=None,
+                dry_run=False,
+                metrics="views,saved",
+                access_token="",
+                graph_api_version="v23.0",
+                graph_api_root="https://graph.instagram.com",
+            )
+
+            with patch("instagram_publish.load_env_file"), patch(
+                "instagram_publish.resolve_instagram_access_token",
+                return_value=("token", "test"),
+            ), patch.object(
+                reel_scheduler,
+                "fetch_insights",
+                side_effect=[
+                    SystemExit("Instagram Graph API error 400: Unsupported get request."),
+                    {"data": [{"name": "views", "values": [{"value": 321}]}]},
+                ],
+            ):
+                rc = reel_scheduler.sync_insights_command(args)
+
+            self.assertEqual(rc, 1)
+            with reel_ledger.connect(db) as conn:
+                self.assertIsNone(
+                    conn.execute("SELECT * FROM insights WHERE media_id='18234800344311426'").fetchone()
+                )
+                row = conn.execute("SELECT * FROM insights WHERE media_id='178900002'").fetchone()
+                self.assertEqual(row["views"], 321)
+
+    def test_report_writes_update_button_and_llm_json_with_segment_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "VID123"
+            clip = source / "clips" / "001-hook"
+            clip.mkdir(parents=True)
+            media_path = clip / "reel.en.vibecodersph.mp4"
+            media_path.write_bytes(b"video")
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            (source / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "title": "Source episode",
+                        "uploader": "Example Channel",
+                        "webpage_url": "https://example.com/watch",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (source / "transcript.en.json").write_text(
+                json.dumps(
+                    [
+                        {"start": 8.0, "end": 10.5, "text": "Lead-in"},
+                        {"start": 10.5, "end": 14.0, "text": "This is the exact segment."},
+                        {"start": 20.0, "end": 22.0, "text": "After the clip"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (clip / "notes.json").write_text(
+                json.dumps(
+                    {
+                        "start": 10.0,
+                        "end": 15.0,
+                        "duration": 5.0,
+                        "score": 9.1,
+                        "one_liner": "Exact hook",
+                        "reason": "Strong proof point",
+                        "source_chapter": "Demo section",
+                        "transcript": "This is the exact segment.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (clip / "subtitles.en.ass").write_text(
+                "\n".join(
+                    [
+                        "[Events]",
+                        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+                        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,Reel subtitle transcript.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="h-report",
+                    channel_id="vibecodersph",
+                    lang="en",
+                    clip_dir=clip,
+                    media_path=media_path,
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    source_video="VID123",
+                    title="Exact hook",
+                    scheduled_at="2026-06-23T00:00:00+00:00",
+                    published_at="2026-06-24T00:00:00+00:00",
+                    media_id="178900003",
+                    permalink="https://www.instagram.com/reel/abc/",
+                    manifest_path=str(manifest_path),
+                )
+                reel_ledger.set_status(
+                    conn,
+                    "h-report",
+                    "vibecodersph",
+                    reel_ledger.STATUS_PUBLISHED,
+                    caption="Caption text",
+                )
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="h-report",
+                    channel_id="vibecodersph",
+                    media_id="178900003",
+                    metrics={"views": 1234, "saved": 55, "total_interactions": 90},
+                    raw=json.dumps({"data": [{"name": "views", "values": [{"value": 1234}]}]}),
+                    captured_at="2026-06-25T00:00:00+00:00",
+                )
+
+            report_path = root / "reel_report.html"
+            rc = reel_scheduler.report_command(
+                argparse.Namespace(
+                    platform="instagram",
+                    channel=None,
+                    db=db,
+                    out=report_path,
+                    limit=0,
+                    insights_json_out=None,
+                    sync_action_url="http://127.0.0.1:8765/sync-insights",
+                )
+            )
+
+            self.assertEqual(rc, 0)
+            html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Update Instagram Insights", html)
+            self.assertIn("reel_report.insights.json", html)
+            self.assertIn("reel_report.insights.md", html)
+            payload = json.loads(report_path.with_suffix(".insights.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            self.assertEqual(item["insights"]["metrics"]["views"], 1234)
+            self.assertEqual(item["segment"]["transcript"], "This is the exact segment.")
+            self.assertEqual(item["segment"]["reel_transcript"], "Reel subtitle transcript.")
+            self.assertTrue(item["segment"]["reel_transcript_path"].endswith("subtitles.en.ass"))
+            self.assertEqual(item["segment"]["source_chapter"], "Demo section")
+            self.assertEqual(item["source"]["url"], "https://example.com/watch")
+            self.assertIn("This is the exact segment.", item["segment"]["source_transcript_segments"][1]["text"])
+            markdown = report_path.with_suffix(".insights.md").read_text(encoding="utf-8")
+            self.assertIn("| # | Published | Channel | Reel | Views | Reach |", markdown)
+            self.assertIn("| 1 | 2026-06-24T00:00:00+00:00 | vibecodersph | [reel]", markdown)
+            self.assertIn("| 1,234 |", markdown)
+            self.assertIn("Exact hook", markdown)
+            self.assertIn("Reel subtitle transcript.", markdown)
+            self.assertNotIn("## Reel Transcripts", markdown)
+
+    def test_report_matches_stale_rows_to_reel_outputs_by_youtube_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs_root = root / "outputs"
+            clip = outputs_root / "VID123" / "clips" / "001-hook"
+            clip.mkdir(parents=True)
+            media_path = clip / "reel.ja.aibrief_jp.mp4"
+            media_path.write_bytes(b"ja-video")
+            (outputs_root / "VID123" / "metadata.json").write_text(
+                json.dumps({"webpage_url": "https://www.youtube.com/watch?v=VID123"}),
+                encoding="utf-8",
+            )
+            (clip / "notes.json").write_text(
+                json.dumps({"index": 1, "one_liner": "English hook"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (clip / "one_liners.json").write_text(
+                json.dumps({"ja": "日本語フック"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (clip / "subtitles.ja.ass").write_text(
+                "\n".join(
+                    [
+                        "[Events]",
+                        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+                        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,これはリール字幕です。",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "source_url": "https://www.youtube.com/watch?v=VID123",
+                        "slides": [{"path": "/stale/reel.ja.aibrief_jp.mp4"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash=reel_ledger.hash_file(media_path),
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir="/stale/clip",
+                    media_path="/stale/reel.ja.aibrief_jp.mp4",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    source_video="",
+                    title="日本語フック",
+                    published_at="2026-06-24T00:00:00+00:00",
+                    media_id="178900004",
+                    permalink="https://www.instagram.com/reel/def/",
+                    manifest_path=str(manifest),
+                )
+
+            with patch.object(reel_scheduler, "DEFAULT_REEL_OUTPUTS", outputs_root):
+                reel_scheduler.report_command(
+                    argparse.Namespace(
+                        platform="instagram",
+                        channel=None,
+                        db=db,
+                        out=root / "reel_report.html",
+                        limit=0,
+                        insights_json_out=None,
+                        insights_md_out=None,
+                        max_transcript_chars=0,
+                        sync_action_url="",
+                    )
+                )
+
+            payload = json.loads((root / "reel_report.insights.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            self.assertEqual(Path(item["segment"]["clip_dir"]).resolve(), clip.resolve())
+            self.assertEqual(item["segment"]["reel_transcript"], "これはリール字幕です。")
+            markdown = (root / "reel_report.insights.md").read_text(encoding="utf-8")
+            self.assertIn("これはリール字幕です。", markdown)
+            self.assertNotIn("## Reel Transcripts", markdown)
+
+    def test_insights_markdown_command_processes_existing_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            json_path = root / "insights.json"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-07-01T00:00:00+00:00",
+                        "platform": "instagram",
+                        "items": [
+                            {
+                                "published_at": "2026-06-24T00:00:00+00:00",
+                                "channel_id": "vibecodersph",
+                                "permalink": "https://instagram.com/reel/abc/",
+                                "title": "Hook with | pipe",
+                                "source": {"title": "Source title", "url": "https://example.com"},
+                                "insights": {
+                                    "metrics": {
+                                        "views": 1000,
+                                        "reach": 800,
+                                        "likes": 12,
+                                        "comments": 3,
+                                        "saved": 4,
+                                        "shares": 5,
+                                        "total_interactions": 24,
+                                    }
+                                },
+                                "segment": {"reel_transcript": "A long transcript for the table."},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out_path = root / "insights.md"
+
+            rc = reel_scheduler.insights_markdown_command(
+                argparse.Namespace(json_path=json_path, out=out_path, max_transcript_chars=0)
+            )
+
+            self.assertEqual(rc, 0)
+            markdown = out_path.read_text(encoding="utf-8")
+            self.assertIn("# Reel Insights", markdown)
+            self.assertIn("Hook with \\| pipe", markdown)
+            self.assertIn("| 1,000 | 800 | 12 | 3 | 4 | 5 | 24 |", markdown)
+            self.assertIn("A long transcript for the table.", markdown)
+            self.assertNotIn("## Reel Transcripts", markdown)
+
+    def test_queue_ui_sync_endpoint_invokes_sync_and_refreshes_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            report_out = root / "reel_report.html"
+            with reel_ledger.connect(db):
+                pass
+            handler = reel_scheduler.make_queue_ui_handler(
+                db_path=db,
+                channel_filter=None,
+                limit=20,
+                settings_key="instagram_reels",
+                platform="instagram",
+                report_out=report_out,
+            )
+            server = reel_scheduler.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                with patch.object(reel_scheduler, "sync_insights_command", return_value=1) as sync:
+                    conn = http.client.HTTPConnection(host, port, timeout=5)
+                    conn.request("POST", "/sync-insights", body="")
+                    response = conn.getresponse()
+                    response.read()
+                    conn.close()
+
+                self.assertEqual(response.status, 303)
+                location = response.getheader("Location") or ""
+                self.assertIn("/report?message=", location)
+                self.assertNotIn("error=", location)
+                sync.assert_called_once()
+                self.assertTrue(report_out.exists())
+                self.assertTrue(report_out.with_suffix(".insights.json").exists())
+                self.assertTrue(report_out.with_suffix(".insights.md").exists())
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_cleanup_missing_deletes_failed_missing_media_only_when_applied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

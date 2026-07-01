@@ -1548,6 +1548,82 @@ def make_queue_ui_handler(
             self.send_header("Location", location)
             self.end_headers()
 
+        def redirect_report(self, **params: str) -> None:
+            location = "/report" + (("?" + urlencode(params)) if params else "")
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def report_parts(self) -> tuple[dict[str, dict[str, int]], list[Any], list[Any], list[Any]]:
+            return load_report_data(
+                db_path=db_path,
+                channel_filter=channel_filter,
+                limit=limit,
+            )
+
+        def report_payload(self) -> dict[str, Any]:
+            _, _, _, insight_rows = self.report_parts()
+            return build_insights_export(
+                insight_rows=insight_rows,
+                db_path=db_path,
+                platform=platform,
+                channel_filter=channel_filter,
+            )
+
+        def refresh_report_file(self) -> None:
+            counts, upcoming, published, insight_rows = self.report_parts()
+            json_out = report_json_path(report_out)
+            md_out = report_markdown_path(report_out)
+            export = build_insights_export(
+                insight_rows=insight_rows,
+                db_path=db_path,
+                platform=platform,
+                channel_filter=channel_filter,
+            )
+            write_json(json_out, export)
+            write_insights_markdown(export=export, out_path=md_out)
+            report_out.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+            report_out.expanduser().resolve().write_text(
+                render_report_html(
+                    counts=counts,
+                    upcoming=upcoming,
+                    published=published,
+                    insight_rows=insight_rows,
+                    db_path=db_path,
+                    platform=platform,
+                    sync_action_url=DEFAULT_REPORT_SYNC_ACTION_URL,
+                    insights_json_href=report_href(json_out, report_out),
+                    insights_markdown_href=report_href(md_out, report_out),
+                ),
+                encoding="utf-8",
+            )
+
+        def serve_report(self, params: dict[str, list[str]]) -> None:
+            counts, upcoming, published, insight_rows = self.report_parts()
+            export = build_insights_export(
+                insight_rows=insight_rows,
+                db_path=db_path,
+                platform=platform,
+                channel_filter=channel_filter,
+            )
+            write_json(report_json_path(report_out), export)
+            write_insights_markdown(export=export, out_path=report_markdown_path(report_out))
+            self.send_html(
+                render_report_html(
+                    counts=counts,
+                    upcoming=upcoming,
+                    published=published,
+                    insight_rows=insight_rows,
+                    db_path=db_path,
+                    platform=platform,
+                    sync_action_url="/sync-insights",
+                    insights_json_href="/insights.json",
+                    insights_markdown_href="/insights.md",
+                    message=_first_query_value(params, "message"),
+                    error=_first_query_value(params, "error"),
+                )
+            )
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
@@ -1570,6 +1646,17 @@ def make_queue_ui_handler(
                     self.serve_media(parse_qs(parsed.query))
                 except CLIENT_DISCONNECT_ERRORS:
                     return
+                return
+            if parsed.path == "/report":
+                self.serve_report(parse_qs(parsed.query))
+                return
+            if parsed.path == "/insights.json":
+                payload = json.dumps(self.report_payload(), indent=2, ensure_ascii=False) + "\n"
+                self.send_bytes(payload.encode("utf-8"), content_type="application/json; charset=utf-8")
+                return
+            if parsed.path == "/insights.md":
+                payload = render_insights_markdown(self.report_payload())
+                self.send_bytes(payload.encode("utf-8"), content_type="text/markdown; charset=utf-8")
                 return
             self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
 
@@ -1611,6 +1698,32 @@ def make_queue_ui_handler(
                         f"re-alternated {alternated} rows"
                     )
                 )
+                return
+            if parsed.path == "/sync-insights":
+                try:
+                    rc = sync_insights_command(
+                        argparse.Namespace(
+                            platform=platform,
+                            channel=channel_filter,
+                            db=db_path,
+                            limit=None,
+                            dry_run=False,
+                            metrics=",".join(INSIGHT_METRIC_KEYS),
+                            access_token="",
+                            graph_api_version="",
+                            graph_api_root="",
+                        )
+                    )
+                except SystemExit as exc:
+                    self.redirect_report(error=str(exc))
+                    return
+                self.refresh_report_file()
+                if rc == 0:
+                    self.redirect_report(message="Insights updated from the platform API")
+                else:
+                    self.redirect_report(
+                        message="Updated available insights; skipped inaccessible rows, see server log"
+                    )
                 return
             self.send_html("Not found", status=HTTPStatus.NOT_FOUND)
 
@@ -2139,6 +2252,573 @@ def fetch_insights(
     )
 
 
+INSIGHT_METRIC_KEYS = (
+    "views",
+    "reach",
+    "likes",
+    "comments",
+    "saved",
+    "shares",
+    "total_interactions",
+)
+DEFAULT_REPORT_SYNC_ACTION_URL = "http://127.0.0.1:8765/sync-insights"
+
+
+def coerce_json_number(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def read_optional_json(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    try:
+        return read_json(path)
+    except SystemExit:
+        return None
+
+
+def source_root_for_clip(clip_dir: Path) -> Path:
+    """Return the source video output folder for a reel-app clip directory."""
+    if clip_dir.parent.name == "clips":
+        return clip_dir.parent.parent
+    return clip_dir.parent
+
+
+def source_transcript_candidates(source_root: Path, lang: str) -> list[Path]:
+    names: list[str] = []
+    if lang:
+        names.append(f"transcript.{lang}.json")
+    names.extend(["transcript.en.json", "transcript.json"])
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for name in names:
+        path = source_root / name
+        if path not in seen:
+            candidates.append(path)
+            seen.add(path)
+    return candidates
+
+
+def transcript_segment_list(data: Any) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("segments", "transcript"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def youtube_id_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    host = parsed.netloc.lower().removeprefix("www.")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if host in {"youtu.be", "m.youtube.com"} and path_parts:
+        return path_parts[0]
+    if host.endswith("youtube.com"):
+        video_ids = parse_qs(parsed.query).get("v") or []
+        if video_ids and video_ids[0]:
+            return video_ids[0]
+        for marker in ("shorts", "embed", "live"):
+            if marker in path_parts:
+                index = path_parts.index(marker)
+                if index + 1 < len(path_parts):
+                    return path_parts[index + 1]
+    return ""
+
+
+def manifest_source_url(manifest: dict[str, Any]) -> str:
+    value = re.sub(r"\s+", " ", str(manifest.get("source_url") or "")).strip()
+    if value:
+        return value
+    slides = manifest.get("slides") if isinstance(manifest.get("slides"), list) else []
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        value = re.sub(r"\s+", " ", str(slide.get("source_url") or "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def manifest_media_path(manifest: dict[str, Any]) -> Path | None:
+    slides = manifest.get("slides") if isinstance(manifest.get("slides"), list) else []
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        value = str(slide.get("path") or "").strip()
+        if value:
+            return Path(value)
+    return None
+
+
+def safe_load_notes(clip_dir: Path | None) -> tuple[dict[str, Any], Path | None]:
+    if clip_dir is None or not clip_dir.is_dir():
+        return {}, None
+    return load_notes(clip_dir)
+
+
+def reel_media_names(lang: str, channel_id: str, row_media_path: str, manifest_path: Path | None) -> list[str]:
+    names = []
+    if row_media_path:
+        names.append(Path(row_media_path).name)
+    if manifest_path is not None:
+        names.append(manifest_path.name)
+    if lang and channel_id:
+        names.append(f"reel.{lang}.{channel_id}.mp4")
+    return [name for index, name in enumerate(names) if name and name not in names[:index]]
+
+
+def is_usable_clip_dir(clip_dir: Path, lang: str, channel_id: str) -> bool:
+    if not clip_dir.is_dir():
+        return False
+    if (clip_dir / "notes.json").exists():
+        return True
+    if lang and (clip_dir / f"subtitles.{lang}.ass").exists():
+        return True
+    if lang and channel_id and (clip_dir / f"reel.{lang}.{channel_id}.mp4").exists():
+        return True
+    return False
+
+
+def normalize_match_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def resolve_reel_clip_dir(
+    *,
+    row: Any,
+    manifest: dict[str, Any],
+    source_url: str,
+) -> Path | None:
+    lang = str(row["lang"] or "")
+    channel_id = str(row["channel_id"] or "")
+    raw_clip_dir = str(row["clip_dir"] or "").strip()
+    raw_media_path = str(row["media_path"] or "").strip()
+    manifest_media = manifest_media_path(manifest)
+    direct_candidates: list[Path] = []
+    if raw_clip_dir:
+        direct_candidates.append(Path(raw_clip_dir))
+    if raw_media_path:
+        direct_candidates.append(Path(raw_media_path).parent)
+    if manifest_media is not None:
+        direct_candidates.append(manifest_media.parent)
+    for candidate in direct_candidates:
+        if is_usable_clip_dir(candidate, lang, channel_id):
+            return candidate
+
+    video_id = str(row["source_video"] or "").strip() or youtube_id_from_url(source_url)
+    if not video_id:
+        return None
+    clips_root = DEFAULT_REEL_OUTPUTS.expanduser().resolve() / video_id / "clips"
+    if not clips_root.is_dir():
+        return None
+    names = reel_media_names(lang, channel_id, raw_media_path, manifest_media)
+    content_hash = str(row["content_hash"] or "")
+    if content_hash and not content_hash.startswith("missing:"):
+        for clip_dir in sorted(path for path in clips_root.iterdir() if path.is_dir()):
+            for name in names:
+                media_path = clip_dir / name
+                if media_path.is_file() and reel_ledger.hash_file(media_path) == content_hash:
+                    return clip_dir
+
+    title = normalize_match_text(row["title"])
+    if title:
+        for clip_dir in sorted(path for path in clips_root.iterdir() if path.is_dir()):
+            notes, _ = safe_load_notes(clip_dir)
+            if normalize_match_text(routed_title(lang, notes, load_one_liners(clip_dir))) == title:
+                return clip_dir
+    return None
+
+
+def ass_text_to_plain(text: str) -> str:
+    text = re.sub(r"\{[^}]*\}", "", text)
+    text = text.replace("\\N", " ").replace("\\n", " ").replace("\\h", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def read_ass_transcript(path: Path) -> str:
+    lines = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw_line.startswith("Dialogue:"):
+            continue
+        payload = raw_line.removeprefix("Dialogue:").lstrip()
+        parts = payload.split(",", 9)
+        if len(parts) < 10:
+            continue
+        text = ass_text_to_plain(parts[9])
+        if text:
+            lines.append(text)
+    return " ".join(lines)
+
+
+def read_plain_subtitle_transcript(path: Path) -> str:
+    lines = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.isdigit() or line.upper() == "WEBVTT" or "-->" in line:
+            continue
+        lines.append(re.sub(r"\s+", " ", line))
+    return " ".join(lines)
+
+
+def read_reel_transcript_file(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".ass":
+        return read_ass_transcript(path)
+    return read_plain_subtitle_transcript(path)
+
+
+def reel_transcript_candidates(clip_dir: Path, lang: str) -> list[Path]:
+    patterns = []
+    if lang:
+        patterns.extend([
+            f"subtitles.{lang}.ass",
+            f"subtitles.{lang}.srt",
+            f"subtitles.{lang}.vtt",
+            f"transcript.{lang}.txt",
+        ])
+    patterns.extend(["subtitles.en.ass", "subtitles.en.srt", "subtitles.en.vtt", "transcript.txt"])
+    candidates = [clip_dir / pattern for pattern in patterns]
+    if not any(path.exists() for path in candidates):
+        candidates.extend(sorted(clip_dir.glob("subtitles.*.ass")))
+    seen: set[Path] = set()
+    out = []
+    for path in candidates:
+        if path not in seen:
+            out.append(path)
+            seen.add(path)
+    return out
+
+
+def load_reel_transcript(
+    *,
+    clip_dir: Path | None,
+    lang: str,
+    notes: dict[str, Any],
+) -> tuple[str, str]:
+    if clip_dir is not None and clip_dir.is_dir():
+        for path in reel_transcript_candidates(clip_dir, lang):
+            if not path.is_file():
+                continue
+            transcript = read_reel_transcript_file(path)
+            if transcript:
+                return transcript, str(path)
+    return str(notes.get("transcript") or "").strip(), ""
+
+
+def overlapping_transcript_segments(
+    *,
+    clip_dir: Path,
+    lang: str,
+    start: int | float | None,
+    end: int | float | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    if start is None or end is None:
+        return "", []
+    source_root = source_root_for_clip(clip_dir)
+    for path in source_transcript_candidates(source_root, lang):
+        data = read_optional_json(path)
+        segments = transcript_segment_list(data)
+        if not segments:
+            continue
+        selected: list[dict[str, Any]] = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            text = str(segment.get("text") or "").strip()
+            segment_start = coerce_json_number(segment.get("start"))
+            segment_end = coerce_json_number(segment.get("end"))
+            if segment_start is None or segment_end is None or not text:
+                continue
+            if float(segment_end) < float(start) or float(segment_start) > float(end):
+                continue
+            selected.append({"start": segment_start, "end": segment_end, "text": text})
+        if selected:
+            return str(path), selected
+    return "", []
+
+
+def latest_insight_metrics(row: Any) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+    for key in INSIGHT_METRIC_KEYS:
+        value = row[key]
+        if isinstance(value, int):
+            metrics[key] = value
+    return metrics
+
+
+def parse_raw_insight_payload(row: Any) -> Any | None:
+    raw = str(row["raw"] or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def build_reel_insight_export_item(row: Any) -> dict[str, Any]:
+    manifest_path = Path(str(row["manifest_path"] or ""))
+    manifest_data = read_optional_json(manifest_path) if str(row["manifest_path"] or "").strip() else None
+    manifest = manifest_data if isinstance(manifest_data, dict) else {}
+    lang = str(row["lang"] or "")
+    source_url = manifest_source_url(manifest)
+    clip_dir = resolve_reel_clip_dir(row=row, manifest=manifest, source_url=source_url)
+    notes, notes_path = safe_load_notes(clip_dir)
+    source_metadata = load_source_metadata(clip_dir.parent) if clip_dir is not None else {}
+    if not source_metadata:
+        video_id = str(row["source_video"] or "").strip() or youtube_id_from_url(source_url)
+        metadata = read_optional_json(DEFAULT_REEL_OUTPUTS.expanduser().resolve() / video_id / "metadata.json") if video_id else None
+        source_metadata = metadata if isinstance(metadata, dict) else {}
+    source_url = source_url or source_metadata_value(source_metadata, "webpage_url", "original_url", "url")
+    start = coerce_json_number(notes.get("start"))
+    end = coerce_json_number(notes.get("end"))
+    reel_transcript, reel_transcript_path = load_reel_transcript(
+        clip_dir=clip_dir,
+        lang=lang,
+        notes=notes,
+    )
+    source_transcript_path, source_segments = (
+        overlapping_transcript_segments(
+            clip_dir=clip_dir,
+            lang=lang,
+            start=start,
+            end=end,
+        )
+        if clip_dir is not None
+        else ("", [])
+    )
+    return {
+        "content_hash": str(row["content_hash"] or ""),
+        "channel_id": str(row["channel_id"] or ""),
+        "lang": lang,
+        "title": str(row["title"] or ""),
+        "caption": str(row["caption"] or ""),
+        "published_at": str(row["published_at"] or ""),
+        "scheduled_at": str(row["scheduled_at"] or ""),
+        "permalink": str(row["permalink"] or ""),
+        "media_id": str(row["media_id"] or ""),
+        "media_path": str(row["media_path"] or ""),
+        "manifest_path": str(row["manifest_path"] or ""),
+        "insights": {
+            "captured_at": str(row["captured_at"] or ""),
+            "has_snapshot": bool(row["captured_at"]),
+            "metrics": latest_insight_metrics(row),
+            "raw_api_payload": parse_raw_insight_payload(row),
+        },
+        "source": {
+            "video_id": str(row["source_video"] or ""),
+            "title": source_metadata_value(source_metadata, "title"),
+            "uploader": source_metadata_value(source_metadata, "uploader", "channel"),
+            "url": source_url,
+        },
+        "segment": {
+            "clip_dir": str(clip_dir or ""),
+            "notes_path": str(notes_path or ""),
+            "start": start,
+            "end": end,
+            "duration": coerce_json_number(notes.get("duration")),
+            "score": coerce_json_number(notes.get("score")),
+            "source_chapter": note_text(notes, "source_chapter"),
+            "one_liner": note_text(notes, "one_liner"),
+            "one_liner_translated": note_text(notes, "one_liner_translated"),
+            "reason": note_text(notes, "reason"),
+            "transcript": str(notes.get("transcript") or "").strip(),
+            "reel_transcript": reel_transcript,
+            "reel_transcript_path": reel_transcript_path,
+            "source_transcript_path": source_transcript_path,
+            "source_transcript_segments": source_segments,
+        },
+    }
+
+
+def build_insights_export(
+    *,
+    insight_rows: list[Any],
+    db_path: Path,
+    platform: str,
+    channel_filter: str | None,
+) -> dict[str, Any]:
+    return {
+        "generated_at": utc_now(),
+        "platform": platform,
+        "channel_filter": channel_filter or "",
+        "db_path": str(db_path),
+        "prompt": (
+            "Review these published reels. Use insights.metrics, source metadata, "
+            "and segment.reel_transcript to recommend what "
+            "topics, hooks, lengths, and posting choices to repeat or avoid."
+        ),
+        "items": [build_reel_insight_export_item(row) for row in insight_rows],
+    }
+
+
+def report_json_path(report_out: Path, explicit: Path | None = None) -> Path:
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    return report_out.expanduser().resolve().with_suffix(".insights.json")
+
+
+def report_markdown_path(report_out: Path, explicit: Path | None = None) -> Path:
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    return report_out.expanduser().resolve().with_suffix(".insights.md")
+
+
+def report_href(target: Path, html_path: Path) -> str:
+    try:
+        return os.path.relpath(target.expanduser().resolve(), html_path.expanduser().resolve().parent)
+    except ValueError:
+        return str(target)
+
+
+def load_report_data(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    limit: int | None,
+) -> tuple[dict[str, dict[str, int]], list[Any], list[Any], list[Any]]:
+    with reel_ledger.connect(db_path) as conn:
+        counts = reel_ledger.status_counts(conn, channel_filter)
+        upcoming = reel_ledger.upcoming(conn, channel_filter, limit=limit)
+        published = reel_ledger.recent_published(conn, channel_filter, limit=limit)
+        insight_rows = reel_ledger.latest_insight_rows(conn, channel_filter, limit=limit)
+    return counts, upcoming, published, insight_rows
+
+
+def markdown_cell(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.replace("|", "\\|")
+    return text.replace("\n", "<br>")
+
+
+def markdown_number(value: Any) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        return f"{value:,}"
+    return ""
+
+
+def truncate_text(value: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3].rstrip() + "..."
+
+
+def item_metric(item: dict[str, Any], key: str) -> Any:
+    insights = item.get("insights") if isinstance(item.get("insights"), dict) else {}
+    metrics = insights.get("metrics") if isinstance(insights.get("metrics"), dict) else {}
+    return metrics.get(key)
+
+
+def item_segment(item: dict[str, Any]) -> dict[str, Any]:
+    segment = item.get("segment")
+    return segment if isinstance(segment, dict) else {}
+
+
+def item_source(item: dict[str, Any]) -> dict[str, Any]:
+    source = item.get("source")
+    return source if isinstance(source, dict) else {}
+
+
+def item_hook(item: dict[str, Any]) -> str:
+    segment = item_segment(item)
+    return (
+        str(item.get("title") or "").strip()
+        or str(segment.get("one_liner_translated") or "").strip()
+        or str(segment.get("one_liner") or "").strip()
+    )
+
+
+def item_transcript(item: dict[str, Any]) -> str:
+    segment = item_segment(item)
+    reel_transcript = str(segment.get("reel_transcript") or "").strip()
+    if reel_transcript:
+        return reel_transcript
+    transcript = str(segment.get("transcript") or "").strip()
+    if transcript:
+        return transcript
+    segments = segment.get("source_transcript_segments")
+    if isinstance(segments, list):
+        return " ".join(
+            str(part.get("text") or "").strip()
+            for part in segments
+            if isinstance(part, dict) and str(part.get("text") or "").strip()
+        )
+    return ""
+
+
+def item_transcript_path(item: dict[str, Any]) -> str:
+    segment = item_segment(item)
+    return str(segment.get("reel_transcript_path") or "").strip()
+
+
+def render_insights_markdown(export: dict[str, Any], *, max_transcript_chars: int = 0) -> str:
+    items = export.get("items") if isinstance(export.get("items"), list) else []
+    lines = [
+        "# Reel Insights",
+        "",
+        f"- Generated: {markdown_cell(export.get('generated_at'))}",
+        f"- Platform: {markdown_cell(export.get('platform'))}",
+        f"- Items: {len(items)}",
+        "",
+        "| # | Published | Channel | Reel | Views | Reach | Likes | Comments | Saved | Shares | Interactions | Hook | Reel Transcript |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for index, raw_item in enumerate(items, start=1):
+        if not isinstance(raw_item, dict):
+            continue
+        permalink = str(raw_item.get("permalink") or "").strip()
+        reel_link = f"[reel]({permalink})" if permalink else ""
+        transcript = truncate_text(item_transcript(raw_item), max_transcript_chars)
+        row = [
+            str(index),
+            markdown_cell(raw_item.get("published_at")),
+            markdown_cell(raw_item.get("channel_id")),
+            reel_link,
+            markdown_number(item_metric(raw_item, "views")),
+            markdown_number(item_metric(raw_item, "reach")),
+            markdown_number(item_metric(raw_item, "likes")),
+            markdown_number(item_metric(raw_item, "comments")),
+            markdown_number(item_metric(raw_item, "saved")),
+            markdown_number(item_metric(raw_item, "shares")),
+            markdown_number(item_metric(raw_item, "total_interactions")),
+            markdown_cell(item_hook(raw_item)),
+            markdown_cell(transcript),
+        ]
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def write_insights_markdown(
+    *,
+    export: dict[str, Any],
+    out_path: Path,
+    max_transcript_chars: int = 0,
+) -> None:
+    out_path.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    out_path.expanduser().resolve().write_text(
+        render_insights_markdown(export, max_transcript_chars=max_transcript_chars),
+        encoding="utf-8",
+    )
+
+
 def render_report_html(
     *,
     counts: dict[str, dict[str, int]],
@@ -2146,6 +2826,12 @@ def render_report_html(
     published: list[Any],
     insight_rows: list[Any],
     db_path: Path,
+    platform: str = DEFAULT_PLATFORM,
+    sync_action_url: str = "",
+    insights_json_href: str = "",
+    insights_markdown_href: str = "",
+    message: str = "",
+    error: str = "",
 ) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value or ""))
@@ -2187,17 +2873,47 @@ def render_report_html(
         f"<td>{esc(row['title'])}</td>"
         f"<td>{esc(row['views'])}</td>"
         f"<td>{esc(row['reach'])}</td>"
+        f"<td>{esc(row['likes'])}</td>"
+        f"<td>{esc(row['comments'])}</td>"
         f"<td>{esc(row['saved'])}</td>"
+        f"<td>{esc(row['shares'])}</td>"
         f"<td>{esc(row['total_interactions'])}</td>"
-        f"<td>{esc(row['captured_at'])}</td>"
+        f"<td>{esc(row['captured_at'] or 'not synced')}</td>"
         "</tr>"
         for row in insight_rows
     ]
+    platform_label = "Instagram" if platform == "instagram" else platform.title()
+    sync_form = (
+        "<form method=\"post\" "
+        f"action=\"{esc(sync_action_url)}\" "
+        "onsubmit=\"return confirm('Fetch latest insights from the platform API now?');\">"
+        f"<button type=\"submit\">Update {esc(platform_label)} Insights</button>"
+        "</form>"
+        if sync_action_url
+        else ""
+    )
+    json_link = (
+        f"<a class=\"json-link\" href=\"{esc(insights_json_href)}\">LLM JSON</a>"
+        if insights_json_href
+        else ""
+    )
+    markdown_link = (
+        f"<a class=\"json-link\" href=\"{esc(insights_markdown_href)}\">Markdown Table</a>"
+        if insights_markdown_href
+        else ""
+    )
+    actions = (
+        f"<div class=\"actions\">{sync_form}{json_link}{markdown_link}</div>"
+        if sync_form or json_link or markdown_link
+        else ""
+    )
+    message_html = f"<div class=\"notice ok\">{esc(message)}</div>" if message else ""
+    error_html = f"<div class=\"notice error\">{esc(error)}</div>" if error else ""
     status_headers = "".join(f"<th>{esc(status)}</th>" for status in order)
     count_body = "".join(count_rows) or '<tr><td colspan="8">No rows</td></tr>'
     upcoming_body = "".join(upcoming_rows) or '<tr><td colspan="4">No queued reels</td></tr>'
     published_body = "".join(published_rows) or '<tr><td colspan="3">No published reels</td></tr>'
-    insight_body = "".join(insight_html) or '<tr><td colspan="8">No insight snapshots</td></tr>'
+    insight_body = "".join(insight_html) or '<tr><td colspan="11">No published reels</td></tr>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2209,6 +2925,13 @@ def render_report_html(
     h1 {{ font-size: 28px; margin: 0 0 8px; }}
     h2 {{ font-size: 18px; margin: 32px 0 10px; }}
     .meta {{ color: #666; margin-bottom: 24px; }}
+    .top {{ display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }}
+    .actions {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
+    button, .json-link {{ border: 1px solid #145cc7; border-radius: 6px; background: #145cc7; color: white; padding: 8px 11px; font-weight: 700; text-decoration: none; cursor: pointer; }}
+    .json-link {{ background: white; color: #145cc7; }}
+    .notice {{ margin: 12px 0; border: 1px solid #d2d2d2; border-radius: 6px; padding: 10px 12px; background: white; }}
+    .notice.ok {{ border-color: rgba(20, 92, 199, 0.35); color: #145cc7; }}
+    .notice.error {{ border-color: rgba(169, 53, 39, 0.45); color: #a93527; }}
     table {{ border-collapse: collapse; width: 100%; background: white; }}
     th, td {{ border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }}
     th {{ background: #f0f0f0; }}
@@ -2216,8 +2939,15 @@ def render_report_html(
   </style>
 </head>
 <body>
-  <h1>Reel Ledger Report</h1>
-  <div class="meta">Generated {esc(utc_now())} from {esc(db_path)}</div>
+  <div class="top">
+    <div>
+      <h1>Reel Ledger Report</h1>
+      <div class="meta">Generated {esc(utc_now())} from {esc(db_path)}</div>
+    </div>
+    {actions}
+  </div>
+  {message_html}
+  {error_html}
   <h2>Status Counts</h2>
   <table>
     <thead><tr><th>Channel</th>{status_headers}</tr></thead>
@@ -2235,7 +2965,7 @@ def render_report_html(
   </table>
   <h2>Latest Insights</h2>
   <table>
-    <thead><tr><th>Published</th><th>Channel</th><th>Title</th><th>Views</th><th>Reach</th><th>Saved</th><th>Interactions</th><th>Captured</th></tr></thead>
+    <thead><tr><th>Published</th><th>Channel</th><th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
     <tbody>{insight_body}</tbody>
   </table>
 </body>
@@ -2440,6 +3170,45 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
     report.add_argument("--out", type=Path, default=ROOT / "out" / "reel_report.html")
     report.add_argument("--limit", type=int, default=0, help="Rows per report table; 0 means all")
+    report.add_argument(
+        "--insights-json-out",
+        type=Path,
+        default=None,
+        help="LLM-ready insights/transcript JSON path (default: beside the HTML report)",
+    )
+    report.add_argument(
+        "--insights-md-out",
+        type=Path,
+        default=None,
+        help="Readable Markdown insights table path (default: beside the HTML report)",
+    )
+    report.add_argument(
+        "--max-transcript-chars",
+        type=int,
+        default=0,
+        help="Truncate transcript cells in the Markdown table; 0 keeps full transcripts",
+    )
+    report.add_argument(
+        "--sync-action-url",
+        default=DEFAULT_REPORT_SYNC_ACTION_URL,
+        help="POST URL used by the report's update-insights button",
+    )
+
+    insights_md = subparsers.add_parser("insights-md", help="Convert an insights JSON export to Markdown")
+    insights_md.add_argument(
+        "json_path",
+        nargs="?",
+        type=Path,
+        default=ROOT / "out" / "reel_report.insights.json",
+        help="Insights JSON export path",
+    )
+    insights_md.add_argument("--out", type=Path, default=None, help="Markdown output path")
+    insights_md.add_argument(
+        "--max-transcript-chars",
+        type=int,
+        default=0,
+        help="Truncate transcript cells; 0 keeps full transcripts",
+    )
     return parser
 
 
@@ -2946,13 +3715,18 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
             )
             synced += 1
             continue
-        payload = fetch_insights(
-            media_id=str(row["media_id"]),
-            metrics=metrics,
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_root,
-        )
+        try:
+            payload = fetch_insights(
+                media_id=str(row["media_id"]),
+                metrics=metrics,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_root,
+            )
+        except SystemExit as exc:
+            skipped += 1
+            print(f"[reel-scheduler] skip {row['channel_id']} {row['media_id']}: {exc}")
+            continue
         parsed = parse_insight_metrics(payload)
         with reel_ledger.connect(db_path) as conn:
             reel_ledger.record_insight(
@@ -3024,23 +3798,68 @@ def sync_tiktok_insights(args: argparse.Namespace, db_path: Path) -> int:
 def report_command(args: argparse.Namespace) -> int:
     if args.limit < 0:
         raise SystemExit("--limit must be zero or greater")
+    if getattr(args, "max_transcript_chars", 0) < 0:
+        raise SystemExit("--max-transcript-chars must be zero or greater")
     limit = None if args.limit == 0 else args.limit
+    platform = resolve_platform(args)
     db_path = resolve_db(args)
-    with reel_ledger.connect(db_path) as conn:
-        counts = reel_ledger.status_counts(conn, args.channel)
-        upcoming = reel_ledger.upcoming(conn, args.channel, limit=limit)
-        published = reel_ledger.recent_published(conn, args.channel, limit=limit)
-        insight_rows = reel_ledger.latest_insight_rows(conn, args.channel, limit=limit)
-    args.out.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    out_path = args.out.expanduser().resolve()
+    channel_filter = getattr(args, "channel", None)
+    counts, upcoming, published, insight_rows = load_report_data(
+        db_path=db_path,
+        channel_filter=channel_filter,
+        limit=limit,
+    )
+    json_out = report_json_path(out_path, getattr(args, "insights_json_out", None))
+    md_out = report_markdown_path(out_path, getattr(args, "insights_md_out", None))
+    export = build_insights_export(
+        insight_rows=insight_rows,
+        db_path=db_path,
+        platform=platform,
+        channel_filter=channel_filter,
+    )
+    write_json(json_out, export)
+    write_insights_markdown(
+        export=export,
+        out_path=md_out,
+        max_transcript_chars=getattr(args, "max_transcript_chars", 0),
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     html_text = render_report_html(
         counts=counts,
         upcoming=upcoming,
         published=published,
         insight_rows=insight_rows,
         db_path=db_path,
+        platform=platform,
+        sync_action_url=getattr(args, "sync_action_url", DEFAULT_REPORT_SYNC_ACTION_URL),
+        insights_json_href=report_href(json_out, out_path),
+        insights_markdown_href=report_href(md_out, out_path),
     )
-    args.out.expanduser().resolve().write_text(html_text, encoding="utf-8")
-    print(f"[reel-scheduler] wrote report -> {args.out.expanduser().resolve()}")
+    out_path.write_text(html_text, encoding="utf-8")
+    print(f"[reel-scheduler] wrote report -> {out_path}")
+    print(f"[reel-scheduler] wrote insights JSON -> {json_out}")
+    print(f"[reel-scheduler] wrote insights Markdown -> {md_out}")
+    return 0
+
+
+def insights_markdown_command(args: argparse.Namespace) -> int:
+    if args.max_transcript_chars < 0:
+        raise SystemExit("--max-transcript-chars must be zero or greater")
+    data = read_json(args.json_path.expanduser().resolve())
+    if not isinstance(data, dict):
+        raise SystemExit("Insights JSON must be an object")
+    out_path = (
+        args.out.expanduser().resolve()
+        if args.out is not None
+        else args.json_path.expanduser().resolve().with_suffix(".md")
+    )
+    write_insights_markdown(
+        export=data,
+        out_path=out_path,
+        max_transcript_chars=args.max_transcript_chars,
+    )
+    print(f"[reel-scheduler] wrote insights Markdown -> {out_path}")
     return 0
 
 
@@ -3072,6 +3891,8 @@ def main() -> int:
         return sync_insights_command(args)
     if args.command == "report":
         return report_command(args)
+    if args.command == "insights-md":
+        return insights_markdown_command(args)
     raise SystemExit(f"Unknown command: {args.command}")
 
 

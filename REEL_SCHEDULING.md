@@ -267,7 +267,8 @@ so each channel publishes with its own credentials.
 | `run-due [--channel X]` | With no schedule path, publish due ledger rows, store `media_id` + permalink, and claim rows before publishing. With a schedule path, run legacy jobs and mirror status into the ledger. | publishing |
 | `status [--channel X]` | Print counts (new/scheduled/published/failed) + the next 7 days. | "which clips are scheduled/published" |
 | `sync-insights [--channel X]` | For each `published` row with a `media_id`, pull Graph insights and append a timestamped snapshot. | stats |
-| `report --out report.html` | Render the ledger to one self-contained HTML file. | dashboard |
+| `report --out report.html` | Render the ledger to one self-contained HTML file plus `*.insights.json` and `*.insights.md` exports. | dashboard + LLM review |
+| `insights-md [json_path]` | Convert an existing insights JSON export into a readable Markdown table. | LLM review |
 | `import-schedules` | One-time: walk existing `out/reel_schedules/*/schedule.json`, hash each media file, and seed the ledger so previewed/published history is not lost. Collapses the duplicate `…_attributed` schedule via the dedup key. | migration |
 
 ### Stats (your keys can do this)
@@ -297,9 +298,22 @@ storing a snapshot per run so trends are visible.
 
 `report` emits **one self-contained HTML file** from the ledger: a
 calendar of upcoming posts (per channel), a clip table with status badges, and
-published reels with their latest insights. Zero infra, runs from the same cron,
-just open the file. Graduate to a small **FastAPI** app only if you want to act
-(approve / reschedule / publish-now) from the browser.
+published reels with their latest insights. It also writes a neighboring
+`*.insights.json` file with the latest metrics, source metadata, and local reel
+transcript data, plus a readable `*.insights.md` table with columns for stats,
+reel hook, and transcript so the performance data can be dropped into an LLM for
+recommendations. Transcript extraction prefers the actual rendered reel subtitle
+file (`subtitles.<lang>.ass`) in
+`/Users/aiagent/GitHub/reel-app/outputs/<youtube_id>/clips/...`. If a ledger row
+has stale paths, the exporter reads the YouTube id from the manifest/source URL,
+finds that output folder, and matches the exact channel/language reel by media
+hash or localized hook.
+
+When `queue-ui` is running, open `http://127.0.0.1:8765/report` or click the
+report's **Update Instagram Insights** button. The button calls the same
+server-side `sync-insights` path, keeps the Instagram token out of the browser,
+and regenerates both the HTML report and JSON export. Zero hosted infra; runs
+from the same local process.
 
 ### Concurrency
 
