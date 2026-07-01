@@ -84,6 +84,17 @@ export interface EvidenceItem {
   author: string;
   metrics: Record<string, number | undefined>;
   timestamp: string;
+  media?: EvidenceMedia;
+}
+
+export interface EvidenceMedia {
+  hasImage?: boolean;
+  hasVideo?: boolean;
+  imageUrl?: string;
+  localPath?: string;
+  provider?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface HookVariant {
@@ -120,6 +131,22 @@ export interface InsightCardOutput {
 }
 
 export type CarouselSlideType = "cover" | "hook_detail" | "list_item";
+export type CarouselSlideImageKind = "source_image" | "generated_prompt";
+export type CarouselSlideImageRole = "cover" | "supporting";
+
+export interface CarouselSlideImage {
+  kind: CarouselSlideImageKind;
+  role: CarouselSlideImageRole;
+  altText: string;
+  rationale: string;
+  promptBase?: string;
+  sourceImageUrl?: string;
+  sourceImageUrls?: string[];
+  sourcePageUrls: string[];
+  sourceItemIds: string[];
+  sourceNames: string[];
+  sourceTitles: string[];
+}
 
 export interface CarouselBriefSlide {
   slideNumber: number;
@@ -127,6 +154,7 @@ export interface CarouselBriefSlide {
   headline: string;
   lines: string[];
   altText: string;
+  image: CarouselSlideImage;
   sourceUrls?: string[];
 }
 

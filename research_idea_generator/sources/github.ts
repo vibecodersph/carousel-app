@@ -18,6 +18,7 @@ export interface GitHubRepository {
   topics?: string[];
   owner?: {
     login?: string;
+    avatar_url?: string;
   };
 }
 
@@ -37,6 +38,10 @@ function githubHeaders(): Record<string, string> {
     headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
   return headers;
+}
+
+function githubOpenGraphImageUrl(fullName: string): string {
+  return `https://opengraph.githubassets.com/1/${fullName}`;
 }
 
 export function githubRepoToSourceItem(repo: GitHubRepository, query = ""): SourceItem | null {
@@ -72,7 +77,15 @@ export function githubRepoToSourceItem(repo: GitHubRepository, query = ""): Sour
       score: stars + forks * 2,
       comments: openIssues,
     },
-    media: { hasVideo: false },
+    media: {
+      hasVideo: false,
+      hasImage: true,
+      imageUrl: githubOpenGraphImageUrl(fullName),
+      provider: "github_open_graph",
+      raw: {
+        ownerAvatarUrl: repo.owner?.avatar_url,
+      },
+    },
     raw: {
       query,
       stars,

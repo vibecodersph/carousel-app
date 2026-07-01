@@ -3,6 +3,7 @@ import { APPROVED_HOOK_STYLES, optimizeHookText } from "./hooks.ts";
 import type {
   CarouselBrief,
   CarouselBriefOutput,
+  CarouselSlideImage,
   CarouselBriefSlide,
   EvidenceItem,
   HookVariant,
@@ -11,6 +12,16 @@ import type {
 } from "./types.ts";
 
 const APPROVED_HOOK_STYLE_SET = new Set(APPROVED_HOOK_STYLES);
+type CarouselBriefSlideDraft = Omit<CarouselBriefSlide, "image">;
+
+interface SourceImageAsset {
+  imageUrl: string;
+  sourcePageUrl: string;
+  sourceItemId: string;
+  sourceName: string;
+  sourceTitle: string;
+  provider: string;
+}
 
 function splitSentences(value: string): string[] {
   return normalizeWhitespace(value)
@@ -43,6 +54,155 @@ function sourceLabel(evidence: EvidenceItem): string {
 
 function altFor(card: InsightCard, slide: string): string {
   return line(`${slide} slide for ${card.workingTitle}.`, 160);
+}
+
+function isDirectImageUrl(value: string): boolean {
+  return /\.(png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(value);
+}
+
+function githubRepoNameFromUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.hostname !== "github.com" && url.hostname !== "www.github.com") return undefined;
+    const [owner, repo] = url.pathname.split("/").filter(Boolean);
+    if (!owner || !repo) return undefined;
+    return `${owner}/${repo.replace(/\.git$/i, "")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function githubOpenGraphImageUrl(fullName: string): string {
+  return `https://opengraph.githubassets.com/1/${fullName}`;
+}
+
+function sourceImageUrlForEvidence(evidence: EvidenceItem): { imageUrl: string; provider: string } | undefined {
+  if (evidence.media?.imageUrl) {
+    return { imageUrl: evidence.media.imageUrl, provider: evidence.media.provider || "source_media" };
+  }
+  if (evidence.media?.localPath) {
+    return { imageUrl: evidence.media.localPath, provider: evidence.media.provider || "local_source_media" };
+  }
+  if (isDirectImageUrl(evidence.url)) {
+    return { imageUrl: evidence.url, provider: `${evidence.sourceName || evidence.source}_direct_image` };
+  }
+  const githubName = githubRepoNameFromUrl(evidence.url);
+  if (githubName) {
+    return { imageUrl: githubOpenGraphImageUrl(githubName), provider: "github_open_graph" };
+  }
+  return undefined;
+}
+
+function sourceImageAssets(card: InsightCard): SourceImageAsset[] {
+  const assets: SourceImageAsset[] = [];
+  const seen = new Set<string>();
+  for (const evidence of card.evidence) {
+    const sourceImage = sourceImageUrlForEvidence(evidence);
+    if (!sourceImage || seen.has(sourceImage.imageUrl)) continue;
+    seen.add(sourceImage.imageUrl);
+    assets.push({
+      imageUrl: sourceImage.imageUrl,
+      sourcePageUrl: evidence.url,
+      sourceItemId: evidence.sourceItemId || evidence.sourceExternalId || "",
+      sourceName: evidence.sourceName || evidence.source,
+      sourceTitle: evidence.title,
+      provider: sourceImage.provider,
+    });
+  }
+  return assets;
+}
+
+function promptSentence(label: string, value: string): string {
+  const text = cleanLineEnding(value).replace(/[.!?]+$/u, "");
+  return text ? `${label}: ${text}.` : "";
+}
+
+function imagePrompt(card: InsightCard, slide: CarouselBriefSlideDraft, assets: SourceImageAsset[]): string {
+  const evidenceTitles = card.evidence
+    .slice(0, 4)
+    .map((evidence) => evidence.title)
+    .filter(Boolean)
+    .join("; ");
+  const sourceContext = assets.length
+    ? `Use these source images as visual references, not as text overlays: ${assets.map((asset) => asset.sourceTitle).join("; ")}.`
+    : "No source image is available, so create an original editorial visual grounded in the evidence.";
+  return [
+    `Create a 4:5 Instagram carousel ${slide.type === "cover" ? "cover background" : "supporting slide image"} for AI builders.`,
+    promptSentence("Topic", card.workingTitle),
+    promptSentence("Slide headline", slide.headline),
+    card.claim ? promptSentence("Core claim", card.claim) : "",
+    evidenceTitles ? `Evidence cues: ${evidenceTitles}.` : "",
+    sourceContext,
+    "Style: polished technical editorial, concrete product/repo/workflow cues, high contrast, no embedded text, no fake UI labels, leave clear negative space for the slide typography.",
+  ].filter(Boolean).join(" ");
+}
+
+function imageFromAsset(
+  card: InsightCard,
+  slide: CarouselBriefSlideDraft,
+  asset: SourceImageAsset,
+  role: CarouselSlideImage["role"],
+): CarouselSlideImage {
+  return {
+    kind: "source_image",
+    role,
+    altText: line(`${slide.headline} using source image from ${asset.sourceTitle}.`, 160),
+    rationale: role === "cover"
+      ? "Single clear source image found; use it as the cover visual anchor."
+      : "Slide maps directly to a source with a usable image.",
+    sourceImageUrl: asset.imageUrl,
+    sourceImageUrls: [asset.imageUrl],
+    sourcePageUrls: [asset.sourcePageUrl],
+    sourceItemIds: asset.sourceItemId ? [asset.sourceItemId] : [],
+    sourceNames: [asset.sourceName],
+    sourceTitles: [asset.sourceTitle],
+  };
+}
+
+function generatedImagePlan(
+  card: InsightCard,
+  slide: CarouselBriefSlideDraft,
+  assets: SourceImageAsset[],
+  role: CarouselSlideImage["role"],
+  rationale: string,
+): CarouselSlideImage {
+  return {
+    kind: "generated_prompt",
+    role,
+    altText: line(`${slide.headline} generated image prompt for ${card.workingTitle}.`, 160),
+    rationale,
+    promptBase: imagePrompt(card, slide, assets),
+    sourceImageUrls: assets.map((asset) => asset.imageUrl),
+    sourcePageUrls: assets.map((asset) => asset.sourcePageUrl),
+    sourceItemIds: assets.map((asset) => asset.sourceItemId).filter(Boolean),
+    sourceNames: Array.from(new Set(assets.map((asset) => asset.sourceName))),
+    sourceTitles: assets.map((asset) => asset.sourceTitle),
+  };
+}
+
+function imageForSlide(card: InsightCard, slide: CarouselBriefSlideDraft, assets: SourceImageAsset[]): CarouselSlideImage {
+  const role: CarouselSlideImage["role"] = slide.type === "cover" ? "cover" : "supporting";
+  if (role === "cover" && assets.length === 1) {
+    return imageFromAsset(card, slide, assets[0], role);
+  }
+  if (role === "cover" && assets.length > 1) {
+    return generatedImagePlan(
+      card,
+      slide,
+      assets.slice(0, 6),
+      role,
+      "Multiple source images found; generate a cover that merges the source visual assets into one coherent visual.",
+    );
+  }
+  return generatedImagePlan(
+    card,
+    slide,
+    assets.slice(0, 4),
+    role,
+    assets.length
+      ? "Supporting slides should visualize the slide-specific idea while using source images as references."
+      : "No source image found; generate a slide-specific visual from the hook, claim, and evidence.",
+  );
 }
 
 function hashtagsFor(card: InsightCard): string {
@@ -173,29 +333,6 @@ function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (match) => match.toUpperCase());
 }
 
-function listItemLines(label: string): string[] {
-  const lower = label.toLowerCase();
-  if (/model routing/.test(lower)) {
-    return ["Route each task to the model that works.", "Save expensive tokens for jobs that need them."];
-  }
-  if (/code review/.test(lower)) {
-    return ["Let AI scan diffs before humans review.", "Use humans for judgment, not first-pass checking."];
-  }
-  if (/meeting.*crm/.test(lower)) {
-    return ["Turn messy meeting notes into CRM updates.", "Keep the workflow close to where teams already work."];
-  }
-  if (/document search|local/.test(lower)) {
-    return ["Search private docs without rebuilding every workflow.", "Keep retrieval close to the data."];
-  }
-  if (/prompt.*tool|internal-tool/.test(lower)) {
-    return ["Prototype internal tools from prompts.", "Graduate only the workflows people repeat."];
-  }
-  if (/agent/.test(lower)) {
-    return ["Turn agent demos into repeatable workflows.", "Add guardrails before adding autonomy."];
-  }
-  return [`Use ${label} as a small workflow experiment.`];
-}
-
 function hookDetailUnits(lines: string[]): string[] {
   const units: string[] = [];
   let pending = "";
@@ -213,7 +350,7 @@ function hookDetailUnits(lines: string[]): string[] {
   return units.map((value) => line(value, 96)).filter(Boolean);
 }
 
-function hookDetailSlides(card: InsightCard, selectedHook: HookVariant): CarouselBriefSlide[] {
+function hookDetailSlides(card: InsightCard, selectedHook: HookVariant): CarouselBriefSlideDraft[] {
   if (selectedHook.style === "list") {
     return selectedHook.lines
       .slice(1)
@@ -223,7 +360,7 @@ function hookDetailSlides(card: InsightCard, selectedHook: HookVariant): Carouse
         slideNumber: 0,
         type: "list_item",
         headline: `${item.number}. ${titleCase(item.label)}`,
-        lines: listItemLines(item.label).map((value) => line(value, 74)).slice(0, 2),
+        lines: [],
         altText: line(`List item slide ${item.number} for ${card.workingTitle}: ${item.label}.`, 160),
       }));
   }
@@ -236,12 +373,12 @@ function hookDetailSlides(card: InsightCard, selectedHook: HookVariant): Carouse
   }));
 }
 
-function renumberSlides(slides: CarouselBriefSlide[]): CarouselBriefSlide[] {
+function renumberSlides(slides: CarouselBriefSlideDraft[]): CarouselBriefSlideDraft[] {
   return slides.map((slide, index) => ({ ...slide, slideNumber: index + 1 }));
 }
 
 function buildSlides(card: InsightCard, selectedHook: HookVariant): CarouselBriefSlide[] {
-  const slides: CarouselBriefSlide[] = [];
+  const slides: CarouselBriefSlideDraft[] = [];
   const hook = selectedHook.hook;
   slides.push({
     slideNumber: 0,
@@ -251,7 +388,11 @@ function buildSlides(card: InsightCard, selectedHook: HookVariant): CarouselBrie
     altText: altFor(card, "Cover"),
   });
   slides.push(...hookDetailSlides(card, selectedHook));
-  return renumberSlides(slides);
+  const assets = sourceImageAssets(card);
+  return renumberSlides(slides).map((slide) => ({
+    ...slide,
+    image: imageForSlide(card, slide, assets),
+  }));
 }
 
 export function insightCardToCarouselBrief(card: InsightCard, usedHooks = new Set<string>()): CarouselBrief {

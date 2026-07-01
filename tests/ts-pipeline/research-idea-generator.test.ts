@@ -92,7 +92,7 @@ test("GitHub and Hacker News fixtures map into SourceItems", () => {
     forks_count: 80,
     open_issues_count: 12,
     pushed_at: "2026-06-20T12:00:00Z",
-    owner: { login: "builder" },
+    owner: { login: "builder", avatar_url: "https://avatars.githubusercontent.com/u/123?v=4" },
     topics: ["llm", "routing", "ai"],
   }, "llm router");
   assert.ok(repo);
@@ -101,6 +101,9 @@ test("GitHub and Hacker News fixtures map into SourceItems", () => {
   assert.equal(repo.metrics.upvotes, 1200);
   assert.equal(repo.metrics.score, 1360);
   assert.match(repo.body, /Route LLM requests/);
+  assert.equal(repo.media.hasImage, true);
+  assert.equal(repo.media.provider, "github_open_graph");
+  assert.equal(repo.media.imageUrl, "https://opengraph.githubassets.com/1/builder/llm-router");
 
   const hn = hackerNewsHitToSourceItem({
     objectID: "456",
@@ -225,6 +228,44 @@ test("multi-source clusters receive stronger source spread and confidence", () =
   assert.ok(multiScore.scores.crossSourceConfirmation > singleScore.scores.crossSourceConfirmation);
   assert.ok(multiScore.scores.overall > singleScore.scores.overall);
   assert.equal(multiScore.confidence, "high");
+});
+
+test("evidence selection keeps source diversity before filling from dominant sources", () => {
+  const githubItems = Array.from({ length: 10 }, (_, index) => item({
+    source: "github",
+    externalId: `diverse_repo_${index}`,
+    title: `builder/repo-${index}`,
+    body: "GitHub repo about local agent workflows.",
+    metrics: { upvotes: 1000 - index, comments: 10, score: 1000 - index },
+  }));
+  const cluster = scoreResearchCluster({
+    id: "diverse",
+    label: "local agent workflows",
+    keywords: ["local", "agent", "workflow"],
+    items: [
+      ...githubItems,
+      item({
+        source: "hacker_news",
+        externalId: "diverse_hn",
+        title: "HN discussion about local agent workflows",
+        body: "Builders compare local agent tooling.",
+        metrics: { upvotes: 20, comments: 15, score: 20 },
+      }),
+      item({
+        source: "reddit",
+        externalId: "diverse_reddit",
+        title: "Reddit discussion about local agent workflows",
+        body: "A practical thread about local agent tooling.",
+        subreddit: "LocalLLaMA",
+        metrics: { upvotes: 15, comments: 12, score: 15 },
+      }),
+    ],
+  }, new Date("2026-07-01T00:00:00.000Z"));
+  const evidence = evidenceFromCluster(cluster);
+  assert.equal(evidence.length, 8);
+  assert.ok(evidence.some((entry) => entry.sourceName === "github"));
+  assert.ok(evidence.some((entry) => entry.sourceName === "hacker_news"));
+  assert.ok(evidence.some((entry) => entry.sourceName === "reddit"));
 });
 
 test("insight card selection is score-driven unless cards is explicitly requested", () => {
@@ -356,8 +397,177 @@ test("carousel brief uses the selected hook as slide-ready source of truth", () 
   assert.equal(brief.slides[1].headline, "1. Model Routing");
   assert.ok(brief.slides[1].lines.length <= 2);
   assert.ok(brief.slides.every((slide) => ["cover", "list_item", "hook_detail"].includes(slide.type)));
+  assert.ok(brief.slides.every((slide) => slide.image));
+  assert.equal(brief.slides[0].image.kind, "source_image");
+  assert.equal(brief.slides[0].image.sourceImageUrl, "https://opengraph.githubassets.com/1/builder/llm-router");
+  assert.equal(brief.slides[1].image.kind, "generated_prompt");
+  assert.match(brief.slides[1].image.promptBase ?? "", /model routing/i);
   assert.match(brief.instagramDescription, /Evidence base:/);
   assert.match(brief.instagramDescription, /Publish note:/);
+});
+
+test("carousel slide images handle multiple source assets and no-image sources", () => {
+  const baseCard: InsightCard = {
+    id: "card_images",
+    workingTitle: "AI builders are comparing model routers",
+    claim: "Builders are comparing routing gateways for cost, latency, and fallback behavior.",
+    evidence: [
+      {
+        source: "GitHub",
+        sourceName: "github",
+        title: "builder/llm-router",
+        url: "https://github.com/builder/llm-router",
+        excerpt: "Route LLM requests by cost and latency.",
+        author: "builder",
+        metrics: { score: 100 },
+        timestamp: "2026-06-21T00:00:00.000Z",
+      },
+      {
+        source: "GitHub",
+        sourceName: "github",
+        title: "builder/gateway",
+        url: "https://github.com/builder/gateway",
+        excerpt: "Gateway for fallback providers.",
+        author: "builder",
+        metrics: { score: 90 },
+        timestamp: "2026-06-21T00:00:00.000Z",
+      },
+    ],
+    whyItMatters: "Router design changes cost and reliability before model choice changes.",
+    contentAngles: ["Compare routers as infrastructure, not model picks."],
+    hooks: [{
+      hook: "Model routing is becoming infrastructure",
+      lines: [
+        "Model routing is becoming infrastructure",
+        "The gateway decides which model sees each task.",
+        "That makes routing a cost and reliability control.",
+      ],
+      style: "curiosity",
+      riskLevel: "low",
+      whyItWorks: "Frames routing as hidden infrastructure.",
+      needsFactCheck: false,
+      bestPlatform: "X",
+    }],
+    scores: {
+      overall: 0.8,
+      engagementVelocity: 0.7,
+      sourceQuality: 0.8,
+      novelty: 0.5,
+      practicalUtility: 0.9,
+      controversyOrTension: 0.3,
+      crossSourceConfirmation: 0.4,
+      audienceFit: 0.9,
+      hookability: 0.8,
+    },
+    confidence: "medium",
+    risks: ["Do not claim universal adoption from two repos."],
+    suggestedFormats: ["Instagram carousel"],
+  };
+
+  const multiRepoBrief = insightCardToCarouselBrief(baseCard);
+  assert.equal(multiRepoBrief.slides[0].image.kind, "generated_prompt");
+  assert.equal(multiRepoBrief.slides[0].image.sourceImageUrls?.length, 2);
+  assert.match(multiRepoBrief.slides[0].image.rationale, /Multiple source images/);
+  assert.match(multiRepoBrief.slides[0].image.promptBase ?? "", /source images as visual references/i);
+
+  const redditBrief = insightCardToCarouselBrief({
+    ...baseCard,
+    id: "card_reddit_image",
+    evidence: [{
+      source: "Reddit r/LocalLLaMA",
+      sourceName: "reddit",
+      sourceItemId: "reddit_image",
+      title: "Local inference screenshot",
+      url: "https://i.redd.it/local-inference.png",
+      excerpt: "Screenshot of local inference setup.",
+      author: "redditor",
+      metrics: { score: 30 },
+      timestamp: "2026-06-21T00:00:00.000Z",
+      media: {
+        hasImage: true,
+        hasVideo: false,
+        imageUrl: "https://i.redd.it/local-inference.png",
+        provider: "reddit_direct_image",
+      },
+    }],
+  });
+  assert.equal(redditBrief.slides[0].image.kind, "source_image");
+  assert.equal(redditBrief.slides[0].image.sourceImageUrl, "https://i.redd.it/local-inference.png");
+  assert.deepEqual(redditBrief.slides[0].image.sourceNames, ["reddit"]);
+
+  const hnBrief = insightCardToCarouselBrief({
+    ...baseCard,
+    id: "card_hn_no_image",
+    evidence: [{
+      source: "Hacker News",
+      sourceName: "hacker_news",
+      sourceItemId: "hn_no_image",
+      title: "Ask HN: Model routers in production",
+      url: "https://news.ycombinator.com/item?id=123",
+      excerpt: "Discussion about routing models in production.",
+      author: "hn_user",
+      metrics: { score: 45 },
+      timestamp: "2026-06-21T00:00:00.000Z",
+    }],
+  });
+  assert.ok(hnBrief.slides.every((slide) => slide.image.kind === "generated_prompt"));
+  assert.ok(hnBrief.slides.every((slide) => (slide.image.sourceImageUrls?.length ?? 0) === 0));
+  assert.match(hnBrief.slides[0].image.promptBase ?? "", /No source image is available/i);
+});
+
+test("list carousel slides do not add repeated canned body lines", () => {
+  const card: InsightCard = {
+    id: "card_list_local",
+    workingTitle: "The rise of local-first AI agent frameworks",
+    claim: "Developers are testing local agent runtimes, local tool access, and local API debugging.",
+    evidence: [{
+      source: "GitHub",
+      title: "local-agent-framework",
+      url: "https://github.com/example/local-agent-framework",
+      excerpt: "Local-first runtime for agent workflows.",
+      author: "builder",
+      metrics: { score: 100 },
+      timestamp: "2026-06-21T00:00:00.000Z",
+    }],
+    whyItMatters: "Local-first workflows change how builders debug and secure agents.",
+    contentAngles: ["Local agent tooling as a practical workflow shift."],
+    hooks: [{
+      hook: "3 local agent capabilities builders are testing",
+      lines: [
+        "3 local agent capabilities builders are testing",
+        "1. local-first agent runtimes for offline execution",
+        "2. terminal-based agents with local tool access",
+        "3. local API traffic interceptors for debugging",
+      ],
+      style: "list",
+      riskLevel: "low",
+      whyItWorks: "Turns the evidence into concrete local-agent capabilities.",
+      needsFactCheck: false,
+      bestPlatform: "X",
+    }],
+    scores: {
+      overall: 0.8,
+      engagementVelocity: 0.7,
+      sourceQuality: 0.8,
+      novelty: 0.5,
+      practicalUtility: 0.9,
+      controversyOrTension: 0.3,
+      crossSourceConfirmation: 0.4,
+      audienceFit: 0.9,
+      hookability: 0.8,
+    },
+    confidence: "medium",
+    risks: ["Do not claim broad adoption from one repo."],
+    suggestedFormats: ["Instagram carousel"],
+  };
+  const brief = insightCardToCarouselBrief(card);
+  assert.equal(brief.slideCount, 4);
+  assert.deepEqual(brief.slides.slice(1).map((slide) => slide.headline), [
+    "1. Local-First Agent Runtimes For Offline Execution",
+    "2. Terminal-Based Agents With Local Tool Access",
+    "3. Local API Traffic Interceptors For Debugging",
+  ]);
+  assert.ok(brief.slides.slice(1).every((slide) => slide.lines.length === 0));
 });
 
 test("contrarian carousel details get their own slides after the cover", () => {

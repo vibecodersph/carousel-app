@@ -1,6 +1,7 @@
 import { compactText, normalizeWhitespace, sha256 } from "../sourcing/utils.ts";
 import type {
   EvidenceItem,
+  EvidenceMedia,
   HookStyle,
   HookVariant,
   InsightCard,
@@ -20,14 +21,59 @@ function evidenceExcerpt(item: ScoredResearchCluster["items"][number]): string {
   return compactText(normalizeWhitespace(item.body || item.topReply?.body || item.title), 240);
 }
 
+function evidenceMedia(item: ScoredResearchCluster["items"][number]): EvidenceMedia | undefined {
+  const media = item.media;
+  if (!media?.hasImage && !media?.imageUrl && !media?.localPath) return undefined;
+  return {
+    hasImage: media.hasImage,
+    hasVideo: media.hasVideo,
+    imageUrl: media.imageUrl,
+    localPath: media.localPath,
+    provider: media.provider,
+    width: media.width,
+    height: media.height,
+  };
+}
+
+function compareEvidenceItems(
+  a: ScoredResearchCluster["items"][number],
+  b: ScoredResearchCluster["items"][number],
+): number {
+  return (b.metrics.score ?? 0) - (a.metrics.score ?? 0)
+    || (b.metrics.upvotes ?? 0) - (a.metrics.upvotes ?? 0)
+    || a.title.localeCompare(b.title);
+}
+
+function sourceDiverseEvidenceItems(cluster: ScoredResearchCluster, limit: number): ScoredResearchCluster["items"] {
+  const sorted = [...cluster.items].sort(compareEvidenceItems);
+  const bySource = new Map<string, ScoredResearchCluster["items"]>();
+  for (const item of sorted) {
+    const source = item.source;
+    const sourceItems = bySource.get(source) ?? [];
+    sourceItems.push(item);
+    bySource.set(source, sourceItems);
+  }
+
+  const selected: ScoredResearchCluster["items"] = [];
+  const usedIds = new Set<string>();
+  for (const sourceItems of bySource.values()) {
+    const item = sourceItems[0];
+    if (!item || usedIds.has(item.id)) continue;
+    selected.push(item);
+    usedIds.add(item.id);
+    if (selected.length >= limit) return selected;
+  }
+  for (const item of sorted) {
+    if (usedIds.has(item.id)) continue;
+    selected.push(item);
+    usedIds.add(item.id);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
 export function evidenceFromCluster(cluster: ScoredResearchCluster): EvidenceItem[] {
-  return [...cluster.items]
-    .sort((a, b) => {
-      const sourceDelta = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
-      if (sourceDelta) return sourceDelta;
-      return (b.metrics.score ?? 0) - (a.metrics.score ?? 0);
-    })
-    .slice(0, 8)
+  return sourceDiverseEvidenceItems(cluster, 8)
     .map((item) => ({
       source: item.subreddit ? `Reddit r/${item.subreddit}` : sourceLabel(item.source),
       sourceName: item.source,
@@ -39,6 +85,7 @@ export function evidenceFromCluster(cluster: ScoredResearchCluster): EvidenceIte
       author: item.author,
       metrics: item.metrics,
       timestamp: item.createdAt,
+      media: evidenceMedia(item),
     }));
 }
 
