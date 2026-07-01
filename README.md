@@ -26,7 +26,9 @@ CTA.
 | Web article | `build_article_carousel.py` | `out/article_carousel/` | One long-form article URL or local HTML file |
 | X Article | `build_x_article_carousel.py` | `out/x_article_carousel/` | Long-form X notes/articles behind a status URL |
 | Weekly roundup | `build_weekly_carousel.py` | `out/weekly_carousel/` | A ranked set of top AI stories from the scout queue or an input JSON |
+| Research idea story | `research_idea_generator/cli.ts` + `build_idea_carousel.py` | `out/research_idea_generator/` | Research-backed AI-builder story briefs rendered into carousels |
 | Cover art | `generate_cover.py` | `out/cover_<slug>.png` | Standalone channel-branded cover images |
+| Scroll-stopper cover variants | `scroll_stopper_cover.py` | `out/scroll_stopper_cover/<slug>/` | 3-6 editable HTML/CSS first-slide cover options with attention scores |
 | Video slide | `build_video_slide.py` | `out/video_slide_02.mp4` | A local video, remote video, or X video inside the branded carousel frame |
 | Reel | `build_reel.py` | `out/reels/` | A video post turned into a full-bleed, branded 9:16 Instagram reel (render only) |
 
@@ -139,6 +141,23 @@ font and the render path can load it offline. Japanese output, for example,
 needs a Noto Sans JP-style font in addition to `assets/archivo.css`.
 
 ## Build Workflows
+
+### Scroll-Stopper Cover Variants
+
+```sh
+uv run python scroll_stopper_cover.py \
+  "How to make Instagram carousels get more saves" \
+  --audience "solo creators and marketers" \
+  --promise "Teach 5 first-slide fixes that increase saves and swipes" \
+  --motion kinetic
+```
+
+The generator writes `scroll_stopper_covers.json` plus one preview HTML file per
+variant. Each variant includes sanitized HTML, scoped `.ssc-` CSS, optional image
+asset prompts, an attention score, and export hints for `1080x1350` carousel
+covers. Use `--allow-generated-images` to include OpenAI image prompts in the
+asset plan, and `--generate-images` to actually create those assets with the
+configured image model.
 
 ### X Post Or Thread
 
@@ -258,6 +277,30 @@ for the cover and one for the outro, so story slides are clamped to 3-18.
 
 `--verify` runs the source/copy verifier and writes `run_manifest.json` without
 rendering slides.
+
+### Research Idea Generator
+
+The research idea generator's canonical handoff is
+`out/research_idea_generator/carousel_briefs.json`. Treat this as the standard
+for research-backed ideas: each brief contains the selected hook, lean
+`slides[]`, `instagramDescription`, confidence/risk metadata, and `evidenceUrls`.
+
+```sh
+npm run ideas:research -- run --provider local --cards 5
+
+uv run python build_idea_carousel.py \
+  --input out/research_idea_generator/carousel_briefs.json \
+  --index 0 \
+  --out-dir out/research_idea_generator/story_render \
+  --cover-style kinetic-fly \
+  --no-generate-images
+```
+
+`--index` chooses the story from `carousels[]`; the generator writes higher
+scoring ideas first, so index `0` is the default story to test. The renderer
+accepts this brief shape directly and renders only the selected brief's
+`slides[]`: the cover uses the hook, and each following slide uses only its JSON
+headline plus any provided `lines[]`.
 
 ### Idea Engine
 

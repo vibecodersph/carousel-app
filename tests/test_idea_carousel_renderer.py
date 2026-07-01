@@ -18,6 +18,199 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         }
         self.assertEqual(build_idea_carousel.item_keys(carousel), ["item_1", "item_2"])
 
+    def test_research_carousel_brief_normalizes_to_render_schema(self) -> None:
+        brief = {
+            "id": "brief-local-agents",
+            "workingTitle": "The Rise of Local-First AI Agent Frameworks",
+            "hook": "4 local agent capabilities developers are building right now",
+            "hookStyle": "list",
+            "confidence": "high",
+            "score": 0.68,
+            "slides": [
+                {
+                    "slideNumber": 1,
+                    "type": "cover",
+                    "headline": "4 local agent capabilities developers are building right now",
+                    "lines": [],
+                    "altText": "Cover alt text",
+                },
+                {
+                    "slideNumber": 2,
+                    "type": "list_item",
+                    "headline": "1. Local-First Agent Runtimes For Offline Execution",
+                    "lines": [
+                        "Run agents against private docs without cloud-only dependencies.",
+                        "Keep retrieval close to the data.",
+                    ],
+                    "altText": "Local-first runtime alt text",
+                },
+            ],
+            "instagramDescription": (
+                "4 local agent capabilities developers are building right now\n\n"
+                "Trending repositories show builders prioritizing local-first runtimes.\n\n"
+                "This matters because teams want private workflows and lower latency.\n\n"
+                "Evidence base: 2 sources, including GitHub: Mintplex-Labs/anything-llm.\n\n"
+                "Content angle: Practical local-first agent setup.\n\n"
+                "Publish note: Avoid broad adoption claims."
+            ),
+            "evidenceUrls": [
+                "https://github.com/Mintplex-Labs/anything-llm",
+                "https://github.com/gptme/gptme",
+            ],
+        }
+
+        carousel = build_idea_carousel.normalize_carousel_for_render(
+            brief,
+            source_payload={"generatedAt": "2026-07-01T00:00:00.000Z"},
+        )
+
+        self.assertEqual(carousel["render_source"], "research_idea_generator")
+        self.assertEqual(carousel["id"], "research-brief-local-agents")
+        self.assertEqual(carousel["page_order"], ["cover_page", "item_1"])
+        self.assertTrue(carousel["suppress_cta"])
+        self.assertEqual(carousel["cover_page"]["headline"], brief["hook"])
+        self.assertEqual(carousel["cover_page"]["subheadline"], "")
+        self.assertEqual(carousel["cover_page"]["kinetic_subline"], "")
+        self.assertTrue(carousel["cover_page"]["hook_only_cover"])
+        self.assertEqual(carousel["cover_page"]["alt_text"], "Cover alt text")
+        self.assertTrue(carousel["cover_page"]["kinetic_fly_lines"])
+        self.assertEqual(carousel["item_1"]["item_name"], "")
+        self.assertTrue(carousel["item_1"]["literal_slide"])
+        self.assertFalse(carousel["item_1"]["show_source"])
+        self.assertIn("private docs", carousel["item_1"]["body"])
+        self.assertEqual(carousel["item_1"]["best_for"], "")
+        self.assertEqual(carousel["item_1"]["takeaway"], "")
+        self.assertEqual(carousel["item_1"]["sources"], [])
+        self.assertNotIn("cta", carousel)
+
+    def test_render_carousel_accepts_research_carousel_brief_standard(self) -> None:
+        brief = {
+            "id": "brief-router",
+            "workingTitle": "Model routing becomes AI cost control",
+            "hook": "Stop choosing a single AI model for your entire coding workflow",
+            "hookStyle": "contrarian",
+            "confidence": "medium",
+            "score": 0.56,
+            "slides": [
+                {
+                    "slideNumber": 1,
+                    "type": "cover",
+                    "headline": "Stop choosing a single AI model for your entire coding workflow",
+                    "lines": [],
+                    "altText": "Cover alt text",
+                },
+                {
+                    "slideNumber": 2,
+                    "type": "hook_detail",
+                    "headline": "Smart routing sends simple tasks to cheaper models.",
+                    "lines": [],
+                    "altText": "Detail alt text",
+                },
+            ],
+            "instagramDescription": (
+                "Stop choosing a single AI model for your entire coding workflow\n\n"
+                "A pattern is emerging around cost trackers and model routers.\n\n"
+                "This helps builders reserve expensive models for complex logic.\n\n"
+                "Evidence base: 1 source, including GitHub: getagentseal/codeburn.\n\n"
+                "Content angle: Practical routing for AI coding agents.\n\n"
+                "Publish note: Verify the source before posting."
+            ),
+            "evidenceUrls": ["https://github.com/getagentseal/codeburn"],
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_animated_title_slide"
+        ), patch.object(
+            build_idea_carousel, "render_item_slide"
+        ) as render_item, patch.object(
+            build_idea_carousel, "render_cta_slide"
+        ) as render_cta:
+            manifest_path = build_idea_carousel.render_carousel(
+                brief,
+                out_dir=Path(tmp),
+                generate_images=False,
+                channel_id="vibecodersph",
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["source"], "research_idea_generator")
+        self.assertEqual(manifest["source_brief_id"], "brief-router")
+        self.assertEqual(manifest["source_brief_hook_style"], "contrarian")
+        self.assertEqual(manifest["slide_count"], 2)
+        self.assertTrue(manifest["suppress_cta"])
+        self.assertEqual(manifest["slides"][1]["source_url"], "")
+        self.assertFalse(any(slide["type"] == "cta" for slide in manifest["slides"]))
+        page = render_item.call_args.args[0]
+        self.assertEqual(page["headline"], "Smart routing sends simple tasks to cheaper models.")
+        self.assertEqual(page["body"], "")
+        render_cta.assert_not_called()
+
+    def test_hook_only_research_cover_omits_content_labels(self) -> None:
+        channel = build_idea_carousel.load_channel("vibecodersph")
+        carousel = build_idea_carousel.normalize_carousel_for_render(
+            {
+                "id": "brief-hook-only",
+                "workingTitle": "A deeper working title that should not show on cover",
+                "hook": "Only this hook belongs on the cover",
+                "slides": [
+                    {
+                        "slideNumber": 1,
+                        "type": "cover",
+                        "headline": "Only this hook belongs on the cover",
+                        "lines": [],
+                        "altText": "Cover",
+                    },
+                    {
+                        "slideNumber": 2,
+                        "type": "hook_detail",
+                        "headline": "This is slide two",
+                        "lines": ["Only this line may appear."],
+                        "altText": "Slide",
+                    },
+                ],
+                "evidenceUrls": ["https://github.com/example/repo"],
+            }
+        )
+
+        html_text = build_idea_carousel.kinetic_fly_cover_html(carousel, count=2, channel=channel)
+
+        self.assertIn("Only this hook belongs on the cover", html_text)
+        self.assertNotIn("A deeper working title", html_text)
+        self.assertNotIn("This is slide two", html_text)
+        self.assertNotIn('<header class="brand-bar">', html_text)
+        self.assertNotIn("vibecodersph", html_text.lower())
+        self.assertNotIn('<div class="option-row"', html_text)
+        self.assertNotIn('<p class="subline"', html_text)
+        self.assertNotIn("Swipe for the comparison", html_text)
+
+    def test_literal_research_slide_omits_non_json_chrome(self) -> None:
+        with TemporaryDirectory() as tmp, patch.object(build_idea_carousel, "render_html_slide"):
+            out_path = Path(tmp) / "slide_02.png"
+            build_idea_carousel.render_item_slide(
+                {
+                    "literal_slide": True,
+                    "headline": "1. Local-First Agent Runtimes For Offline Execution",
+                    "body": "Search private docs without rebuilding every workflow.",
+                    "item_name": "",
+                    "sources": [],
+                    "show_source": False,
+                },
+                out_path,
+                active=2,
+                count=5,
+                image_path=None,
+            )
+            html_text = out_path.with_suffix(".html").read_text(encoding="utf-8")
+
+        self.assertIn("1. Local-First Agent Runtimes For Offline Execution", html_text)
+        self.assertIn("Search private docs without rebuilding every workflow.", html_text)
+        self.assertIn("slide is-literal", html_text)
+        self.assertNotIn("item-rule", html_text.split("<body>", 1)[1])
+        self.assertNotIn("Source:", html_text)
+        self.assertNotIn("swipe for more", html_text)
+        self.assertNotIn("@vibecodersph", html_text.lower())
+        self.assertNotIn("02 / 05", html_text)
+
     def test_concise_body_uses_first_sentence_without_ellipsis(self) -> None:
         page = {
             "body": (

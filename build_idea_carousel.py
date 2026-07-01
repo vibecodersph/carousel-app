@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Render one idea-engine carousel JSON object into carousel media.
+"""Render one idea/research carousel JSON object into carousel media.
 
-Input is the batch JSON produced by ``./idea-engine``. Each carousel object is
-already shaped as cover_page, item_1, item_2, ..., cta. This renderer keeps the
-normal animated X-carousel title cover and uses concise item pages with generated art.
+Input can be the older batch JSON produced by ``./idea-engine`` where each
+carousel is already shaped as cover_page, item_N, and cta, or the
+research_idea_generator ``carousel_briefs.json`` standard. Research briefs are
+normalized into the render schema at the edge so the generator can stay focused
+on story selection and evidence.
 """
 from __future__ import annotations
 
@@ -45,10 +47,53 @@ DEFAULT_COVER_STYLE = "default"
 KINETIC_FLY_COVER_STYLE = "kinetic-fly"
 KINETIC_FLY_CYCLE_SECONDS = 5.2
 KINETIC_FLY_FPS = 30
+RESEARCH_BRIEF_RENDER_SOURCE = "research_idea_generator"
+
+BRIEF_LABEL_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "of",
+    "on",
+    "right",
+    "the",
+    "to",
+    "via",
+    "with",
+}
+BRIEF_KINETIC_DROP_WORDS = BRIEF_LABEL_STOP_WORDS | {
+    "developers",
+    "builders",
+    "building",
+    "assuming",
+    "choosing",
+    "asking",
+    "your",
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def is_render_ready_carousel(carousel: dict[str, Any]) -> bool:
+    return isinstance(carousel.get("page_order"), list) and isinstance(carousel.get("cover_page"), dict)
+
+
+def is_research_carousel_brief(carousel: dict[str, Any]) -> bool:
+    return (
+        isinstance(carousel.get("slides"), list)
+        and not isinstance(carousel.get("page_order"), list)
+        and not isinstance(carousel.get("cover_page"), dict)
+    )
 
 
 def carousel_slug(carousel: dict[str, Any], index: int) -> str:
@@ -58,6 +103,10 @@ def carousel_slug(carousel: dict[str, Any], index: int) -> str:
 
 
 def selected_carousel(payload: dict[str, Any], index: int) -> dict[str, Any]:
+    if is_render_ready_carousel(payload) or is_research_carousel_brief(payload):
+        if index != 0:
+            raise SystemExit("--index must be 0 when the input JSON is a single carousel object")
+        return payload
     carousels = payload.get("carousels")
     if not isinstance(carousels, list) or not carousels:
         raise SystemExit("input JSON has no carousels[]")
@@ -94,6 +143,294 @@ def first_source_url(page: dict[str, Any]) -> str:
         if isinstance(source, dict) and string_value(source.get("url")):
             return string_value(source.get("url"))
     return ""
+
+
+def brief_clean_text(value: object, *, words: int = 18) -> str:
+    text = normalize_space(value).replace("...", "").replace("\u2026", "")
+    return clamp_words(text, words, ellipsis=False)
+
+
+def brief_slide_lines(slide: dict[str, Any]) -> list[str]:
+    lines = slide.get("lines")
+    if not isinstance(lines, list):
+        return []
+    return [brief_clean_text(line, words=18) for line in lines if brief_clean_text(line, words=18)]
+
+
+def brief_source_title(url: str) -> str:
+    text = normalize_space(url)
+    if not text:
+        return "Source"
+    match = re.search(r"github\.com/([^/]+/[^/?#]+)", text)
+    if match:
+        return match.group(1)
+    tail = text.rstrip("/").rsplit("/", 1)[-1]
+    return tail or text
+
+
+def brief_source_records(urls: object) -> list[dict[str, str]]:
+    if not isinstance(urls, list):
+        return []
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        url = string_value(raw_url)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        records.append({"title": brief_source_title(url), "url": url})
+    return records
+
+
+def brief_description_sections(brief: dict[str, Any]) -> dict[str, str]:
+    raw = string_value(brief.get("instagramDescription"))
+    paragraphs = [
+        normalize_space(part)
+        for part in re.split(r"\n\s*\n+", raw)
+        if normalize_space(part)
+    ]
+    hook = string_value(brief.get("hook"))
+    if paragraphs and hook and paragraphs[0].lower() == hook.lower():
+        paragraphs = paragraphs[1:]
+
+    sections = {
+        "claim": "",
+        "why": "",
+        "evidence": "",
+        "content_angle": "",
+        "publish_note": "",
+    }
+    free_parts: list[str] = []
+    for paragraph in paragraphs:
+        lower = paragraph.lower()
+        if lower.startswith("evidence base:"):
+            sections["evidence"] = paragraph
+        elif lower.startswith("content angle:"):
+            sections["content_angle"] = re.sub(r"^content angle:\s*", "", paragraph, flags=re.I)
+        elif lower.startswith("publish note:"):
+            sections["publish_note"] = re.sub(r"^publish note:\s*", "", paragraph, flags=re.I)
+        elif not paragraph.startswith("#"):
+            free_parts.append(paragraph)
+    if free_parts:
+        sections["claim"] = free_parts[0]
+    if len(free_parts) > 1:
+        sections["why"] = free_parts[1]
+    return sections
+
+
+def strip_numbered_prefix(value: str) -> str:
+    return re.sub(r"^\s*\d+[.)]\s*", "", normalize_space(value))
+
+
+def brief_item_name(slide: dict[str, Any], index: int) -> str:
+    headline = strip_numbered_prefix(string_value(slide.get("headline")))
+    lower = headline.lower()
+    if "terminal" in lower and "agent" in lower:
+        return "Terminal Agents"
+    if "api traffic" in lower or "interceptor" in lower:
+        return "API Debugging"
+    if "self-hosted" in lower and "workflow" in lower:
+        return "Self-Hosted Workflows"
+    if "local" in lower and "agent" in lower:
+        return "Local Agents"
+    tokens = [
+        token
+        for token in re.split(r"[^A-Za-z0-9+#/-]+", headline)
+        if token and token.lower() not in BRIEF_LABEL_STOP_WORDS
+    ]
+    if not tokens:
+        tokens = [token for token in re.split(r"\s+", headline) if token]
+    if not tokens:
+        return f"Story {index:02d}"
+    return brief_clean_text(" ".join(tokens[:3]), words=4)
+
+
+def brief_copy_from_headline(headline: str) -> tuple[str, str] | None:
+    lower = headline.lower()
+    if "terminal" in lower and "agent" in lower:
+        return (
+            "Terminal agents bring local files, shells, and repo context into the workflow.",
+            "Use local tools with explicit permissions.",
+        )
+    if "api traffic" in lower or "interceptor" in lower:
+        return (
+            "Local interceptors make prompt, tool, and API payload debugging visible before production.",
+            "Debug the invisible agent I/O layer.",
+        )
+    if "self-hosted" in lower and "workflow" in lower:
+        return (
+            "Self-hosted frameworks turn agent demos into repeatable multi-step workflows.",
+            "Make workflows repeatable before adding autonomy.",
+        )
+    if "local-first" in lower and "agent" in lower:
+        return (
+            "Local-first runtimes keep agent execution close to private data and offline environments.",
+            "Keep retrieval close to the data.",
+        )
+    if "model routing" in lower or "routing" in lower:
+        return (
+            "Routing lets builders send simple tasks to cheaper models and save frontier models for hard work.",
+            "Spend premium tokens only where they matter.",
+        )
+    if "token" in lower and "compression" in lower:
+        return (
+            "Compression turns provider sprawl into a cost-control problem builders can measure.",
+            "Measure savings before trusting gateway claims.",
+        )
+    return None
+
+
+def brief_lines_are_generic(lines: list[str]) -> bool:
+    if not lines:
+        return True
+    generic_markers = (
+        "search private docs",
+        "keep retrieval close",
+        "as a small workflow",
+    )
+    return all(any(marker in line.lower() for marker in generic_markers) for line in lines)
+
+
+def brief_body_for_slide(slide: dict[str, Any]) -> str:
+    lines = brief_slide_lines(slide)
+    return brief_clean_text(" ".join(lines), words=28) if lines else ""
+
+
+def brief_kinetic_tokens(value: str) -> list[str]:
+    tokens = [
+        token
+        for token in re.findall(r"[A-Za-z0-9+#/-]+", normalize_space(value))
+        if token and token.lower() not in BRIEF_KINETIC_DROP_WORDS
+    ]
+    return tokens[:8]
+
+
+def brief_kinetic_fly_lines(value: str) -> list[list[dict[str, Any]]]:
+    tokens = brief_kinetic_tokens(value)
+    if not tokens:
+        return []
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        projected = sum(len(part) for part in current) + len(token) + len(current)
+        limit = 13 if not groups else 12
+        if current and (projected > limit or len(current) >= 3):
+            groups.append(current)
+            current = [token]
+        else:
+            current.append(token)
+        if len(groups) == 2 and current:
+            continue
+    if current:
+        groups.append(current)
+    if len(groups) > 3:
+        groups = groups[:2] + [sum(groups[2:], [])[:3]]
+
+    lines: list[list[dict[str, Any]]] = []
+    for line_index, group in enumerate(groups[:3]):
+        line: list[dict[str, Any]] = []
+        for token_index, token in enumerate(group):
+            accent = (line_index == 0 and token_index == 0) or line_index == len(groups[:3]) - 1
+            size = kinetic_word_size(token, accent=accent)
+            if len(token) > 9:
+                size = min(size, 0.54)
+            elif len(token) > 6:
+                size = min(size, 0.62)
+            line.append({
+                "text": token,
+                "size": size,
+                "accent": accent,
+            })
+        if line:
+            lines.append(line)
+    return lines
+
+
+def research_brief_to_render_carousel(
+    brief: dict[str, Any],
+    *,
+    source_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    slides = [slide for slide in brief.get("slides", []) if isinstance(slide, dict)]
+    cover_slide = next((slide for slide in slides if slide.get("type") == "cover"), slides[0] if slides else {})
+    story_slides = [slide for slide in slides if slide is not cover_slide]
+    if not story_slides:
+        story_slides = [{
+            "type": "hook_detail",
+            "headline": string_value(brief.get("workingTitle") or brief.get("hook")),
+            "lines": [],
+            "altText": f"Story slide for {string_value(brief.get('workingTitle') or brief.get('hook'))}.",
+        }]
+
+    evidence_urls = brief.get("evidenceUrls")
+    source_records = brief_source_records(evidence_urls)
+    hook = (
+        string_value(brief.get("hook"))
+        or string_value(cover_slide.get("headline"))
+        or string_value(brief.get("workingTitle"))
+        or "Research story"
+    )
+    hook = brief_clean_text(hook, words=80)
+    working_title = string_value(brief.get("workingTitle"))
+    carousel: dict[str, Any] = {
+        "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
+        "channel_id": "",
+        "render_source": RESEARCH_BRIEF_RENDER_SOURCE,
+        "source_brief_id": string_value(brief.get("id")),
+        "source_brief_title": working_title,
+        "source_brief_score": brief.get("score"),
+        "source_brief_confidence": brief.get("confidence"),
+        "source_brief_hook_style": brief.get("hookStyle"),
+        "source_brief_evidence_urls": [record["url"] for record in source_records],
+        "generated_at": string_value((source_payload or {}).get("generatedAt")),
+        "instagram_caption": string_value(brief.get("instagramDescription")),
+        "suppress_cta": True,
+        "cover_page": {
+            "kicker": "RESEARCH LEAD",
+            "headline": hook,
+            "subheadline": "",
+            "kinetic_subline": "",
+            "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
+            "hook_only_cover": True,
+            "alt_text": string_value(cover_slide.get("altText")) or f"Cover slide for {hook}.",
+        },
+    }
+
+    page_order = ["cover_page"]
+    for item_index, slide in enumerate(story_slides, start=1):
+        key = f"item_{item_index}"
+        body = brief_body_for_slide(slide)
+        page_order.append(key)
+        carousel[key] = {
+            "item_name": "",
+            "headline": brief_clean_text(slide.get("headline"), words=80) or f"Story point {item_index}",
+            "body": body,
+            "best_for": "",
+            "watch_out": "",
+            "takeaway": "",
+            "proof_points": brief_slide_lines(slide),
+            "sources": [],
+            "show_source": False,
+            "literal_slide": True,
+            "alt_text": string_value(slide.get("altText")) or f"Story slide {item_index} for {hook}.",
+        }
+
+    carousel["page_order"] = page_order
+    carousel["page_count"] = len(page_order)
+    return carousel
+
+
+def normalize_carousel_for_render(
+    carousel: dict[str, Any],
+    *,
+    source_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if is_render_ready_carousel(carousel):
+        return carousel
+    if is_research_carousel_brief(carousel):
+        return research_brief_to_render_carousel(carousel, source_payload=source_payload)
+    return carousel
 
 
 def image_prompt(base: str, topic: str) -> str:
@@ -497,6 +834,27 @@ body {{ background: var(--bg); }}
   justify-content: center;
   padding: 78px 88px 88px;
 }}
+.head.is-hook-only {{
+  justify-content: center;
+  padding: 158px 90px 110px;
+}}
+.hook-title {{
+  max-width: 930px;
+  margin: 0;
+  color: var(--fg);
+  font-size: 104px;
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-wrap: balance;
+  text-shadow: 0 12px 0 rgba(var(--primary-rgb), 0.13);
+  transform-origin: 50% 50%;
+  animation: hookTitle {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.hook-title::first-letter {{
+  color: var(--primary);
+}}
 .line {{
   display: flex;
   align-items: baseline;
@@ -604,6 +962,23 @@ body {{ background: var(--bg); }}
   }}
   100% {{ opacity: 0; }}
 }}
+@keyframes hookTitle {{
+  0% {{
+    transform: translateY(42px) scale(0.96);
+    filter: blur(10px);
+    opacity: 0;
+  }}
+  18%, 68% {{
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+    opacity: 1;
+  }}
+  82%, 100% {{
+    transform: translateY(-24px) scale(1.04);
+    filter: blur(12px);
+    opacity: 0;
+  }}
+}}
 @keyframes routeDraw {{
   0%, 18% {{ opacity: 0; clip-path: inset(0 100% 0 0); }}
   30%, 58% {{ opacity: 1; clip-path: inset(0 0 0 0); }}
@@ -656,38 +1031,41 @@ def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any
     lines = kinetic_fly_lines(cover, channel.language_name)
     headline_text = " ".join(string_value(word.get("text")) for line in lines for word in line)
     items = kinetic_fly_items(carousel)
-    logo_src = asset_uri(getattr(channel, "logo_path", None))
-    if logo_src:
-        logo_markup = f'<img class="brand-logo" src="{html.escape(logo_src, quote=True)}" alt="{html.escape(channel.brand_name)}" data-kinetic data-delay-ms="0">'
+    hook_only_cover = bool(cover.get("hook_only_cover"))
+    if hook_only_cover:
+        brand_markup = ""
     else:
-        fallback = html.escape((string_value(channel.account_name) or "AI")[:2].upper())
-        logo_markup = f'<span class="brand-fallback" data-kinetic data-delay-ms="0">{fallback}</span>'
-    swipe = "スワイプして比較" if japanese else "Swipe for the comparison"
-    return f"""<!doctype html>
-<html lang="{'ja' if japanese else 'en'}"><head><meta charset="utf-8"><style>
-{kinetic_fly_cover_css()}
-</style></head>
-<body>
-<div class="slide" data-cover-style="kinetic-fly" aria-label="{html.escape(headline_text, quote=True)}">
+        logo_src = asset_uri(getattr(channel, "logo_path", None))
+        if logo_src:
+            logo_markup = f'<img class="brand-logo" src="{html.escape(logo_src, quote=True)}" alt="{html.escape(channel.brand_name)}" data-kinetic data-delay-ms="0">'
+        else:
+            fallback = html.escape((string_value(channel.account_name) or "AI")[:2].upper())
+            logo_markup = f'<span class="brand-fallback" data-kinetic data-delay-ms="0">{fallback}</span>'
+        brand_markup = f"""
   <header class="brand-bar">
     {logo_markup}
     <div>
       <span class="brand-name">{html.escape(string_value(channel.account_name or channel.brand_name))}</span>
       <span class="brand-handle">{html.escape(kinetic_fly_handle(channel))}</span>
     </div>
-  </header>
-  <div class="route-map" aria-hidden="true">
-    <span class="route route-one" data-kinetic data-delay-ms="0"></span>
-    <span class="route route-two" data-kinetic data-delay-ms="180"></span>
-    <span class="route route-three" data-kinetic data-delay-ms="360"></span>
-    <span class="node node-one" data-kinetic data-delay-ms="0"></span>
-    <span class="node node-two" data-kinetic data-delay-ms="120"></span>
-    <span class="node node-three" data-kinetic data-delay-ms="240"></span>
-    <span class="node node-four" data-kinetic data-delay-ms="360"></span>
-  </div>
-  <section class="head" aria-label="{html.escape(headline_text, quote=True)}">
-    {kinetic_fly_headline_markup(lines)}
-  </section>
+  </header>"""
+    swipe = "スワイプして比較" if japanese else "Swipe for the comparison"
+    if hook_only_cover:
+        headline_text = string_value(cover.get("headline")) or headline_text
+        head_markup = (
+            '<section class="head is-hook-only" aria-label="'
+            f'{html.escape(headline_text, quote=True)}">'
+            f'<h1 class="hook-title" data-kinetic data-delay-ms="80">{html.escape(headline_text)}</h1>'
+            '</section>'
+        )
+        secondary_markup = ""
+    else:
+        head_markup = (
+            f'<section class="head" aria-label="{html.escape(headline_text, quote=True)}">\n'
+            f'{kinetic_fly_headline_markup(lines)}\n'
+            '</section>'
+        )
+        secondary_markup = f"""
   <div class="option-row">
     <span data-kinetic data-delay-ms="0">{html.escape(items[0])}</span>
     <span data-kinetic data-delay-ms="80">{html.escape(items[1])}</span>
@@ -697,7 +1075,25 @@ def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any
   <footer class="fly-footer">
     <span>{html.escape(swipe)}</span>
     <span class="progress" aria-hidden="true"><i></i><i></i><i></i></span>
-  </footer>
+  </footer>"""
+    return f"""<!doctype html>
+<html lang="{'ja' if japanese else 'en'}"><head><meta charset="utf-8"><style>
+{kinetic_fly_cover_css()}
+</style></head>
+<body>
+<div class="slide" data-cover-style="kinetic-fly" aria-label="{html.escape(headline_text, quote=True)}">
+  {brand_markup}
+  <div class="route-map" aria-hidden="true">
+    <span class="route route-one" data-kinetic data-delay-ms="0"></span>
+    <span class="route route-two" data-kinetic data-delay-ms="180"></span>
+    <span class="route route-three" data-kinetic data-delay-ms="360"></span>
+    <span class="node node-one" data-kinetic data-delay-ms="0"></span>
+    <span class="node node-two" data-kinetic data-delay-ms="120"></span>
+    <span class="node node-three" data-kinetic data-delay-ms="240"></span>
+    <span class="node node-four" data-kinetic data-delay-ms="360"></span>
+  </div>
+  {head_markup}
+  {secondary_markup}
 </div>
 {kinetic_fly_progress_script()}
 </body></html>"""
@@ -997,6 +1393,29 @@ body {{ background: #777; }}
   text-overflow: ellipsis;
 }}
 .dots {{ bottom: 48px; }}
+.slide.is-literal .item-cluster {{
+  top: 520px;
+  bottom: 118px;
+  justify-content: center;
+}}
+.slide.is-literal .item-title {{
+  display: block;
+  overflow: visible;
+  font-size: 56px;
+  line-height: 1;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
+}}
+.slide.is-literal .item-body {{
+  max-width: 920px;
+  margin-top: 30px;
+  font-size: 34px;
+  line-height: 1.16;
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
+}}
 """
 
 
@@ -1016,24 +1435,42 @@ def render_item_slide(
     )
     visual_class = "item-visual has-image" if image_path else "item-visual"
     item_name = string_value(page.get("item_name"))
+    item_rule_markup = f'<div class="item-rule"><span>{html.escape(item_name)}</span></div>' if item_name else ""
+    body_text = concise_body(page)
+    body_markup = f'<p class="item-body">{html.escape(body_text)}</p>' if body_text else ""
+    takeaway_text = concise_takeaway(page)
+    takeaway_markup = f'<div class="takeaway">{html.escape(takeaway_text)}</div>' if takeaway_text else ""
+    source_url = first_source_url(page)
+    show_source = page.get("show_source", True) is not False
+    source_markup = f'<div class="source">Source: {html.escape(source_url)}</div>' if source_url and show_source else ""
+    literal_slide = bool(page.get("literal_slide"))
+    slide_class = "slide is-literal" if literal_slide else "slide"
+    show_chrome = page.get("show_chrome", True) is not False and not literal_slide
+    handle_markup = (
+        f'<div class="handle">{html.escape(channel.handle.strip() or f"@{channel.account_name}")}</div>'
+        if show_chrome
+        else ""
+    )
+    count_markup = f'<div class="count">{active:02d} / {count:02d}</div>' if show_chrome else ""
+    dots_markup = f'<div class="dots">{dot_markup(active, count)}</div>' if show_chrome else ""
     html_path = out_path.with_suffix(".html")
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
 {item_slide_css()}
 </style></head>
 <body>
-<div class="slide">
+<div class="{slide_class}">
   <div class="{visual_class}"{visual_style}></div>
-  <div class="handle">{html.escape(channel.handle.strip() or f"@{channel.account_name}")}</div>
-  <div class="count">{active:02d} / {count:02d}</div>
+  {handle_markup}
+  {count_markup}
   <div class="item-cluster">
-    <div class="item-rule"><span>{html.escape(item_name)}</span></div>
+    {item_rule_markup}
     <h1 class="item-title">{bracket_markup(string_value(page.get("headline")))}</h1>
-    <p class="item-body">{html.escape(concise_body(page))}</p>
-    <div class="takeaway">{html.escape(concise_takeaway(page))}</div>
+    {body_markup}
+    {takeaway_markup}
   </div>
-  <div class="source">Source: {html.escape(first_source_url(page))}</div>
-  <div class="dots">{dot_markup(active, count)}</div>
+  {source_markup}
+  {dots_markup}
 </div>
 </body></html>"""
     html_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1050,11 +1487,13 @@ def render_carousel(
     reusable_assets: dict[str, Any] | None = None,
     cover_style: str = DEFAULT_COVER_STYLE,
 ) -> Path:
+    carousel = normalize_carousel_for_render(carousel)
     channel = load_channel(channel_id or string_value(carousel.get("channel_id")) or None)
     os.environ["CAROUSEL_CHANNEL"] = channel.id
     out_dir.mkdir(parents=True, exist_ok=True)
     keys = item_keys(carousel)
-    total = len(keys) + 2
+    suppress_cta = bool(carousel.get("suppress_cta"))
+    total = len(keys) + (1 if suppress_cta else 2)
     reusable_assets = reusable_assets or {"cover": None, "items": {}}
     cover_style = normalize_cover_style(cover_style)
     cover = carousel.get("cover_page")
@@ -1151,42 +1590,54 @@ def render_carousel(
             }
         )
 
-    cta = carousel.get("cta")
-    cta = cta if isinstance(cta, dict) else {}
-    cta_path = out_dir / f"slide_{total:02d}.png"
-    render_cta_slide(
-        cta_path,
-        total,
-        total,
-        {
-            "kicker": "FOLLOW",
-            "headline": string_value(cta.get("headline")) or "Follow for more",
-            "body": string_value(cta.get("body")),
-            "action": string_value(cta.get("action")) or "Follow + Save",
-        },
-    )
-    slides.append({
-        "index": total,
-        "type": "cta",
-        "path": str(cta_path),
-        "alt_text": string_value(cta.get("alt_text")),
-    })
+    if not suppress_cta:
+        cta = carousel.get("cta")
+        cta = cta if isinstance(cta, dict) else {}
+        cta_path = out_dir / f"slide_{total:02d}.png"
+        render_cta_slide(
+            cta_path,
+            total,
+            total,
+            {
+                "kicker": "FOLLOW",
+                "headline": string_value(cta.get("headline")) or "Follow for more",
+                "body": string_value(cta.get("body")),
+                "action": string_value(cta.get("action")) or "Follow + Save",
+            },
+        )
+        slides.append({
+            "index": total,
+            "type": "cta",
+            "path": str(cta_path),
+            "alt_text": string_value(cta.get("alt_text")),
+        })
     manifest = {
-        "source": "idea_engine",
+        "source": string_value(carousel.get("render_source")) or "idea_engine",
         "carousel_id": string_value(carousel.get("id")),
         "channel_id": channel.id,
         "slide_count": total,
         "cover_style": cover_style,
         "cover_image_provider": "reused" if cover_image and reusable_assets.get("cover") else "openai" if cover_image else "",
+        "suppress_cta": suppress_cta,
         "slides": slides,
     }
+    for key in (
+        "source_brief_id",
+        "source_brief_title",
+        "source_brief_score",
+        "source_brief_confidence",
+        "source_brief_hook_style",
+        "source_brief_evidence_urls",
+    ):
+        if string_value(carousel.get(key)):
+            manifest[key] = carousel.get(key)
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest_path
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render one idea-engine carousel")
+    parser = argparse.ArgumentParser(description="Render one idea-engine carousel or research idea brief")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--index", type=int, default=0, help="0-based carousel index")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
@@ -1201,7 +1652,10 @@ def main() -> int:
     args = parser.parse_args()
 
     payload = read_json(args.input)
-    carousel = selected_carousel(payload, args.index)
+    carousel = normalize_carousel_for_render(
+        selected_carousel(payload, args.index),
+        source_payload=payload,
+    )
     out_dir = args.out_dir
     if args.out_dir == DEFAULT_OUT:
         out_dir = DEFAULT_OUT / carousel_slug(carousel, args.index)
