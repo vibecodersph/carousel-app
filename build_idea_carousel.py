@@ -181,6 +181,40 @@ def brief_source_records(urls: object) -> list[dict[str, str]]:
     return records
 
 
+def brief_image_meta(slide: dict[str, Any]) -> dict[str, Any]:
+    image = slide.get("image")
+    return image if isinstance(image, dict) else {}
+
+
+def first_string(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    for value in values:
+        text = string_value(value)
+        if text:
+            return text
+    return ""
+
+
+def brief_image_url(image: dict[str, Any]) -> str:
+    return string_value(image.get("sourceImageUrl")) or first_string(image.get("sourceImageUrls"))
+
+
+def brief_image_urls(image: dict[str, Any]) -> list[str]:
+    urls = image.get("sourceImageUrls")
+    if not isinstance(urls, list):
+        url = string_value(image.get("sourceImageUrl"))
+        return [url] if url else []
+    seen: set[str] = set()
+    values: list[str] = []
+    for raw_url in urls:
+        url = string_value(raw_url)
+        if url and url not in seen:
+            seen.add(url)
+            values.append(url)
+    return values
+
+
 def brief_description_sections(brief: dict[str, Any]) -> dict[str, str]:
     raw = string_value(brief.get("instagramDescription"))
     paragraphs = [
@@ -372,6 +406,7 @@ def research_brief_to_render_carousel(
     )
     hook = brief_clean_text(hook, words=80)
     working_title = string_value(brief.get("workingTitle"))
+    cover_image = brief_image_meta(cover_slide)
     carousel: dict[str, Any] = {
         "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
         "channel_id": "",
@@ -392,6 +427,11 @@ def research_brief_to_render_carousel(
             "kinetic_subline": "",
             "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
             "hook_only_cover": True,
+            "image_kind": string_value(cover_image.get("kind")),
+            "source_image_url": brief_image_url(cover_image),
+            "source_image_urls": brief_image_urls(cover_image),
+            "image_prompt": string_value(cover_image.get("promptBase")),
+            "image_alt_text": string_value(cover_image.get("altText")),
             "alt_text": string_value(cover_slide.get("altText")) or f"Cover slide for {hook}.",
         },
     }
@@ -400,6 +440,7 @@ def research_brief_to_render_carousel(
     for item_index, slide in enumerate(story_slides, start=1):
         key = f"item_{item_index}"
         body = brief_body_for_slide(slide)
+        slide_image = brief_image_meta(slide)
         page_order.append(key)
         carousel[key] = {
             "item_name": "",
@@ -412,6 +453,11 @@ def research_brief_to_render_carousel(
             "sources": [],
             "show_source": False,
             "literal_slide": True,
+            "image_kind": string_value(slide_image.get("kind")),
+            "source_image_url": brief_image_url(slide_image),
+            "source_image_urls": brief_image_urls(slide_image),
+            "image_prompt": string_value(slide_image.get("promptBase")),
+            "image_alt_text": string_value(slide_image.get("altText")),
             "alt_text": string_value(slide.get("altText")) or f"Story slide {item_index} for {hook}.",
         }
 
@@ -535,6 +581,22 @@ def asset_uri(path: Path | None) -> str:
     if not path:
         return ""
     return path.resolve().as_uri()
+
+
+def image_reference_uri(value: str) -> str:
+    raw = string_value(value)
+    if not raw:
+        return ""
+    if re.match(r"^(?:https?|data|file):", raw, flags=re.I):
+        return raw
+    path = Path(raw)
+    if path.exists():
+        return path.resolve().as_uri()
+    return raw
+
+
+def render_image_uri(image_path: Path | None, source_image_url: str = "") -> str:
+    return asset_uri(image_path) if image_path else image_reference_uri(source_image_url)
 
 
 def normalize_cover_style(value: str | None) -> str:
@@ -740,6 +802,26 @@ body {{ background: var(--bg); }}
     linear-gradient(180deg, transparent 0%, transparent 58%, rgba(var(--bg-rgb), 0.44) 76%, rgba(var(--bg-rgb), 0.88) 100%),
     radial-gradient(circle at 18% 22%, rgba(var(--primary-rgb), 0.18), transparent 300px);
   mix-blend-mode: multiply;
+}}
+.source-art {{
+  position: absolute;
+  inset: -36px;
+  z-index: 6;
+  background-position: center;
+  background-size: cover;
+  opacity: 0.2;
+  filter: grayscale(1) contrast(1.12) blur(5px);
+  transform: scale(1.04);
+  mix-blend-mode: multiply;
+  animation: sourceArtDrift {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
+}}
+.source-art::after {{
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 74% 42%, rgba(var(--primary-rgb), 0.2), transparent 320px),
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0.7), rgba(var(--bg-rgb), 0.92));
 }}
 .brand-bar,
 .head,
@@ -1000,6 +1082,10 @@ body {{ background: var(--bg); }}
   0% {{ transform: translate(0, 0); }}
   100% {{ transform: translate(100px, 100px); }}
 }}
+@keyframes sourceArtDrift {{
+  0%, 100% {{ transform: translate3d(-10px, 0, 0) scale(1.04); }}
+  50% {{ transform: translate3d(14px, -10px, 0) scale(1.08); }}
+}}
 """
 
 
@@ -1075,12 +1161,19 @@ def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any
     <span>{html.escape(swipe)}</span>
     <span class="progress" aria-hidden="true"><i></i><i></i><i></i></span>
   </footer>"""
+    source_image = render_image_uri(None, string_value(cover.get("source_image_url")))
+    source_art_markup = (
+        f'<div class="source-art" style="background-image:url({html.escape(source_image, quote=True)})"></div>'
+        if source_image
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="{'ja' if japanese else 'en'}"><head><meta charset="utf-8"><style>
 {kinetic_fly_cover_css()}
 </style></head>
 <body>
 <div class="slide" data-cover-style="kinetic-fly" aria-label="{html.escape(headline_text, quote=True)}">
+  {source_art_markup}
   {brand_markup}
   <div class="route-map" aria-hidden="true">
     <span class="route route-one" data-kinetic data-delay-ms="0"></span>
@@ -1393,9 +1486,22 @@ body {{ background: #777; }}
 }}
 .dots {{ bottom: 48px; }}
 .slide.is-literal .item-cluster {{
-  top: 520px;
-  bottom: 118px;
+  top: 430px;
+  bottom: 170px;
   justify-content: center;
+}}
+.slide.is-literal .item-visual.has-image {{
+  height: 100%;
+  opacity: 0.2;
+  filter: grayscale(1) contrast(1.08) blur(5px);
+  transform: scale(1.04);
+  -webkit-mask-image: none;
+  mask-image: none;
+}}
+.slide.is-literal .item-visual.has-image::after {{
+  background:
+    linear-gradient(180deg, rgba(var(--bg-rgb), .74) 0%, rgba(var(--bg-rgb), .9) 42%, rgba(var(--bg-rgb), .97) 100%),
+    radial-gradient(circle at 78% 24%, rgba(var(--primary-rgb), .18), transparent 320px);
 }}
 .slide.is-literal .item-title {{
   display: block;
@@ -1427,12 +1533,14 @@ def render_item_slide(
     image_path: Path | None,
 ) -> None:
     channel = load_channel()
+    source_image_url = string_value(page.get("source_image_url"))
+    visual_uri = render_image_uri(image_path, source_image_url)
     visual_style = (
-        f' style="background-image: url({html.escape(asset_uri(image_path), quote=True)})"'
-        if image_path
+        f' style="background-image: url({html.escape(visual_uri, quote=True)})"'
+        if visual_uri
         else ""
     )
-    visual_class = "item-visual has-image" if image_path else "item-visual"
+    visual_class = "item-visual has-image" if visual_uri else "item-visual"
     item_name = string_value(page.get("item_name"))
     item_rule_markup = f'<div class="item-rule"><span>{html.escape(item_name)}</span></div>' if item_name else ""
     body_text = concise_body(page)
@@ -1545,6 +1653,8 @@ def render_carousel(
             "path": str(cover_path),
             "poster": str(cover_poster),
             "image_path": str(cover_image or ""),
+            "source_image_url": string_value(cover.get("source_image_url")),
+            "source_image_urls": cover.get("source_image_urls") if isinstance(cover.get("source_image_urls"), list) else [],
             "image_composition": image_composition,
             "cover_style": cover_style,
             "alt_text": string_value(cover.get("alt_text")),
@@ -1562,11 +1672,13 @@ def render_carousel(
             image_path = reusable_image
             print(f"[asset] reusing {page.get('item_name')} image -> {image_path}")
         else:
+            source_image_url = string_value(page.get("source_image_url"))
+            use_source_image_fallback = source_image_url and not generate_images
             image_path = maybe_generate_image(
                 out_dir,
                 topic=string_value(page.get("item_name")) or key,
                 prompt=prompt,
-                generate_images=generate_images,
+                generate_images=generate_images and not use_source_image_fallback,
                 size=openai_item_image_size(),
             )
         slide_path = out_dir / f"slide_{offset:02d}.png"
@@ -1584,6 +1696,8 @@ def render_carousel(
                 "path": str(slide_path),
                 "item_name": string_value(page.get("item_name")),
                 "image_path": str(image_path or ""),
+                "source_image_url": string_value(page.get("source_image_url")),
+                "source_image_urls": page.get("source_image_urls") if isinstance(page.get("source_image_urls"), list) else [],
                 "source_url": first_source_url(page),
                 "alt_text": string_value(page.get("alt_text")),
             }

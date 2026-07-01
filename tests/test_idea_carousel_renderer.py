@@ -33,6 +33,13 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                     "headline": "4 local agent capabilities developers are building right now",
                     "lines": [],
                     "altText": "Cover alt text",
+                    "image": {
+                        "kind": "source_image",
+                        "sourceImageUrl": "https://opengraph.githubassets.com/1/example/cover",
+                        "sourceImageUrls": ["https://opengraph.githubassets.com/1/example/cover"],
+                        "promptBase": "Cover image prompt",
+                        "altText": "Cover image alt",
+                    },
                 },
                 {
                     "slideNumber": 2,
@@ -43,6 +50,12 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                         "Keep retrieval close to the data.",
                     ],
                     "altText": "Local-first runtime alt text",
+                    "image": {
+                        "kind": "generated_prompt",
+                        "sourceImageUrls": ["https://opengraph.githubassets.com/1/example/item"],
+                        "promptBase": "Supporting image prompt",
+                        "altText": "Supporting image alt",
+                    },
                 },
             ],
             "instagramDescription": (
@@ -72,6 +85,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["cover_page"]["subheadline"], "")
         self.assertEqual(carousel["cover_page"]["kinetic_subline"], "")
         self.assertTrue(carousel["cover_page"]["hook_only_cover"])
+        self.assertEqual(carousel["cover_page"]["source_image_url"], "https://opengraph.githubassets.com/1/example/cover")
+        self.assertEqual(carousel["cover_page"]["image_prompt"], "Cover image prompt")
         self.assertEqual(carousel["cover_page"]["alt_text"], "Cover alt text")
         self.assertTrue(carousel["cover_page"]["kinetic_fly_lines"])
         self.assertEqual(carousel["item_1"]["item_name"], "")
@@ -81,6 +96,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["item_1"]["best_for"], "")
         self.assertEqual(carousel["item_1"]["takeaway"], "")
         self.assertEqual(carousel["item_1"]["sources"], [])
+        self.assertEqual(carousel["item_1"]["source_image_url"], "https://opengraph.githubassets.com/1/example/item")
+        self.assertEqual(carousel["item_1"]["image_prompt"], "Supporting image prompt")
         self.assertNotIn("cta", carousel)
 
     def test_render_carousel_accepts_research_carousel_brief_standard(self) -> None:
@@ -159,6 +176,10 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                         "headline": "Only this hook belongs on the cover",
                         "lines": [],
                         "altText": "Cover",
+                        "image": {
+                            "kind": "source_image",
+                            "sourceImageUrl": "https://opengraph.githubassets.com/1/example/repo",
+                        },
                     },
                     {
                         "slideNumber": 2,
@@ -175,6 +196,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         html_text = build_idea_carousel.kinetic_fly_cover_html(carousel, count=2, channel=channel)
 
         self.assertIn("Only this hook belongs on the cover", html_text)
+        self.assertIn("source-art", html_text)
+        self.assertIn("https://opengraph.githubassets.com/1/example/repo", html_text)
         self.assertNotIn("A deeper working title", html_text)
         self.assertNotIn("This is slide two", html_text)
         self.assertNotIn('<header class="brand-bar">', html_text)
@@ -194,6 +217,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                     "item_name": "",
                     "sources": [],
                     "show_source": False,
+                    "source_image_url": "https://opengraph.githubassets.com/1/example/item",
                 },
                 out_path,
                 active=2,
@@ -204,6 +228,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
 
         self.assertIn("1. Local-First Agent Runtimes For Offline Execution", html_text)
         self.assertIn("Search private docs without rebuilding every workflow.", html_text)
+        self.assertIn("https://opengraph.githubassets.com/1/example/item", html_text)
         self.assertIn("slide is-literal", html_text)
         self.assertNotIn("item-rule", html_text.split("<body>", 1)[1])
         self.assertNotIn("Source:", html_text)
