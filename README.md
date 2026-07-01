@@ -302,32 +302,6 @@ accepts this brief shape directly and renders only the selected brief's
 `slides[]`: the cover uses the hook, and each following slide uses only its JSON
 headline plus any provided `lines[]`.
 
-### Idea Engine
-
-The idea engine creates one carousel-ready JSON object per accepted hook:
-
-```sh
-./idea-engine --lens ph_builder --count 3 --llm-provider local
-./idea-engine --lens jp_business --count 3 --llm-provider gemini
-```
-
-Candidate titles are treated as hooks. `ph_builder` hooks are capped at 14 words,
-and `jp_business` hooks are capped at 25 visible characters. Hooks include the
-ranked item count whenever possible, such as `3 AI APIs...` or `3つのAI API...`.
-Each output carousel also includes `research_method`, which explains how the hook
-topic becomes sourced slides: the hook sets the editorial thesis,
-`source_candidate.items` is kept as the fixed research checklist, seed metadata
-is resolved from `idea_engine/data`, and Gemini runs a grounded Google Search JSON
-prompt when `--llm-provider gemini` is used. Local runs use seed metadata and
-known URLs, with complete item-page proof points, best-fit notes, caveats, and
-source metadata. Visible item-page copy is kept to an estimated two-line budget,
-with tighter limits for long item names or topics; the renderer also clamps
-item headline, body, and takeaway text to two lines. Each generated carousel
-also prepares `alt_text` for the cover, every item slide, and the CTA. The
-`instagram_caption` is a research description, not a generic caption: it explains
-the research method, summarizes each item decision, and includes available
-source links.
-
 ### Cover Art
 
 ```sh

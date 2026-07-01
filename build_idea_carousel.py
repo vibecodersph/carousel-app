@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Render one idea/research carousel JSON object into carousel media.
+"""Render one research carousel JSON object into carousel media.
 
-Input can be the older batch JSON produced by ``./idea-engine`` where each
-carousel is already shaped as cover_page, item_N, and cta, or the
-research_idea_generator ``carousel_briefs.json`` standard. Research briefs are
-normalized into the render schema at the edge so the generator can stay focused
-on story selection and evidence.
+Input defaults to the research_idea_generator ``carousel_briefs.json`` standard.
+Research briefs are normalized into the render schema at the edge so the
+generator can stay focused on story selection and evidence. Already-normalized
+carousel-shaped JSON can still be rendered when passed explicitly.
 """
 from __future__ import annotations
 
@@ -40,8 +39,8 @@ from channel import load_channel
 from generate_cover import generate_openai, openai_api_key
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_INPUT = ROOT / "out" / "idea-engine" / "gemini_ph_builder_carousels.json"
-DEFAULT_OUT = ROOT / "out" / "idea-engine" / "idea_carousel_render"
+DEFAULT_INPUT = ROOT / "out" / "research_idea_generator" / "carousel_briefs.json"
+DEFAULT_OUT = ROOT / "out" / "research_idea_generator" / "idea_carousel_render"
 DEFAULT_IDEA_ITEM_IMAGE_SIZE = "2048x1152"
 DEFAULT_COVER_STYLE = "default"
 KINETIC_FLY_COVER_STYLE = "kinetic-fly"
@@ -1249,7 +1248,7 @@ def title_context(
         "instagram_caption": string_value(carousel.get("instagram_caption")),
         "brand_voice_doc": channel.voice_doc_rel,
         "google_enabled": False,
-        "provider": "idea_engine",
+        "provider": string_value(carousel.get("render_source")) or RESEARCH_BRIEF_RENDER_SOURCE,
         "openai_image_model": openai_title_image_model() if openai_api_key() else "",
         "openai_image_size": openai_title_image_size() if openai_api_key() else "",
         "generated_image_prompt": prompt,
@@ -1521,7 +1520,7 @@ def render_carousel(
         image_composition = string_value(context.get("image_composition"))
         post = {
             "id": string_value(carousel.get("id")),
-            "url": f"https://idea-engine.local/carousels/{string_value(carousel.get('id'))}",
+            "url": f"https://research-idea-generator.local/carousels/{string_value(carousel.get('id'))}",
             "author": channel.brand_name,
             "handle": channel.handle,
             "text": " ".join(
@@ -1612,7 +1611,7 @@ def render_carousel(
             "alt_text": string_value(cta.get("alt_text")),
         })
     manifest = {
-        "source": string_value(carousel.get("render_source")) or "idea_engine",
+        "source": string_value(carousel.get("render_source")) or RESEARCH_BRIEF_RENDER_SOURCE,
         "carousel_id": string_value(carousel.get("id")),
         "channel_id": channel.id,
         "slide_count": total,
@@ -1637,7 +1636,7 @@ def render_carousel(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render one idea-engine carousel or research idea brief")
+    parser = argparse.ArgumentParser(description="Render one research idea brief or carousel JSON object")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--index", type=int, default=0, help="0-based carousel index")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
