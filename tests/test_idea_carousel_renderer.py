@@ -40,6 +40,10 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             "Mga may access sa GPU na gustong mag-host ng Llama o Qwen.",
         )
 
+    def test_item_slide_css_clamps_visible_copy_to_two_lines(self) -> None:
+        css = build_idea_carousel.item_slide_css()
+        self.assertEqual(css.count("-webkit-line-clamp: 2"), 3)
+
     def test_cover_prompt_is_landscape_and_item_prompt_stays_horizontal(self) -> None:
         cover_prompt = build_idea_carousel.cover_image_prompt("A glowing server", "OSS stack")
         item_prompt = build_idea_carousel.image_prompt("A model router", "LiteLLM")
@@ -123,13 +127,15 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             "cover_page": {
                 "headline": "Build agents without the [setup spiral]",
                 "subheadline": "A compact stack for tiny teams.",
+                "alt_text": "Cover alt text",
             },
             "item_1": {
                 "item_name": "LiteLLM",
                 "body": "Route model calls without rewriting the app.",
+                "alt_text": "Item alt text",
                 "sources": [{"url": "https://example.com/litellm"}],
             },
-            "cta": {"headline": "Save the stack", "body": "Follow for more tools."},
+            "cta": {"headline": "Save the stack", "body": "Follow for more tools.", "alt_text": "CTA alt text"},
         }
 
         with TemporaryDirectory() as tmp, patch.object(
@@ -150,12 +156,89 @@ class IdeaCarouselRendererTests(unittest.TestCase):
 
         cover = manifest["slides"][0]
         self.assertEqual(cover["type"], "title")
+        self.assertEqual(cover["alt_text"], "Cover alt text")
+        self.assertEqual(manifest["slides"][1]["alt_text"], "Item alt text")
+        self.assertEqual(manifest["slides"][2]["alt_text"], "CTA alt text")
         self.assertTrue(cover["path"].endswith("slide_01.mp4"))
         self.assertTrue(cover["poster"].endswith("slide_01_poster.png"))
         render_cover.assert_called_once()
         title_context = render_cover.call_args.args[4]
         self.assertEqual(title_context["cover_animation"], "text-motion-lines")
         self.assertEqual(title_context["image_composition"], "")
+
+    def test_kinetic_fly_cover_html_uses_circular_aibrief_logo_and_plain_handle(self) -> None:
+        channel = build_idea_carousel.load_channel("aibrief_jp")
+        carousel = {
+            "id": "build-techniques",
+            "page_order": ["cover_page", "item_1", "item_2", "cta"],
+            "cover_page": {
+                "headline": "デフォルト前に試す2つの作り方",
+                "subheadline": "評価とルーティングを先に比べる。",
+            },
+            "item_1": {"item_name": "評価から始める"},
+            "item_2": {"item_name": "モデルルーティング"},
+        }
+
+        html_text = build_idea_carousel.kinetic_fly_cover_html(
+            carousel,
+            count=4,
+            channel=channel,
+        )
+
+        self.assertIn('data-cover-style="kinetic-fly"', html_text)
+        self.assertIn("channels/aibrief_jp/logo.png", html_text)
+        self.assertIn("border-radius: 50%", html_text)
+        self.assertIn("text-transform: none", html_text)
+        self.assertIn(">aibrief.jp<", html_text)
+        self.assertNotIn(">@aibrief.jp<", html_text)
+
+    def test_render_carousel_can_use_kinetic_fly_cover_style(self) -> None:
+        carousel = {
+            "id": "build-techniques",
+            "page_order": ["cover_page", "item_1", "cta"],
+            "cover_page": {
+                "headline": "2 build techniques before defaulting",
+                "subheadline": "A compact stack for small teams.",
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "item_name": "model routing",
+                "body": "Route model calls before committing.",
+                "alt_text": "Item alt text",
+                "sources": [{"url": "https://example.com/routing"}],
+            },
+            "cta": {"headline": "Save this", "body": "Follow for more.", "alt_text": "CTA alt text"},
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_kinetic_fly_cover"
+        ) as render_fly, patch.object(
+            build_idea_carousel, "render_animated_title_slide"
+        ) as render_default, patch.object(
+            build_idea_carousel, "render_item_slide"
+        ), patch.object(
+            build_idea_carousel, "render_cta_slide"
+        ):
+            out_dir = Path(tmp)
+            manifest_path = build_idea_carousel.render_carousel(
+                carousel,
+                out_dir=out_dir,
+                generate_images=False,
+                channel_id="aibrief_jp",
+                cover_style="kinetic-fly",
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        cover = manifest["slides"][0]
+        self.assertEqual(manifest["cover_style"], "kinetic-fly")
+        self.assertEqual(cover["cover_style"], "kinetic-fly")
+        self.assertEqual(cover["type"], "title")
+        self.assertTrue(cover["path"].endswith("slide_01.mp4"))
+        self.assertTrue(cover["poster"].endswith("slide_01_poster.png"))
+        self.assertEqual(cover["image_path"], "")
+        self.assertEqual(manifest["cover_image_provider"], "")
+        render_fly.assert_called_once()
+        render_default.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -19,5 +19,9 @@ Return strict JSON only:
 Language rules:
 - jp_business writes natural Japanese for a business audience. Calm, premium, useful.
 - ph_builder writes natural Taglish for Filipino builders. Budget-aware, practical, zero corporate-speak.
+- The title is the hook. For ph_builder, keep it to 14 words or fewer.
+- For jp_business, keep the hook to 25 visible Japanese characters or fewer.
+- Include a number in the hook whenever candidate items are countable, ideally
+  the number of ranked items, e.g. "3 AI APIs..." or "3つのAI API...".
 - Never use em dashes.
 - No markdown, no comments, no extra keys.

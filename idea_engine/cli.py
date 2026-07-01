@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--axis", help="Optional AXIS constraint")
     parser.add_argument("--twist", help="Optional TWIST constraint")
     parser.add_argument("--candidate-pool", type=int, help="Combinations to try before ranking")
-    parser.add_argument("--candidates-per-combination", type=int, default=2)
+    parser.add_argument("--candidates-per-combination", type=int, default=3)
     parser.add_argument(
         "--carousel-out",
         "--out",
