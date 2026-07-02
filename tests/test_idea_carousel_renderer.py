@@ -96,7 +96,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["item_1"]["best_for"], "")
         self.assertEqual(carousel["item_1"]["takeaway"], "")
         self.assertEqual(carousel["item_1"]["sources"], [])
-        self.assertEqual(carousel["item_1"]["source_image_url"], "https://opengraph.githubassets.com/1/example/item")
+        self.assertEqual(carousel["item_1"]["source_image_url"], "")
+        self.assertEqual(carousel["item_1"]["source_image_urls"], ["https://opengraph.githubassets.com/1/example/item"])
         self.assertEqual(carousel["item_1"]["image_prompt"], "Supporting image prompt")
         self.assertNotIn("cta", carousel)
 
@@ -226,15 +227,43 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             )
             html_text = out_path.with_suffix(".html").read_text(encoding="utf-8")
 
+        body_html = html_text.split("<body>", 1)[1]
         self.assertIn("1. Local-First Agent Runtimes For Offline Execution", html_text)
         self.assertIn("Search private docs without rebuilding every workflow.", html_text)
         self.assertIn("https://opengraph.githubassets.com/1/example/item", html_text)
         self.assertIn("slide is-literal", html_text)
-        self.assertNotIn("item-rule", html_text.split("<body>", 1)[1])
+        self.assertIn("has-source-image", body_html)
+        self.assertNotIn("has-generated-image", body_html)
+        self.assertNotIn("item-rule", body_html)
         self.assertNotIn("Source:", html_text)
         self.assertNotIn("swipe for more", html_text)
         self.assertNotIn("@vibecodersph", html_text.lower())
         self.assertNotIn("02 / 05", html_text)
+
+    def test_literal_research_slide_marks_generated_images(self) -> None:
+        with TemporaryDirectory() as tmp, patch.object(build_idea_carousel, "render_html_slide"):
+            out_path = Path(tmp) / "slide_02.png"
+            generated = Path(tmp) / "generated.png"
+            build_idea_carousel.render_item_slide(
+                {
+                    "literal_slide": True,
+                    "headline": "Generated art should lead this slide",
+                    "body": "",
+                    "item_name": "",
+                    "sources": [],
+                    "show_source": False,
+                },
+                out_path,
+                active=2,
+                count=3,
+                image_path=generated,
+            )
+            html_text = out_path.with_suffix(".html").read_text(encoding="utf-8")
+
+        body_html = html_text.split("<body>", 1)[1]
+        self.assertIn("has-generated-image", body_html)
+        self.assertNotIn("has-source-image", body_html)
+        self.assertIn(str(generated), html_text)
 
     def test_concise_body_uses_first_sentence_without_ellipsis(self) -> None:
         page = {
@@ -410,6 +439,122 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertIn(">aibrief.jp<", html_text)
         self.assertNotIn(">@aibrief.jp<", html_text)
 
+    def test_cover_template_catalog_lists_motion_concepts(self) -> None:
+        catalog = build_idea_carousel.cover_template_catalog()
+        ids = [template["id"] for template in catalog]
+
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("stop-signal", ids)
+        self.assertIn("pattern-break", ids)
+        self.assertIn("metric-snap", ids)
+        self.assertIn("split-switch", ids)
+        self.assertIn("loom-reveal", ids)
+        for template in catalog:
+            self.assertTrue(template["motion"])
+            self.assertTrue(template["best_use"])
+
+    def test_auto_cover_template_selection_matches_hook_shape(self) -> None:
+        cases = [
+            (
+                {
+                    "source_brief_hook_style": "list",
+                    "source_brief_title": "Local agent capabilities",
+                    "cover_page": {"headline": "4 local agent capabilities developers are building right now"},
+                },
+                "pattern-break",
+            ),
+            (
+                {
+                    "source_brief_hook_style": "contrarian",
+                    "source_brief_title": "Local inference alternatives",
+                    "cover_page": {"headline": "Stop assuming NVIDIA is the only option for local LLM inference"},
+                },
+                "stop-signal",
+            ),
+            (
+                {
+                    "source_brief_hook_style": "proof",
+                    "source_brief_title": "Stacking 16 free LLM tiers for 1.7B tokens",
+                    "cover_page": {"headline": "Stack 16 free LLM tiers for 1.7B tokens"},
+                },
+                "metric-snap",
+            ),
+            (
+                {
+                    "source_brief_hook_style": "shift",
+                    "source_brief_title": "Local AI moves beyond cloud-only setups",
+                    "cover_page": {"headline": "Local LLMs are moving from cloud-only setups to desktop NPUs"},
+                },
+                "split-switch",
+            ),
+            (
+                {
+                    "source_brief_hook_style": "spotlight",
+                    "source_brief_title": "A new SDK for agent tools",
+                    "cover_page": {"headline": "A new SDK makes agent tools easier to ship"},
+                },
+                "loom-reveal",
+            ),
+        ]
+
+        for carousel, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(build_idea_carousel.select_kinetic_cover_template(carousel), expected)
+
+    def test_cover_template_html_marks_auto_choice_without_extra_cover_copy(self) -> None:
+        channel = build_idea_carousel.load_channel("vibecodersph")
+        carousel = {
+            "id": "local-agents",
+            "source_brief_hook_style": "list",
+            "page_order": ["cover_page", "item_1"],
+            "cover_page": {
+                "headline": "4 local agent capabilities developers are building right now",
+                "hook_only_cover": True,
+            },
+            "item_1": {"headline": "This should stay off the cover"},
+        }
+
+        html_text = build_idea_carousel.kinetic_fly_cover_html(
+            carousel,
+            count=2,
+            channel=channel,
+            cover_template="auto",
+        )
+        body_html = html_text.split("<body>", 1)[1]
+
+        self.assertIn('data-cover-template="pattern-break"', html_text)
+        self.assertIn("pattern-grid", body_html)
+        self.assertIn("4 local agent capabilities developers are building right now", html_text)
+        self.assertNotIn("This should stay off the cover", body_html)
+        self.assertNotIn("Swipe for the comparison", body_html)
+
+    def test_each_cover_template_renders_hook_only_html(self) -> None:
+        channel = build_idea_carousel.load_channel("vibecodersph")
+        carousel = {
+            "id": "template-check",
+            "page_order": ["cover_page", "item_1"],
+            "cover_page": {
+                "headline": "Stop defaulting before the real signal appears",
+                "hook_only_cover": True,
+            },
+            "item_1": {"headline": "Hidden slide headline"},
+        }
+
+        for template in build_idea_carousel.cover_template_catalog():
+            template_id = template["id"]
+            with self.subTest(template=template_id):
+                html_text = build_idea_carousel.kinetic_fly_cover_html(
+                    carousel,
+                    count=2,
+                    channel=channel,
+                    cover_template=template_id,
+                )
+                body_html = html_text.split("<body>", 1)[1]
+
+                self.assertIn(f'data-cover-template="{template_id}"', html_text)
+                self.assertIn("Stop defaulting before the real signal appears", html_text)
+                self.assertNotIn("Hidden slide headline", body_html)
+
     def test_render_carousel_can_use_kinetic_fly_cover_style(self) -> None:
         carousel = {
             "id": "build-techniques",
@@ -457,6 +602,45 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(manifest["cover_image_provider"], "")
         render_fly.assert_called_once()
         render_default.assert_not_called()
+
+    def test_render_carousel_records_auto_cover_template(self) -> None:
+        carousel = {
+            "id": "token-stack",
+            "source_brief_hook_style": "proof",
+            "page_order": ["cover_page", "item_1"],
+            "suppress_cta": True,
+            "cover_page": {
+                "headline": "Stack 16 free LLM tiers for 1.7B tokens",
+                "hook_only_cover": True,
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "headline": "Route cheap prompts first.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+            },
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_kinetic_fly_cover"
+        ) as render_fly, patch.object(
+            build_idea_carousel, "render_item_slide"
+        ):
+            manifest_path = build_idea_carousel.render_carousel(
+                carousel,
+                out_dir=Path(tmp),
+                generate_images=False,
+                channel_id="vibecodersph",
+                cover_style="kinetic-fly",
+                cover_template="auto",
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["cover_template"], "metric-snap")
+        self.assertEqual(manifest["slides"][0]["cover_template"], "metric-snap")
+        self.assertEqual(render_fly.call_args.kwargs["cover_template"], "metric-snap")
 
 
 if __name__ == "__main__":

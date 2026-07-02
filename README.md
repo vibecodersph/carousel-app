@@ -293,6 +293,7 @@ uv run python build_idea_carousel.py \
   --index 0 \
   --out-dir out/research_idea_generator/story_render \
   --cover-style kinetic-fly \
+  --cover-template auto \
   --no-generate-images
 ```
 
@@ -301,6 +302,11 @@ scoring ideas first, so index `0` is the default story to test. The renderer
 accepts this brief shape directly and renders only the selected brief's
 `slides[]`: the cover uses the hook, and each following slide uses only its JSON
 headline plus any provided `lines[]`.
+
+When `--cover-style kinetic-fly` is enabled, `--cover-template auto` scores the
+hook and chooses a motion cover template from `stop-signal`, `pattern-break`,
+`metric-snap`, `split-switch`, and `loom-reveal`. You can pass any template id
+to force a specific cover during QA; item slide rendering is unchanged.
 
 ### Cover Art
 

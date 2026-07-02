@@ -44,9 +44,48 @@ DEFAULT_OUT = ROOT / "out" / "research_idea_generator" / "idea_carousel_render"
 DEFAULT_IDEA_ITEM_IMAGE_SIZE = "2048x1152"
 DEFAULT_COVER_STYLE = "default"
 KINETIC_FLY_COVER_STYLE = "kinetic-fly"
+DEFAULT_COVER_TEMPLATE = "auto"
 KINETIC_FLY_CYCLE_SECONDS = 5.2
 KINETIC_FLY_FPS = 30
 RESEARCH_BRIEF_RENDER_SOURCE = "research_idea_generator"
+
+KINETIC_COVER_TEMPLATE_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "id": "stop-signal",
+        "name": "Stop Signal",
+        "motion": "Abrupt diagonal cuts, snapping warning nodes, and a hard hook entrance.",
+        "why_it_works": "The sudden visual break matches contrarian hooks that ask the viewer to stop or rethink.",
+        "best_use": "Contrarian, risk, warning, and anti-default hooks.",
+    },
+    {
+        "id": "pattern-break",
+        "name": "Pattern Break",
+        "motion": "A stable grid with one moving odd tile behind the headline.",
+        "why_it_works": "The singleton motion makes list hooks feel like a scan-worthy set with one surprise.",
+        "best_use": "Numbered lists, capability roundups, and multi-point research stories.",
+    },
+    {
+        "id": "metric-snap",
+        "name": "Metric Snap",
+        "motion": "Bars and dots snap upward like a dashboard crossing a threshold.",
+        "why_it_works": "A fast quantitative change supports cost, token, benchmark, and performance hooks.",
+        "best_use": "Percentages, token counts, cost savings, benchmark, and performance claims.",
+    },
+    {
+        "id": "split-switch",
+        "name": "Split Switch",
+        "motion": "Two panels trade dominance while a center divider snaps between them.",
+        "why_it_works": "The before-after switch makes comparisons and old-vs-new decisions readable instantly.",
+        "best_use": "Cloud vs local, default vs alternative, before-after, and ecosystem shift hooks.",
+    },
+    {
+        "id": "loom-reveal",
+        "name": "Loom Reveal",
+        "motion": "Concentric rings zoom toward the viewer around the source visual.",
+        "why_it_works": "The approach cue gives product, repository, and launch hooks a stronger reveal.",
+        "best_use": "New tools, product reveals, repository spotlights, and implementation stories.",
+    },
+)
 
 BRIEF_LABEL_STOP_WORDS = {
     "a",
@@ -407,6 +446,9 @@ def research_brief_to_render_carousel(
     hook = brief_clean_text(hook, words=80)
     working_title = string_value(brief.get("workingTitle"))
     cover_image = brief_image_meta(cover_slide)
+    cover_image_kind = string_value(cover_image.get("kind"))
+    cover_source_image_url = brief_image_url(cover_image) if cover_image_kind == "source_image" else ""
+    used_render_image_urls = {cover_source_image_url} if cover_source_image_url else set()
     carousel: dict[str, Any] = {
         "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
         "channel_id": "",
@@ -427,8 +469,8 @@ def research_brief_to_render_carousel(
             "kinetic_subline": "",
             "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
             "hook_only_cover": True,
-            "image_kind": string_value(cover_image.get("kind")),
-            "source_image_url": brief_image_url(cover_image),
+            "image_kind": cover_image_kind,
+            "source_image_url": cover_source_image_url,
             "source_image_urls": brief_image_urls(cover_image),
             "image_prompt": string_value(cover_image.get("promptBase")),
             "image_alt_text": string_value(cover_image.get("altText")),
@@ -441,6 +483,12 @@ def research_brief_to_render_carousel(
         key = f"item_{item_index}"
         body = brief_body_for_slide(slide)
         slide_image = brief_image_meta(slide)
+        slide_image_kind = string_value(slide_image.get("kind"))
+        slide_source_image_url = brief_image_url(slide_image) if slide_image_kind == "source_image" else ""
+        if slide_source_image_url in used_render_image_urls:
+            slide_source_image_url = ""
+        if slide_source_image_url:
+            used_render_image_urls.add(slide_source_image_url)
         page_order.append(key)
         carousel[key] = {
             "item_name": "",
@@ -453,8 +501,8 @@ def research_brief_to_render_carousel(
             "sources": [],
             "show_source": False,
             "literal_slide": True,
-            "image_kind": string_value(slide_image.get("kind")),
-            "source_image_url": brief_image_url(slide_image),
+            "image_kind": slide_image_kind,
+            "source_image_url": slide_source_image_url,
             "source_image_urls": brief_image_urls(slide_image),
             "image_prompt": string_value(slide_image.get("promptBase")),
             "image_alt_text": string_value(slide_image.get("altText")),
@@ -606,6 +654,104 @@ def normalize_cover_style(value: str | None) -> str:
     if style in {"fly", "fly-cover", "kinetic", "kinetic-fly"}:
         return KINETIC_FLY_COVER_STYLE
     raise SystemExit(f"unknown cover style: {value}")
+
+
+def cover_template_catalog() -> list[dict[str, Any]]:
+    return [dict(template) for template in KINETIC_COVER_TEMPLATE_CATALOG]
+
+
+def normalize_cover_template(value: str | None) -> str:
+    template = normalize_space(string_value(value)).lower().replace("_", "-")
+    if not template or template in {"auto", "best", "dynamic", "match"}:
+        return DEFAULT_COVER_TEMPLATE
+    aliases = {
+        "stop": "stop-signal",
+        "warning": "stop-signal",
+        "abrupt-cut": "stop-signal",
+        "pattern": "pattern-break",
+        "list": "pattern-break",
+        "oddball": "pattern-break",
+        "metrics": "metric-snap",
+        "metric": "metric-snap",
+        "numbers": "metric-snap",
+        "split": "split-switch",
+        "before-after": "split-switch",
+        "switch": "split-switch",
+        "loom": "loom-reveal",
+        "zoom": "loom-reveal",
+        "reveal": "loom-reveal",
+    }
+    template = aliases.get(template, template)
+    valid = {item["id"] for item in KINETIC_COVER_TEMPLATE_CATALOG}
+    if template not in valid:
+        raise SystemExit(f"unknown cover template: {value}")
+    return template
+
+
+def cover_template_keyword_score(text: str, keywords: tuple[str, ...]) -> int:
+    return sum(1 for keyword in keywords if keyword in text)
+
+
+def select_kinetic_cover_template(
+    carousel: dict[str, Any],
+    requested_template: str | None = DEFAULT_COVER_TEMPLATE,
+) -> str:
+    requested = normalize_cover_template(requested_template)
+    if requested != DEFAULT_COVER_TEMPLATE:
+        return requested
+
+    cover = carousel.get("cover_page")
+    cover = cover if isinstance(cover, dict) else {}
+    explicit = normalize_cover_template(cover.get("cover_template") or cover.get("coverTemplate"))
+    if explicit != DEFAULT_COVER_TEMPLATE:
+        return explicit
+
+    hook = string_value(cover.get("headline"))
+    hook_style = string_value(carousel.get("source_brief_hook_style") or cover.get("hook_style") or cover.get("hookStyle"))
+    title = string_value(carousel.get("source_brief_title"))
+    text = normalize_space(" ".join([hook, hook_style, title])).lower()
+    scores = {item["id"]: 0 for item in KINETIC_COVER_TEMPLATE_CATALOG}
+
+    if hook_style.lower() == "list" or re.search(r"^\s*\d+[\).]?\s", hook):
+        scores["pattern-break"] += 5
+    scores["pattern-break"] += cover_template_keyword_score(
+        text,
+        ("capabilities", "ways", "tools", "patterns", "roundup", "stacking", "list"),
+    )
+
+    if re.search(r"(\d+(\.\d+)?%|\b\d+(\.\d+)?[bkmt]?\b|\$|tokens?|cost|benchmark|performance|latency|throughput)", text):
+        scores["metric-snap"] += 4
+    scores["metric-snap"] += cover_template_keyword_score(
+        text,
+        ("compression", "savings", "score", "tracking", "real-time", "scale", "inference"),
+    )
+
+    if re.search(r"\b(stop|don't|dont|avoid|risk|risky|wrong|only option|defaulting|assuming)\b", text):
+        scores["stop-signal"] += 5
+    scores["stop-signal"] += cover_template_keyword_score(
+        text,
+        ("contrarian", "warning", "trap", "too risky", "before trusting"),
+    )
+
+    if re.search(r"\b(vs|versus|instead|before|after|cloud|local|alternative|ecosystem|broader)\b", text):
+        scores["split-switch"] += 3
+    if re.search(r"\bfrom\b.+\bto\b", text):
+        scores["split-switch"] += 3
+    if "only option" in text or "default" in text:
+        scores["split-switch"] += 2
+
+    if re.search(r"\b(new|launch|reveal|repo|repository|github|via|product|framework|sdk|tool)\b", text):
+        scores["loom-reveal"] += 2
+    scores["loom-reveal"] += cover_template_keyword_score(
+        text,
+        ("spotlight", "emerging", "exploring", "converging", "turning to"),
+    )
+
+    if not any(scores.values()):
+        scores["loom-reveal"] = 1
+
+    order = [item["id"] for item in KINETIC_COVER_TEMPLATE_CATALOG]
+    return max(order, key=lambda template_id: (scores[template_id], -order.index(template_id)))
 
 
 def contains_japanese(value: str) -> bool:
@@ -908,6 +1054,149 @@ body {{ background: var(--bg); }}
 .node-two {{ right: 156px; top: 376px; border-color: var(--primary); }}
 .node-three {{ right: 110px; top: 664px; }}
 .node-four {{ right: 192px; top: 920px; border-color: var(--primary); }}
+.template-layer {{
+  position: absolute;
+  inset: 0;
+  z-index: 18;
+  pointer-events: none;
+}}
+.cover-template-stop-signal .route-map {{
+  opacity: 0.92;
+}}
+.cut-bars span {{
+  position: absolute;
+  left: -120px;
+  right: -120px;
+  height: 14px;
+  background: rgba(var(--primary-rgb), 0.66);
+  transform-origin: 50% 50%;
+  animation: cutBarSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.cut-bars span:nth-child(1) {{ top: 336px; transform: rotate(-17deg); }}
+.cut-bars span:nth-child(2) {{ top: 706px; transform: rotate(9deg); animation-delay: .12s; }}
+.cut-bars span:nth-child(3) {{ top: 1010px; transform: rotate(-9deg); animation-delay: .24s; }}
+.pattern-grid {{
+  left: 604px;
+  top: 154px;
+  width: 386px;
+  height: 760px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 18px;
+  opacity: 0.74;
+}}
+.pattern-grid span {{
+  border: 2px solid rgba(var(--fg-rgb), 0.22);
+  background: rgba(var(--bg-rgb), 0.68);
+  box-shadow: 9px 9px 0 rgba(var(--primary-rgb), 0.1);
+  animation: quietTile {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
+}}
+.pattern-grid span:nth-child(13) {{
+  border-color: var(--primary);
+  background: rgba(var(--primary-rgb), 0.18);
+  animation: oddTile {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.metric-stack {{
+  left: 630px;
+  top: 178px;
+  width: 330px;
+  height: 760px;
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  opacity: 0.7;
+}}
+.metric-stack span {{
+  flex: 1;
+  min-height: 128px;
+  border: 3px solid rgba(var(--fg-rgb), 0.2);
+  background: linear-gradient(180deg, rgba(var(--primary-rgb), 0.28), rgba(var(--fg-rgb), 0.06));
+  transform-origin: 50% 100%;
+  animation: metricSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.metric-stack span:nth-child(1) {{ height: 34%; animation-delay: .02s; }}
+.metric-stack span:nth-child(2) {{ height: 54%; animation-delay: .12s; }}
+.metric-stack span:nth-child(3) {{ height: 78%; animation-delay: .22s; border-color: rgba(var(--primary-rgb), 0.6); }}
+.metric-stack span:nth-child(4) {{ height: 46%; animation-delay: .32s; }}
+.metric-dots span {{
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(var(--primary-rgb), 0.38);
+  animation: metricDot {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
+}}
+.metric-dots span:nth-child(1) {{ right: 92px; top: 266px; }}
+.metric-dots span:nth-child(2) {{ right: 214px; top: 392px; animation-delay: .1s; }}
+.metric-dots span:nth-child(3) {{ right: 148px; top: 548px; animation-delay: .2s; }}
+.metric-dots span:nth-child(4) {{ right: 286px; top: 724px; animation-delay: .3s; }}
+.split-panels {{
+  inset: 94px 76px 106px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 26px;
+  opacity: 0.62;
+}}
+.split-panels span {{
+  display: block;
+  border: 3px solid rgba(var(--fg-rgb), 0.18);
+  background:
+    radial-gradient(circle at 50% 30%, rgba(var(--primary-rgb), 0.18), transparent 240px),
+    rgba(var(--bg-rgb), 0.58);
+  transform-origin: 50% 50%;
+  animation: splitPanelSwitch {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.split-panels span:nth-child(2) {{
+  border-color: rgba(var(--primary-rgb), 0.42);
+  animation-delay: .18s;
+}}
+.split-line {{
+  position: absolute;
+  left: 50%;
+  top: 122px;
+  bottom: 146px;
+  width: 8px;
+  background: rgba(var(--primary-rgb), 0.46);
+  transform: translateX(-50%);
+  animation: splitLineSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.loom-rings span {{
+  position: absolute;
+  right: -130px;
+  top: 130px;
+  width: 540px;
+  height: 540px;
+  border: 3px solid rgba(var(--primary-rgb), 0.24);
+  border-radius: 50%;
+  animation: loomRing {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
+}}
+.loom-rings span:nth-child(2) {{
+  right: -34px;
+  top: 226px;
+  width: 350px;
+  height: 350px;
+  animation-delay: .16s;
+}}
+.loom-rings span:nth-child(3) {{
+  right: 66px;
+  top: 326px;
+  width: 150px;
+  height: 150px;
+  background: rgba(var(--primary-rgb), 0.12);
+  animation-delay: .32s;
+}}
+.cover-template-pattern-break .route-map,
+.cover-template-metric-snap .route-map,
+.cover-template-split-switch .route-map,
+.cover-template-loom-reveal .route-map {{
+  opacity: 0.28;
+}}
+.cover-template-pattern-break .hook-title,
+.cover-template-metric-snap .hook-title,
+.cover-template-split-switch .hook-title,
+.cover-template-loom-reveal .hook-title {{
+  max-width: 760px;
+}}
 .head {{
   inset: 0;
   display: flex;
@@ -923,7 +1212,7 @@ body {{ background: var(--bg); }}
   max-width: 930px;
   margin: 0;
   color: var(--fg);
-  font-size: 104px;
+  font-size: var(--hook-title-size, 104px);
   font-weight: 900;
   line-height: 0.92;
   letter-spacing: 0;
@@ -1046,7 +1335,7 @@ body {{ background: var(--bg); }}
 @keyframes hookTitle {{
   0% {{
     transform: translateY(42px) scale(0.96);
-    filter: blur(10px);
+    filter: blur(0);
     opacity: 0;
   }}
   18%, 68% {{
@@ -1056,7 +1345,7 @@ body {{ background: var(--bg); }}
   }}
   82%, 100% {{
     transform: translateY(-24px) scale(1.04);
-    filter: blur(12px);
+    filter: blur(0);
     opacity: 0;
   }}
 }}
@@ -1086,6 +1375,40 @@ body {{ background: var(--bg); }}
   0%, 100% {{ transform: translate3d(-10px, 0, 0) scale(1.04); }}
   50% {{ transform: translate3d(14px, -10px, 0) scale(1.08); }}
 }}
+@keyframes cutBarSnap {{
+  0%, 12%, 88%, 100% {{ opacity: 0; clip-path: inset(0 100% 0 0); }}
+  22%, 64% {{ opacity: 1; clip-path: inset(0 0 0 0); }}
+  76% {{ opacity: 0; clip-path: inset(0 0 0 100%); }}
+}}
+@keyframes quietTile {{
+  0%, 100% {{ transform: translateY(0); opacity: 0.58; }}
+  50% {{ transform: translateY(-6px); opacity: 0.74; }}
+}}
+@keyframes oddTile {{
+  0%, 12%, 88%, 100% {{ transform: translate(24px, 24px) scale(0.82); opacity: 0; }}
+  24%, 68% {{ transform: translate(0, 0) scale(1.18); opacity: 1; }}
+}}
+@keyframes metricSnap {{
+  0%, 12%, 90%, 100% {{ transform: scaleY(0.2); opacity: 0.08; }}
+  28%, 66% {{ transform: scaleY(1); opacity: 1; }}
+}}
+@keyframes metricDot {{
+  0%, 100% {{ transform: scale(0.6); opacity: 0.1; }}
+  34%, 66% {{ transform: scale(1.4); opacity: 0.82; }}
+}}
+@keyframes splitPanelSwitch {{
+  0%, 100% {{ transform: scale(0.96); opacity: 0.28; }}
+  30%, 62% {{ transform: scale(1.04); opacity: 0.76; }}
+}}
+@keyframes splitLineSnap {{
+  0%, 18%, 84%, 100% {{ transform: translateX(-50%) scaleY(0.1); opacity: 0; }}
+  30%, 66% {{ transform: translateX(-50%) scaleY(1); opacity: 1; }}
+}}
+@keyframes loomRing {{
+  0%, 100% {{ transform: scale(0.78); opacity: 0; }}
+  24%, 62% {{ transform: scale(1.06); opacity: 0.86; }}
+  78% {{ transform: scale(1.28); opacity: 0; }}
+}}
 """
 
 
@@ -1109,9 +1432,51 @@ def kinetic_fly_progress_script() -> str:
 """
 
 
-def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any) -> str:
+def kinetic_cover_template_markup(template_id: str) -> str:
+    if template_id == "stop-signal":
+        return '<div class="template-layer cut-bars" aria-hidden="true"><span></span><span></span><span></span></div>'
+    if template_id == "pattern-break":
+        cells = "".join("<span></span>" for _ in range(25))
+        return f'<div class="template-layer pattern-grid" aria-hidden="true">{cells}</div>'
+    if template_id == "metric-snap":
+        bars = "".join("<span></span>" for _ in range(4))
+        dots = "".join("<span></span>" for _ in range(4))
+        return (
+            f'<div class="template-layer metric-stack" aria-hidden="true">{bars}</div>'
+            f'<div class="template-layer metric-dots" aria-hidden="true">{dots}</div>'
+        )
+    if template_id == "split-switch":
+        return (
+            '<div class="template-layer split-panels" aria-hidden="true"><span></span><span></span></div>'
+            '<div class="template-layer split-line" aria-hidden="true"></div>'
+        )
+    if template_id == "loom-reveal":
+        return '<div class="template-layer loom-rings" aria-hidden="true"><span></span><span></span><span></span></div>'
+    return ""
+
+
+def kinetic_hook_title_size(headline: str) -> int:
+    words = [word for word in normalize_space(headline).split() if word]
+    length = len(normalize_space(headline))
+    if length > 92 or len(words) > 12:
+        return 74
+    if length > 74 or len(words) > 10:
+        return 82
+    if length > 58 or len(words) > 8:
+        return 92
+    return 104
+
+
+def kinetic_fly_cover_html(
+    carousel: dict[str, Any],
+    *,
+    count: int,
+    channel: Any,
+    cover_template: str | None = DEFAULT_COVER_TEMPLATE,
+) -> str:
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
+    template_id = select_kinetic_cover_template(carousel, cover_template)
     japanese = channel.language_name.lower().startswith("japanese")
     lines = kinetic_fly_lines(cover, channel.language_name)
     headline_text = " ".join(string_value(word.get("text")) for line in lines for word in line)
@@ -1137,10 +1502,12 @@ def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any
     swipe = "スワイプして比較" if japanese else "Swipe for the comparison"
     if hook_only_cover:
         headline_text = string_value(cover.get("headline")) or headline_text
+        hook_title_size = kinetic_hook_title_size(headline_text)
         head_markup = (
             '<section class="head is-hook-only" aria-label="'
             f'{html.escape(headline_text, quote=True)}">'
-            f'<h1 class="hook-title" data-kinetic data-delay-ms="80">{html.escape(headline_text)}</h1>'
+            f'<h1 class="hook-title" data-kinetic data-delay-ms="80" style="--hook-title-size:{hook_title_size}px">'
+            f'{html.escape(headline_text)}</h1>'
             '</section>'
         )
         secondary_markup = ""
@@ -1167,13 +1534,15 @@ def kinetic_fly_cover_html(carousel: dict[str, Any], *, count: int, channel: Any
         if source_image
         else ""
     )
+    template_markup = kinetic_cover_template_markup(template_id)
     return f"""<!doctype html>
 <html lang="{'ja' if japanese else 'en'}"><head><meta charset="utf-8"><style>
 {kinetic_fly_cover_css()}
 </style></head>
 <body>
-<div class="slide" data-cover-style="kinetic-fly" aria-label="{html.escape(headline_text, quote=True)}">
+<div class="slide cover-template-{html.escape(template_id)}" data-cover-style="kinetic-fly" data-cover-template="{html.escape(template_id)}" aria-label="{html.escape(headline_text, quote=True)}">
   {source_art_markup}
+  {template_markup}
   {brand_markup}
   <div class="route-map" aria-hidden="true">
     <span class="route route-one" data-kinetic data-delay-ms="0"></span>
@@ -1197,6 +1566,7 @@ def render_kinetic_fly_cover(
     *,
     count: int,
     channel: Any,
+    cover_template: str | None = DEFAULT_COVER_TEMPLATE,
     duration_seconds: float = KINETIC_FLY_CYCLE_SECONDS,
     fps: int = KINETIC_FLY_FPS,
 ) -> Path:
@@ -1215,7 +1585,10 @@ def render_kinetic_fly_cover(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     poster_path = cover_poster_path(out_path)
     html_path = out_path.with_suffix(".html")
-    html_path.write_text(kinetic_fly_cover_html(carousel, count=count, channel=channel), encoding="utf-8")
+    html_path.write_text(
+        kinetic_fly_cover_html(carousel, count=count, channel=channel, cover_template=cover_template),
+        encoding="utf-8",
+    )
 
     print(f"[cover] rendering kinetic fly cover -> {out_path}")
     try:
@@ -1490,7 +1863,7 @@ body {{ background: #777; }}
   bottom: 170px;
   justify-content: center;
 }}
-.slide.is-literal .item-visual.has-image {{
+.slide.is-literal .item-visual.has-source-image {{
   height: 100%;
   opacity: 0.2;
   filter: grayscale(1) contrast(1.08) blur(5px);
@@ -1498,10 +1871,24 @@ body {{ background: #777; }}
   -webkit-mask-image: none;
   mask-image: none;
 }}
-.slide.is-literal .item-visual.has-image::after {{
+.slide.is-literal .item-visual.has-source-image::after {{
   background:
     linear-gradient(180deg, rgba(var(--bg-rgb), .74) 0%, rgba(var(--bg-rgb), .9) 42%, rgba(var(--bg-rgb), .97) 100%),
     radial-gradient(circle at 78% 24%, rgba(var(--primary-rgb), .18), transparent 320px);
+}}
+.slide.is-literal .item-visual.has-generated-image {{
+  height: 100%;
+  opacity: 0.58;
+  filter: saturate(.86) contrast(1.08);
+  transform: scale(1.02);
+  background-position: center;
+  -webkit-mask-image: none;
+  mask-image: none;
+}}
+.slide.is-literal .item-visual.has-generated-image::after {{
+  background:
+    linear-gradient(90deg, rgba(var(--bg-rgb), .96) 0%, rgba(var(--bg-rgb), .88) 38%, rgba(var(--bg-rgb), .46) 100%),
+    linear-gradient(180deg, rgba(var(--bg-rgb), .1) 0%, rgba(var(--bg-rgb), .48) 100%);
 }}
 .slide.is-literal .item-title {{
   display: block;
@@ -1540,7 +1927,10 @@ def render_item_slide(
         if visual_uri
         else ""
     )
-    visual_class = "item-visual has-image" if visual_uri else "item-visual"
+    visual_class = "item-visual"
+    if visual_uri:
+        image_source_class = "has-generated-image" if image_path else "has-source-image"
+        visual_class = f"item-visual has-image {image_source_class}"
     item_name = string_value(page.get("item_name"))
     item_rule_markup = f'<div class="item-rule"><span>{html.escape(item_name)}</span></div>' if item_name else ""
     body_text = concise_body(page)
@@ -1593,6 +1983,7 @@ def render_carousel(
     channel_id: str | None = None,
     reusable_assets: dict[str, Any] | None = None,
     cover_style: str = DEFAULT_COVER_STYLE,
+    cover_template: str | None = DEFAULT_COVER_TEMPLATE,
 ) -> Path:
     carousel = normalize_carousel_for_render(carousel)
     channel = load_channel(channel_id or string_value(carousel.get("channel_id")) or None)
@@ -1608,14 +1999,17 @@ def render_carousel(
     slides: list[dict[str, Any]] = []
     cover_path = out_dir / "slide_01.mp4"
     cover_poster = cover_poster_path(cover_path)
+    cover_template_id = ""
     if cover_style == KINETIC_FLY_COVER_STYLE:
         cover_image = None
         image_composition = ""
+        cover_template_id = select_kinetic_cover_template(carousel, cover_template)
         render_kinetic_fly_cover(
             carousel,
             cover_path,
             count=total,
             channel=channel,
+            cover_template=cover_template_id,
         )
     else:
         context, _cover_copy, cover_image = title_context(
@@ -1657,6 +2051,7 @@ def render_carousel(
             "source_image_urls": cover.get("source_image_urls") if isinstance(cover.get("source_image_urls"), list) else [],
             "image_composition": image_composition,
             "cover_style": cover_style,
+            "cover_template": cover_template_id,
             "alt_text": string_value(cover.get("alt_text")),
         }
     )
@@ -1730,6 +2125,7 @@ def render_carousel(
         "channel_id": channel.id,
         "slide_count": total,
         "cover_style": cover_style,
+        "cover_template": cover_template_id,
         "cover_image_provider": "reused" if cover_image and reusable_assets.get("cover") else "openai" if cover_image else "",
         "suppress_cta": suppress_cta,
         "slides": slides,
@@ -1762,6 +2158,11 @@ def main() -> int:
         default=os.environ.get("IDEA_COVER_STYLE", DEFAULT_COVER_STYLE),
         help="Cover renderer: default/usual or kinetic-fly/fly",
     )
+    parser.add_argument(
+        "--cover-template",
+        default=os.environ.get("IDEA_COVER_TEMPLATE", DEFAULT_COVER_TEMPLATE),
+        help="Kinetic cover template: auto, stop-signal, pattern-break, metric-snap, split-switch, or loom-reveal",
+    )
     args = parser.parse_args()
 
     payload = read_json(args.input)
@@ -1779,6 +2180,7 @@ def main() -> int:
         channel_id=args.channel,
         reusable_assets=load_reusable_assets(args.asset_manifest),
         cover_style=args.cover_style,
+        cover_template=args.cover_template,
     )
     print(manifest_path)
     return 0
