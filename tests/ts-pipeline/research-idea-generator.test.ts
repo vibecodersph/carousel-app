@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,13 +18,26 @@ import { parseArgs, main as researchCliMain } from "../../research_idea_generato
 import { githubRepoToSourceItem } from "../../research_idea_generator/sources/github.ts";
 import { hackerNewsHitToSourceItem } from "../../research_idea_generator/sources/hackerNews.ts";
 import { dedupeResearchItems } from "../../research_idea_generator/sources/index.ts";
+import {
+  enrichTheBatchSourceItemFromHtml,
+  latestTheBatchIssueTagUrlFromIndexHtml,
+  theBatchHtmlToText,
+  theBatchPostToSourceItem,
+  theBatchTagPageToSourceItems,
+} from "../../research_idea_generator/sources/theBatch.ts";
+import {
+  carouselBriefQueueId,
+  scanCarouselBriefRunArchives,
+  unpublishedCarouselBriefs,
+} from "../../research_idea_generator/briefQueue.ts";
 import { buildResearchQueries } from "../../research_idea_generator/taxonomy.ts";
 import { scoreResearchCluster } from "../../research_idea_generator/scoring.ts";
 import { evidenceFromCluster, generateInsightCards, selectClustersForInsightCards } from "../../research_idea_generator/generator.ts";
 import { assessHookRisk, generateHookVariants, optimizeHookText } from "../../research_idea_generator/hooks.ts";
+import { judgeHookWorthiness } from "../../research_idea_generator/hookJudge.ts";
 import { filterSeenSourceItems, type ResearchMemory } from "../../research_idea_generator/memory.ts";
 import { collectRedditSourceQueue, readUnreadRedditSources } from "../../research_idea_generator/redditQueue.ts";
-import type { InsightCard, ResearchCluster, ScoredResearchCluster, TaxonomyConfig } from "../../research_idea_generator/types.ts";
+import type { CarouselBriefOutput, InsightCard, ResearchCluster, ScoredResearchCluster, TaxonomyConfig } from "../../research_idea_generator/types.ts";
 
 function item(overrides: Partial<SourceItem> & { source: string; externalId: string; title: string }): SourceItem {
   return {
@@ -81,6 +94,133 @@ function scoredCluster(
   };
 }
 
+const THE_BATCH_INDEX_FIXTURE = `<!doctype html><html><body>
+<script id="__NEXT_DATA__" type="application/json">{
+  "props": {
+    "pageProps": {
+      "posts": [
+        {
+          "title": "Gemini Flash Gets Pricey, AI Act Delays, Agents Drive Online Traffic",
+          "slug": "issue-355",
+          "published_at": "2026-05-29T07:00:34.000-07:00",
+          "tags": [
+            { "name": "The Batch Newsletter", "slug": "the-batch" },
+            { "name": "issue-355", "slug": "issue-355" },
+            { "name": "May 29, 2026", "slug": "may-29-2026" }
+          ]
+        }
+      ]
+    }
+  }
+}</script>
+</body></html>`;
+
+const THE_BATCH_TAG_FIXTURE = `<!doctype html><html><body>
+<script id="__NEXT_DATA__" type="application/json">{
+  "props": {
+    "pageProps": {
+      "tag": { "name": "May 29, 2026", "slug": "may-29-2026" },
+      "posts": [
+        {
+          "title": "Planning Generated Images In Stages: Meta improves image models by plotting and revising generations step-by-step",
+          "slug": "planning-generated-images-in-stages",
+          "url": "https://charonhub.deeplearning.ai/404",
+          "feature_image": "https://charonhub.deeplearning.ai/content/images/2026/05/STROKES-1.webp",
+          "custom_excerpt": "Text-to-image generators use staged plans to revise image layouts before final diffusion.",
+          "published_at": "2026-05-29T08:15:59.000-07:00",
+          "tags": [
+            { "name": "Machine Learning Research", "slug": "research" },
+            { "name": "Generative AI", "slug": "generative-ai" },
+            { "name": "May 29, 2026", "slug": "may-29-2026" }
+          ]
+        },
+        {
+          "title": "Gemini 3.5 Flash Pairs Smarts With Speed: Google's updated Flash levels up, approaching top models but raising prices",
+          "slug": "gemini-3-5-flash-pairs-smarts-with-speed",
+          "feature_image": "https://charonhub.deeplearning.ai/content/images/2026/05/GEMINI3.5FLASH-1.webp",
+          "custom_excerpt": "Google's faster model improves benchmark scores but raises token prices for builders.",
+          "published_at": "2026-05-29T08:00:52.000-07:00",
+          "tags": [
+            { "name": "Machine Learning Research", "slug": "research" },
+            { "name": "AI Agents", "slug": "ai-agents" },
+            { "name": "May 29, 2026", "slug": "may-29-2026" }
+          ]
+        },
+        {
+          "title": "Gemini Flash Gets Pricey, AI Act Delays, Agents Drive Online Traffic",
+          "slug": "issue-355",
+          "feature_image": "https://charonhub.deeplearning.ai/content/images/2026/05/2026.05.29-LETTER-1.webp",
+          "custom_excerpt": "The Batch AI News and Insights weekly issue wrapper.",
+          "published_at": "2026-05-29T07:00:34.000-07:00",
+          "tags": [
+            { "name": "The Batch Newsletter", "slug": "the-batch" },
+            { "name": "issue-355", "slug": "issue-355" },
+            { "name": "May 29, 2026", "slug": "may-29-2026" }
+          ]
+        }
+      ]
+    }
+  }
+}</script>
+</body></html>`;
+
+const THE_BATCH_GLM_STORY_FIXTURE = `<!doctype html><html><body>
+<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+  props: {
+    pageProps: {
+      post: {
+        id: "post-glm",
+        title: "Top Agentic Performance, Low Cost: GLM-5.2, designed for coding and long-running agentic jobs, now the top open model",
+        slug: "top-agentic-performance-low-cost",
+        url: "https://www.deeplearning.ai/the-batch/top-agentic-performance-low-cost",
+        feature_image: "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp",
+        feature_image_alt: "GLM-5.2 model illustration",
+        custom_excerpt: "Z.ai released GLM-5.2 for coding and long-running agentic jobs.",
+        published_at: "2026-07-01T08:00:00.000-07:00",
+        reading_time: 4,
+        primary_tag: { name: "Large Language Models (LLMs)", slug: "llms" },
+        tags: [
+          { name: "Large Language Models (LLMs)", slug: "llms" },
+          { name: "AI Agents", slug: "ai-agents" },
+          { name: "July 1, 2026", slug: "july-1-2026" },
+        ],
+        html: `
+          <p>Z.ai released GLM-5.2, an open-weights model designed for coding and long-running agentic jobs.</p>
+          <p>Input/output: GLM-5.2 accepts up to 1 million input tokens and up to 128,000 output tokens at 103 tokens per second.</p>
+          <p>Architecture: GLM-5.2 is a mixture-of-experts transformer with 753 billion total parameters and 40 billion active parameters per token.</p>
+          <p>Builder features: The model supports two reasoning levels, function calling, structured output, and context caching.</p>
+          <p>Performance: Z.ai says GLM-5.2 rivals proprietary leaders on agentic coding benchmarks.</p>
+          <p><a href="https://github.com/zai-org/GLM-5.2">GLM-5.2 repository</a></p>
+        `,
+      },
+    },
+  },
+})}</script>
+</body></html>`;
+
+async function withMockGeminiHookJudge<T>(
+  judgments: Array<{ index: number; score: number; worthCarousel: boolean; reason: string; bestAngle?: string }>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-key";
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    candidates: [{
+      content: {
+        parts: [{ text: JSON.stringify(judgments) }],
+      },
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalKey;
+  }
+}
+
 test("GitHub and Hacker News fixtures map into SourceItems", () => {
   const repo = githubRepoToSourceItem({
     id: 123,
@@ -117,6 +257,625 @@ test("GitHub and Hacker News fixtures map into SourceItems", () => {
   assert.equal(hn.source, "hacker_news");
   assert.equal(hn.url, "https://news.ycombinator.com/item?id=456");
   assert.equal(hn.metrics.comments, 41);
+});
+
+test("The Batch weekly fixture splits into image-backed story SourceItems", () => {
+  const issueTagUrl = latestTheBatchIssueTagUrlFromIndexHtml(THE_BATCH_INDEX_FIXTURE);
+  assert.equal(issueTagUrl, "https://www.deeplearning.ai/the-batch/tag/may-29-2026");
+
+  const items = theBatchTagPageToSourceItems(THE_BATCH_TAG_FIXTURE, { issueTagUrl });
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((entry) => entry.externalId), [
+    "planning-generated-images-in-stages",
+    "gemini-3-5-flash-pairs-smarts-with-speed",
+  ]);
+  assert.ok(!items.some((entry) => entry.externalId === "issue-355"));
+  assert.equal(items[0].source, "the_batch");
+  assert.equal(items[0].url, "https://www.deeplearning.ai/the-batch/planning-generated-images-in-stages");
+  assert.equal(items[0].media.hasImage, true);
+  assert.equal(items[0].media.hasVideo, false);
+  assert.equal(items[0].media.provider, "the_batch_feature_image");
+  assert.equal(items[0].media.imageUrl, "https://charonhub.deeplearning.ai/content/images/2026/05/STROKES-1.webp");
+  assert.match(items[0].body, /Generative AI/);
+  assert.equal((items[0].raw as { issueTagUrl?: string }).issueTagUrl, issueTagUrl);
+
+  const issueWrapper = theBatchPostToSourceItem({
+    title: "Weekly issue wrapper",
+    slug: "issue-999",
+    tags: [{ name: "The Batch Newsletter", slug: "the-batch" }],
+  });
+  assert.equal(issueWrapper, null);
+});
+
+test("The Batch full story enrichment preserves named article facts", () => {
+  const story = theBatchPostToSourceItem({
+    title: "Top Agentic Performance, Low Cost",
+    slug: "top-agentic-performance-low-cost",
+    feature_image: "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp",
+    custom_excerpt: "Open model for agentic coding.",
+    published_at: "2026-07-01T08:00:00.000-07:00",
+    tags: [{ name: "AI Agents", slug: "ai-agents" }],
+  });
+  assert.ok(story);
+
+  const enriched = enrichTheBatchSourceItemFromHtml(story, THE_BATCH_GLM_STORY_FIXTURE);
+  assert.match(theBatchHtmlToText("<p>Input/output: GLM-5.2 accepts tokens.</p>"), /Input\/output: GLM-5\.2/);
+  assert.match(enriched.body, /GLM-5\.2/);
+  assert.match(enriched.body, /1 million input tokens/);
+  assert.match(enriched.body, /753 billion total parameters/);
+  assert.equal(enriched.media.imageUrl, "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp");
+
+  const raw = enriched.raw as {
+    fullStory?: {
+      articleText?: string;
+      sourceLinks?: Array<{ text?: string; url?: string }>;
+    };
+  };
+  assert.match(raw.fullStory?.articleText ?? "", /Builder features/);
+  assert.equal(raw.fullStory?.sourceLinks?.[0].url, "https://github.com/zai-org/GLM-5.2");
+});
+
+test("The Batch story images flow into evidence and carousel brief images", () => {
+  const story = theBatchTagPageToSourceItems(THE_BATCH_TAG_FIXTURE)[0];
+  const cluster = scoreResearchCluster({
+    id: "batch_image",
+    label: story.title,
+    keywords: ["generated", "images", "model", "workflow"],
+    items: [story],
+  }, new Date("2026-05-30T00:00:00.000Z"));
+  const evidence = evidenceFromCluster(cluster);
+  assert.equal(evidence[0].source, "The Batch (DeepLearning.AI)");
+  assert.equal(evidence[0].sourceName, "the_batch");
+  assert.equal(evidence[0].media?.imageUrl, "https://charonhub.deeplearning.ai/content/images/2026/05/STROKES-1.webp");
+  assert.equal(evidence[0].media?.provider, "the_batch_feature_image");
+
+  const card: InsightCard = {
+    id: "batch_card",
+    workingTitle: "Generated images are getting a planning step",
+    claim: "Some image models now plan and revise layouts before rendering the final image.",
+    evidence,
+    whyItMatters: "Builders can treat image generation as a staged workflow instead of a one-shot prompt.",
+    contentAngles: ["Planning as a practical control layer for generated media."],
+    hooks: [{
+      hook: "Image generation is becoming a planning problem",
+      lines: [
+        "Image generation is becoming a planning problem",
+        "The model sketches intent before pixels.",
+      ],
+      style: "curiosity",
+      riskLevel: "low",
+      whyItWorks: "Reframes a model update as a workflow shift.",
+      needsFactCheck: false,
+      bestPlatform: "X",
+    }],
+    scores: cluster.scores,
+    confidence: cluster.confidence,
+    risks: ["Avoid claiming all image models use this design."],
+    suggestedFormats: ["Instagram carousel"],
+  };
+  const brief = insightCardToCarouselBrief(card);
+  assert.equal(brief.slides[0].image.kind, "source_image");
+  assert.equal(brief.slides[0].image.sourceImageUrl, story.media.imageUrl);
+  assert.deepEqual(brief.slides[0].image.sourceNames, ["the_batch"]);
+  assert.deepEqual(brief.slides[0].image.sourceTitles, [story.title]);
+  assert.deepEqual(brief.slides[0].image.sourcePageUrls, [story.url]);
+});
+
+test("The Batch carousel slides expose GLM-5.2 article facts even with a generic hook", () => {
+  const url = "https://www.deeplearning.ai/the-batch/top-agentic-performance-low-cost";
+  const card: InsightCard = {
+    id: "batch_glm_card",
+    workingTitle: "Open models change long-running agent economics",
+    claim: "The Batch story is about a named open model, not just a generic open-model trend.",
+    evidence: [{
+      source: "The Batch (DeepLearning.AI)",
+      sourceName: "the_batch",
+      sourceItemId: "glm-source",
+      title: "Top Agentic Performance, Low Cost: GLM-5.2, designed for coding and long-running agentic jobs, now the top open model",
+      url,
+      excerpt: [
+        "Title: Top Agentic Performance, Low Cost: GLM-5.2, designed for coding and long-running agentic jobs, now the top open model",
+        "Summary: Z.ai released GLM-5.2 for coding and long-running agentic jobs.",
+        "Article:",
+        "Z.ai released GLM-5.2, an open-weights model designed for coding and long-running agentic jobs.",
+        "Input/output: GLM-5.2 accepts up to 1 million input tokens and up to 128,000 output tokens at 103 tokens per second.",
+        "Architecture: GLM-5.2 is a mixture-of-experts transformer with 753 billion total parameters and 40 billion active parameters per token.",
+        "Builder features: The model supports two reasoning levels, function calling, structured output, and context caching.",
+      ].join("\n"),
+      author: "DeepLearning.AI",
+      metrics: { score: 90 },
+      timestamp: "2026-07-01T15:00:00.000Z",
+      media: {
+        hasImage: true,
+        hasVideo: false,
+        imageUrl: "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp",
+        provider: "the_batch_feature_image",
+      },
+    }],
+    whyItMatters: "Builders need the exact model and tradeoffs before turning the article into a carousel.",
+    contentAngles: ["Turn The Batch article into concise slides without losing named facts."],
+    hooks: [{
+      hook: "Open models changed the agent math this week",
+      lines: [
+        "Open models changed the agent math this week",
+        "The important part is hidden in the workflow.",
+      ],
+      style: "curiosity",
+      riskLevel: "low",
+      whyItWorks: "Keeps the hook short while the slides carry the facts.",
+      needsFactCheck: false,
+      bestPlatform: "X",
+    }],
+    scores: {
+      overall: 0.82,
+      engagementVelocity: 0.7,
+      sourceQuality: 0.9,
+      novelty: 0.7,
+      practicalUtility: 0.9,
+      controversyOrTension: 0.4,
+      crossSourceConfirmation: 0.3,
+      audienceFit: 0.9,
+      hookability: 0.85,
+    },
+    confidence: "medium-high",
+    risks: ["Do not generalize the claim beyond this article."],
+    suggestedFormats: ["Instagram carousel"],
+  };
+
+  const brief = insightCardToCarouselBrief(card);
+  const storyText = brief.slides.slice(1).flatMap((slide) => [slide.headline, ...slide.lines]).join("\n");
+  assert.match(storyText, /GLM-5\.2/);
+  assert.match(storyText, /1 million input tokens|Input And Output/);
+  assert.match(storyText, /753 billion total parameters|Architecture/);
+  assert.ok(brief.slides.slice(1).every((slide) => slide.sourceUrls?.includes(url)));
+  assert.ok(brief.slides.slice(1).every((slide) => slide.sourceItemIds?.includes("glm-source")));
+});
+
+test("The Batch carousel slides name the Three Key Loops from the article", () => {
+  const url = "https://www.deeplearning.ai/the-batch/three-key-loops-for-building-great-software";
+  const card: InsightCard = {
+    id: "batch_loops_card",
+    workingTitle: "AI-assisted coding depends on feedback loops",
+    claim: "The article's point is the named loop framework, not just that code generators need process.",
+    evidence: [{
+      source: "The Batch (DeepLearning.AI)",
+      sourceName: "the_batch",
+      sourceItemId: "loops-source",
+      title: "Three Key Loops for Building Great Software",
+      url,
+      excerpt: [
+        "Title: Three Key Loops for Building Great Software",
+        "Summary: AI-assisted agentic coding reinforces iterative software development.",
+        "Article:",
+        "Agentic coding loop",
+        "Use AI coding agents to draft, inspect, test, and revise code in tight iterations.",
+        "Customer feedback loop",
+        "Get real usage signals quickly so the team can decide what to improve next.",
+        "Prioritization loop",
+        "Turn customer evidence into a ranked backlog before asking AI to generate more code.",
+      ].join("\n"),
+      author: "DeepLearning.AI",
+      metrics: { score: 90 },
+      timestamp: "2026-07-01T15:00:00.000Z",
+    }],
+    whyItMatters: "The carousel should teach the named loop framework in concise form.",
+    contentAngles: ["Expose the article's framework instead of only the hook."],
+    hooks: [{
+      hook: "Even advanced AI code generators fail without this hidden workflow",
+      lines: [
+        "Even advanced AI code generators fail without this hidden workflow",
+        "The workflow matters more than the code generator.",
+      ],
+      style: "curiosity",
+      riskLevel: "low",
+      whyItWorks: "Creates a curiosity gap around the actual framework.",
+      needsFactCheck: false,
+      bestPlatform: "X",
+    }],
+    scores: {
+      overall: 0.78,
+      engagementVelocity: 0.7,
+      sourceQuality: 0.9,
+      novelty: 0.6,
+      practicalUtility: 0.9,
+      controversyOrTension: 0.3,
+      crossSourceConfirmation: 0.2,
+      audienceFit: 0.9,
+      hookability: 0.8,
+    },
+    confidence: "medium-high",
+    risks: ["Do not turn the framework into unrelated software advice."],
+    suggestedFormats: ["Instagram carousel"],
+  };
+
+  const brief = insightCardToCarouselBrief(card);
+  const storyText = brief.slides.slice(1).flatMap((slide) => [slide.headline, ...slide.lines]).join("\n");
+  assert.match(storyText, /Three Key Loops for Building Great Software/);
+  assert.match(storyText, /Agentic Coding Loop/);
+  assert.match(storyText, /Customer Feedback Loop/);
+  assert.match(storyText, /Prioritization Loop/);
+  assert.ok(brief.slides.slice(1).every((slide) => slide.sourceUrls?.includes(url)));
+});
+
+test("The Batch hook judge keeps strong stories and drops weak ones", async () => {
+  const glm = item({
+    source: "the_batch",
+    externalId: "glm_batch",
+    title: "Top Agentic Performance, Low Cost: GLM-5.2, designed for coding and long-running agentic jobs, now the top open model",
+    body: "Z.ai released an open-weights model that rivals proprietary leaders for autonomous agentic tasks. Tags: Machine Learning Research, Large Language Models (LLMs), AI Agents",
+    metrics: { score: 90, upvotes: 90 },
+  });
+  const loops = item({
+    source: "the_batch",
+    externalId: "loops_batch",
+    title: "Three Key Loops for Building Great Software",
+    body: "AI-assisted agentic coding reinforces iterative software development. These three loops can guide development and help you decide what to build. Tags: Letters, Technical Insights",
+    metrics: { score: 90, upvotes: 90 },
+  });
+  const weak = item({
+    source: "the_batch",
+    externalId: "weak_batch",
+    title: "AI newsletter shares a short community update",
+    body: "A broad recap with community notes, event reminders, and editorial housekeeping.",
+    metrics: { score: 50, upvotes: 50 },
+  });
+  const judged = await withMockGeminiHookJudge([
+    {
+      index: 0,
+      score: 0.78,
+      worthCarousel: true,
+      reason: "LLM judge: open-weights agentic model with cost/performance tension.",
+      bestAngle: "Top open model claim with low-cost agentic tasks.",
+    },
+    {
+      index: 1,
+      score: 0.68,
+      worthCarousel: true,
+      reason: "LLM judge: practical software-building loop framework.",
+      bestAngle: "Three repeatable loops for AI-assisted development.",
+    },
+    {
+      index: 2,
+      score: 0.2,
+      worthCarousel: false,
+      reason: "LLM judge: community housekeeping lacks a strong carousel hook.",
+    },
+  ], () => judgeHookWorthiness([glm, loops, weak]));
+  assert.deepEqual(judged.kept.map((entry) => entry.externalId), ["glm_batch", "loops_batch"]);
+  assert.deepEqual(judged.dropped.map((entry) => entry.item.externalId), ["weak_batch"]);
+  assert.equal((judged.kept[0].raw as { hookJudgment?: { judgedBy?: string } }).hookJudgment?.judgedBy, "gemini");
+  assert.ok(((judged.kept[0].raw as { hookJudgment?: { score?: number } }).hookJudgment?.score ?? 0) >= 0.55);
+  assert.ok(((judged.kept[1].raw as { hookJudgment?: { score?: number } }).hookJudgment?.score ?? 0) >= 0.55);
+  assert.equal(judged.dropped[0].judgment.worthCarousel, false);
+});
+
+test("The Batch hook judge requires LLM credentials", async () => {
+  const originalGeminiKey = process.env.GEMINI_API_KEY;
+  const originalGoogleKey = process.env.GOOGLE_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GOOGLE_API_KEY;
+  try {
+    await assert.rejects(
+      () => judgeHookWorthiness([item({
+        source: "the_batch",
+        externalId: "needs_llm",
+        title: "Top open model for agent workflows",
+        body: "A Batch story that must be judged by an LLM.",
+      })]),
+      /LLM hook judge requires GEMINI_API_KEY or GOOGLE_API_KEY/,
+    );
+  } finally {
+    if (originalGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalGeminiKey;
+    if (originalGoogleKey === undefined) delete process.env.GOOGLE_API_KEY;
+    else process.env.GOOGLE_API_KEY = originalGoogleKey;
+  }
+});
+
+test("offline CLI filters weak Batch stories and preserves story images in carousel briefs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "batch-research-ideas-"));
+  const inputPath = join(dir, "batch-source-items.json");
+  const outPath = join(dir, "insight-cards.json");
+  const reportPath = join(dir, "report.md");
+  const carouselPath = join(dir, "carousel-briefs.json");
+  const runsDir = join(dir, "runs");
+  const strong = item({
+    source: "the_batch",
+    externalId: "batch_strong_cli",
+    title: "Gemini Flash raises token prices 30% but improves one agent benchmark",
+    body: "Builders using model APIs now face a pricing and workflow tradeoff for AI agents.",
+    url: "https://www.deeplearning.ai/the-batch/gemini-flash-price-benchmark",
+    metrics: { score: 90, upvotes: 90 },
+    media: {
+      hasVideo: false,
+      hasImage: true,
+      imageUrl: "https://charonhub.deeplearning.ai/content/images/2026/05/GEMINI3.5FLASH-1.webp",
+      provider: "the_batch_feature_image",
+    },
+  });
+  const weak = item({
+    source: "the_batch",
+    externalId: "batch_weak_cli",
+    title: "AI newsletter shares a short community update",
+    body: "A broad recap with community notes, event reminders, and editorial housekeeping.",
+    url: "https://www.deeplearning.ai/the-batch/community-update",
+    metrics: { score: 50, upvotes: 50 },
+    media: {
+      hasVideo: false,
+      hasImage: true,
+      imageUrl: "https://charonhub.deeplearning.ai/content/images/2026/05/COMMUNITY.webp",
+      provider: "the_batch_feature_image",
+    },
+  });
+  await writeFile(inputPath, JSON.stringify({ items: [strong, weak] }), "utf8");
+
+  assert.equal(await withMockGeminiHookJudge([
+    {
+      index: 0,
+      score: 0.82,
+      worthCarousel: true,
+      reason: "LLM judge: concrete pricing and benchmark tension for builders.",
+      bestAngle: "Pricing jump versus benchmark gain.",
+    },
+    {
+      index: 1,
+      score: 0.18,
+      worthCarousel: false,
+      reason: "LLM judge: community update is too thin for a carousel.",
+    },
+  ], () => researchCliMain([
+    "run",
+    "--sources",
+    "the_batch",
+    "--input",
+    inputPath,
+    "--out",
+    outPath,
+    "--report",
+    reportPath,
+    "--carousel-out",
+    carouselPath,
+    "--runs-dir",
+    runsDir,
+    "--no-memory",
+    "--cards",
+    "1",
+  ])), 0);
+
+  const output = JSON.parse(await readFile(outPath, "utf8")) as { generatedAt: string; sourceCount?: number; cards?: Array<{ evidence?: Array<{ sourceItemId?: string }> }> };
+  assert.equal(output.sourceCount, 1);
+  assert.equal(output.cards?.[0].evidence?.[0].sourceItemId, strong.id);
+  const carousel = JSON.parse(await readFile(carouselPath, "utf8")) as {
+    carousels?: Array<{ slides?: Array<{ image?: { sourceImageUrl?: string; sourceImageUrls?: string[]; sourceItemIds?: string[] } }> }>;
+  };
+  assert.equal(carousel.carousels?.[0].slides?.[0].image?.sourceImageUrl, strong.media.imageUrl);
+  assert.deepEqual(carousel.carousels?.[0].slides?.[0].image?.sourceItemIds, [strong.id]);
+
+  const runDir = join(runsDir, output.generatedAt.replace(/[:.]/g, "-"));
+  const archivedSources = JSON.parse(await readFile(join(runDir, "source_items.json"), "utf8")) as { count?: number };
+  const eligibleSources = JSON.parse(await readFile(join(runDir, "eligible_source_items.json"), "utf8")) as { count?: number; items?: Array<{ id?: string }> };
+  const skipped = JSON.parse(await readFile(join(runDir, "skipped_items.json"), "utf8")) as { count?: number; items?: Array<{ reason?: string; item?: { id?: string } }> };
+  assert.equal(archivedSources.count, 2);
+  assert.equal(eligibleSources.count, 1);
+  assert.equal(eligibleSources.items?.[0].id, strong.id);
+  assert.equal(skipped.count, 1);
+  assert.equal(skipped.items?.[0].reason, "hook_judge_rejected");
+  assert.equal(skipped.items?.[0].item?.id, weak.id);
+});
+
+test("Batch-only pipeline keeps approved stories as separate carousel briefs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "batch-separate-stories-"));
+  const inputPath = join(dir, "source-items.json");
+  const outPath = join(dir, "insight-cards.json");
+  const carouselPath = join(dir, "carousel-briefs.json");
+  const glm = item({
+    source: "the_batch",
+    externalId: "glm_story",
+    title: "Top Agentic Performance, Low Cost: GLM-5.2 for long-running agentic jobs",
+    body: "GLM-5.2 accepts 1 million input tokens and uses 753 billion total parameters for agentic coding.",
+    url: "https://www.deeplearning.ai/the-batch/top-agentic-performance-low-cost",
+    metrics: { score: 95, upvotes: 95 },
+  });
+  const loops = item({
+    source: "the_batch",
+    externalId: "loops_story",
+    title: "Three Key Loops for Building Great Software",
+    body: "Agentic coding loop. Customer feedback loop. Prioritization loop.",
+    url: "https://www.deeplearning.ai/the-batch/three-key-loops-for-building-great-software",
+    metrics: { score: 90, upvotes: 90 },
+  });
+  await writeFile(inputPath, JSON.stringify({ items: [glm, loops] }), "utf8");
+
+  assert.equal(await withMockGeminiHookJudge([
+    {
+      index: 0,
+      score: 0.84,
+      worthCarousel: true,
+      reason: "LLM judge: named open model with concrete agentic coding facts.",
+    },
+    {
+      index: 1,
+      score: 0.8,
+      worthCarousel: true,
+      reason: "LLM judge: named software loop framework.",
+    },
+  ], () => researchCliMain([
+    "run",
+    "--input",
+    inputPath,
+    "--out",
+    outPath,
+    "--carousel-out",
+    carouselPath,
+    "--no-memory",
+    "--cards",
+    "2",
+  ])), 0);
+
+  const output = JSON.parse(await readFile(outPath, "utf8")) as {
+    cardCount?: number;
+    cards?: Array<{ evidence?: Array<{ sourceItemId?: string }>; workingTitle?: string }>;
+  };
+  assert.equal(output.cardCount, 2);
+  assert.deepEqual(output.cards?.flatMap((card) => card.evidence?.map((entry) => entry.sourceItemId) ?? []).sort(), [glm.id, loops.id].sort());
+
+  const carousel = JSON.parse(await readFile(carouselPath, "utf8")) as CarouselBriefOutput;
+  assert.equal(carousel.carouselCount, 2);
+  const storyText = carousel.carousels.flatMap((brief) => brief.slides.flatMap((slide) => [slide.headline, ...slide.lines])).join("\n");
+  assert.match(storyText, /GLM-5\.2/);
+  assert.match(storyText, /Three Key Loops for Building Great Software/);
+});
+
+test("research CLI accepts The Batch source aliases and live flags", () => {
+  const parsed = parseArgs([
+    "run",
+    "--sources",
+    "batch,thebatch,the_batch",
+    "--the-batch-live",
+    "--the-batch-issue-url",
+    "https://www.deeplearning.ai/the-batch/tag/jun-26-2026",
+    "--the-batch-queue",
+    "out/research_idea_generator/the_batch_unread_sources.json",
+  ]);
+  assert.equal(parsed.command, "run");
+  assert.deepEqual(parsed.options.sources, ["the_batch", "the_batch", "the_batch"]);
+  assert.equal(parsed.options.theBatchLive, true);
+  assert.equal(parsed.options.theBatchIssueUrl, "https://www.deeplearning.ai/the-batch/tag/jun-26-2026");
+  assert.equal(parsed.options.theBatchQueue, "out/research_idea_generator/the_batch_unread_sources.json");
+});
+
+test("carousel brief archive scanner queues unpublished run briefs idempotently", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "carousel-brief-queue-"));
+  const runsDir = join(dir, "runs");
+  const defaultRun = join(runsDir, "2026-07-01T00-00-00-000Z");
+  const batchRun = join(runsDir, "the_batch", "2026-07-02T00-00-00-000Z");
+  const queuePath = join(dir, "queue.json");
+  await mkdir(defaultRun, { recursive: true });
+  await mkdir(batchRun, { recursive: true });
+
+  const routerBrief = {
+    id: "brief-router",
+    sourceInsightCardId: "card-router",
+    workingTitle: "Model routing becomes AI cost control",
+    hook: "Stop choosing one model for every coding workflow",
+    hookStyle: "contrarian",
+    hookRiskLevel: "low",
+    hookNeedsFactCheck: false,
+    hookBestPlatform: "X",
+    confidence: "medium",
+    score: 0.61,
+    suggestedFormat: "instagram_carousel",
+    slideCount: 2,
+    slides: [
+      {
+        slideNumber: 1,
+        type: "cover",
+        headline: "Stop choosing one model for every coding workflow",
+        lines: [],
+        altText: "Cover",
+        image: {
+          kind: "source_image",
+          role: "cover",
+          altText: "Cover image",
+          rationale: "Use source image.",
+          sourceImageUrl: "https://example.com/router.png",
+          sourceImageUrls: ["https://example.com/router.png"],
+          sourcePageUrls: ["https://example.com/router"],
+          sourceItemIds: ["router"],
+          sourceNames: ["github"],
+          sourceTitles: ["builder/router"],
+        },
+      },
+    ],
+    instagramDescription: "A routing carousel.",
+    evidenceSourceItemIds: ["router"],
+    evidenceUrls: ["https://example.com/router"],
+  };
+  const batchBrief = {
+    ...routerBrief,
+    id: "brief-batch",
+    sourceInsightCardId: "card-batch",
+    workingTitle: "Open models change agent costs",
+    hook: "Stop paying API premiums for long-running agents",
+    score: 0.82,
+    evidenceSourceItemIds: ["batch"],
+    evidenceUrls: ["https://www.deeplearning.ai/the-batch/top-agentic-performance-low-cost"],
+    slides: [{
+      ...routerBrief.slides[0],
+      image: {
+        ...routerBrief.slides[0].image,
+        sourceImageUrl: "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp",
+        sourceImageUrls: ["https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp"],
+        sourcePageUrls: ["https://www.deeplearning.ai/the-batch/top-agentic-performance-low-cost"],
+        sourceItemIds: ["batch"],
+        sourceNames: ["the_batch"],
+        sourceTitles: ["Top Agentic Performance, Low Cost"],
+      },
+    }],
+  };
+  const defaultOutput: CarouselBriefOutput = {
+    generatedAt: "2026-07-01T00:00:00.000Z",
+    audience: "ai_builders",
+    sourceInsightGeneratedAt: "2026-07-01T00:00:00.000Z",
+    carouselCount: 1,
+    carousels: [routerBrief],
+  };
+  const batchOutput: CarouselBriefOutput = {
+    generatedAt: "2026-07-02T00:00:00.000Z",
+    audience: "ai_builders",
+    sourceInsightGeneratedAt: "2026-07-02T00:00:00.000Z",
+    carouselCount: 2,
+    carousels: [batchBrief, routerBrief],
+  };
+  await writeFile(join(defaultRun, "carousel_briefs.json"), JSON.stringify(defaultOutput), "utf8");
+  await writeFile(join(batchRun, "carousel_briefs.json"), JSON.stringify(batchOutput), "utf8");
+
+  const firstScan = await scanCarouselBriefRunArchives({
+    runsDir,
+    queuePath,
+    now: new Date("2026-07-03T00:00:00.000Z"),
+  });
+  assert.equal(firstScan.scannedFiles.length, 2);
+  assert.equal(firstScan.briefCount, 3);
+  assert.equal(firstScan.added, 2);
+  assert.equal(firstScan.queue.items.length, 2);
+  assert.equal(unpublishedCarouselBriefs(firstScan.queue).length, 2);
+  assert.ok(firstScan.queue.items.every((entry) => entry.channelId === "aibrief_jp"));
+  assert.ok(firstScan.queue.items.every((entry) => entry.status === "scheduled"));
+  assert.deepEqual(
+    firstScan.queue.items.map((entry) => entry.scheduledAt),
+    ["2026-07-03T09:00:00+09:00", "2026-07-03T12:00:00+09:00"],
+  );
+  assert.ok(firstScan.queue.items.some((entry) => entry.workingTitle === "Open models change agent costs"));
+  assert.equal(
+    firstScan.queue.items.find((entry) => entry.briefId === "brief-batch")?.sourceImageUrls[0],
+    "https://charonhub.deeplearning.ai/content/images/2026/06/GLM5.2-1.webp",
+  );
+
+  const routerQueueId = carouselBriefQueueId(routerBrief);
+  const publishedQueue = {
+    ...firstScan.queue,
+    items: firstScan.queue.items.map((entry) => entry.id === routerQueueId
+      ? { ...entry, status: "published", publishedAt: "2026-07-04T00:00:00.000Z" }
+      : entry),
+  };
+  await writeFile(queuePath, JSON.stringify(publishedQueue), "utf8");
+
+  const secondScan = await scanCarouselBriefRunArchives({
+    runsDir,
+    queuePath,
+    now: new Date("2026-07-05T00:00:00.000Z"),
+  });
+  assert.equal(secondScan.added, 0);
+  assert.equal(secondScan.queue.items.length, 2);
+  assert.equal(secondScan.queue.items.find((entry) => entry.id === routerQueueId)?.status, "published");
+  assert.equal(unpublishedCarouselBriefs(secondScan.queue).length, 1);
+
+  const parsed = parseArgs(["scan-briefs", "--runs-dir", runsDir, "--queue", queuePath]);
+  assert.equal(parsed.command, "scan-briefs");
+  assert.equal(parsed.options.runsDir, runsDir);
+  assert.equal(parsed.options.briefQueue, queuePath);
+  assert.equal(await researchCliMain(["scan-briefs", "--runs-dir", runsDir, "--queue", queuePath]), 0);
 });
 
 test("taxonomy query generation expands AI-builder seeds with recency", () => {

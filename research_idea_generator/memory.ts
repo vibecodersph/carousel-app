@@ -44,6 +44,7 @@ const SOURCE_COOLDOWN_DAYS: Record<string, number> = {
   reddit: 14,
   hacker_news: 45,
   github: 90,
+  the_batch: 365,
 };
 
 const GITHUB_REUSE_GROWTH_MULTIPLIER = 1.35;

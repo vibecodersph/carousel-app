@@ -2,6 +2,7 @@ import { compactText, normalizeWhitespace, sha256 } from "../sourcing/utils.ts";
 import type {
   EvidenceItem,
   EvidenceMedia,
+  EvidenceSourceLink,
   HookStyle,
   HookVariant,
   InsightCard,
@@ -14,10 +15,42 @@ function sourceLabel(source: string): string {
   if (source === "hacker_news") return "Hacker News";
   if (source === "github") return "GitHub";
   if (source === "reddit") return "Reddit";
+  if (source === "the_batch") return "The Batch (DeepLearning.AI)";
   return source;
 }
 
+function compactEvidenceText(value: string, limit: number, options: { preserveLines?: boolean } = {}): string {
+  const text = options.preserveLines
+    ? value
+      .split(/\n+/)
+      .map((line) => normalizeWhitespace(line))
+      .filter(Boolean)
+      .join("\n")
+    : normalizeWhitespace(value);
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
+function rawRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function rawFullStoryRecord(item: ScoredResearchCluster["items"][number]): Record<string, unknown> | undefined {
+  return rawRecord(rawRecord(item.raw)?.fullStory);
+}
+
 function evidenceExcerpt(item: ScoredResearchCluster["items"][number]): string {
+  if (item.source === "the_batch") {
+    const fullStory = rawFullStoryRecord(item);
+    const articleText = typeof fullStory?.articleText === "string" ? fullStory.articleText : "";
+    const summary = typeof fullStory?.summary === "string" ? fullStory.summary : "";
+    const body = [
+      item.title ? `Title: ${item.title}` : "",
+      summary ? `Summary: ${summary}` : "",
+      articleText || item.body || item.topReply?.body || item.title,
+    ].filter(Boolean).join("\n");
+    return compactEvidenceText(body, 4_000, { preserveLines: true });
+  }
   return compactText(normalizeWhitespace(item.body || item.topReply?.body || item.title), 240);
 }
 
@@ -33,6 +66,20 @@ function evidenceMedia(item: ScoredResearchCluster["items"][number]): EvidenceMe
     width: media.width,
     height: media.height,
   };
+}
+
+function evidenceSourceLinks(item: ScoredResearchCluster["items"][number]): EvidenceSourceLink[] | undefined {
+  const fullStory = rawFullStoryRecord(item);
+  const rawLinks = fullStory?.sourceLinks;
+  if (!Array.isArray(rawLinks)) return undefined;
+  const links = rawLinks
+    .map((entry) => rawRecord(entry))
+    .map((entry) => ({
+      text: normalizeWhitespace(entry?.text),
+      url: normalizeWhitespace(entry?.url),
+    }))
+    .filter((entry) => entry.text && entry.url);
+  return links.length ? links.slice(0, 12) : undefined;
 }
 
 function compareEvidenceItems(
@@ -86,6 +133,7 @@ export function evidenceFromCluster(cluster: ScoredResearchCluster): EvidenceIte
       metrics: item.metrics,
       timestamp: item.createdAt,
       media: evidenceMedia(item),
+      sourceLinks: evidenceSourceLinks(item),
     }));
 }
 
@@ -275,6 +323,7 @@ export async function enhanceInsightCardWithGemini(
     "Rewrite this research insight card and generate hooks for AI builders.",
     "Use the source evidence and metrics below. Do not use generic reusable hook templates.",
     "Do not add claims that are not supported by evidence.",
+    "Preserve exact named evidence. If the source names a model, company, framework, benchmark, metric, or named workflow, use that exact name in the card or hook lines instead of broad labels.",
     "Return strict JSON with workingTitle, claim, whyItMatters, contentAngles, hooks.",
     `Generate exactly one hook for each style in this order: ${hookStyles.join(", ")}.`,
     "Hook preferences: list, contrarian, curiosity.",
@@ -284,6 +333,7 @@ export async function enhanceInsightCardWithGemini(
     "For list hooks, pick a count from the evidence/context, usually 3-5. Do not always use 5. The headline number must match the number of list items.",
     "For contrarian hooks, challenge the obvious question for this topic, not a generic question.",
     "For curiosity hooks, point to the hidden workflow or behavior pattern behind the topic.",
+    "Follow-up hook lines should expose the article's concrete facts, not just restate the hook.",
     "Avoid unsupported superlatives like cheapest, fastest, best, everyone, or most-used unless explicit evidence supports them.",
     JSON.stringify({
       workingTitle: card.workingTitle,

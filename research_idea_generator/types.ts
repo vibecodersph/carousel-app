@@ -1,6 +1,6 @@
 import type { SourceItem } from "../sourcing/types.ts";
 
-export type ResearchSourceName = "reddit" | "github" | "hacker_news";
+export type ResearchSourceName = "reddit" | "github" | "hacker_news" | "the_batch";
 export type ResearchProvider = "local" | "gemini";
 export type HookStyle = "curiosity" | "contrarian" | "list";
 export type HookRiskLevel = "low" | "medium" | "high";
@@ -17,14 +17,26 @@ export interface ResearchGeneratorOptions {
   report?: string;
   carouselOut?: string;
   runsDir?: string;
+  briefQueue?: string;
   noArchive?: boolean;
   memory?: string;
   noMemory?: boolean;
   redditQueue?: string;
   redditLive?: boolean;
+  theBatchQueue?: string;
+  theBatchLive?: boolean;
+  theBatchIssueUrl?: string;
   taxonomyPath?: string;
   now?: Date;
   maxItemsPerSource?: number;
+}
+
+export interface HookJudgment {
+  score: number;
+  worthCarousel: boolean;
+  reason: string;
+  bestAngle?: string;
+  judgedBy: "gemini";
 }
 
 export interface TaxonomyTopic {
@@ -85,6 +97,7 @@ export interface EvidenceItem {
   metrics: Record<string, number | undefined>;
   timestamp: string;
   media?: EvidenceMedia;
+  sourceLinks?: EvidenceSourceLink[];
 }
 
 export interface EvidenceMedia {
@@ -95,6 +108,11 @@ export interface EvidenceMedia {
   provider?: string;
   width?: number;
   height?: number;
+}
+
+export interface EvidenceSourceLink {
+  text: string;
+  url: string;
 }
 
 export interface HookVariant {
@@ -156,6 +174,7 @@ export interface CarouselBriefSlide {
   altText: string;
   image: CarouselSlideImage;
   sourceUrls?: string[];
+  sourceItemIds?: string[];
 }
 
 export interface CarouselBrief {

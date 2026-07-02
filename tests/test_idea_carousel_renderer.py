@@ -49,6 +49,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                         "Run agents against private docs without cloud-only dependencies.",
                         "Keep retrieval close to the data.",
                     ],
+                    "sourceUrls": ["https://github.com/Mintplex-Labs/anything-llm"],
                     "altText": "Local-first runtime alt text",
                     "image": {
                         "kind": "generated_prompt",
@@ -85,7 +86,8 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["cover_page"]["subheadline"], "")
         self.assertEqual(carousel["cover_page"]["kinetic_subline"], "")
         self.assertTrue(carousel["cover_page"]["hook_only_cover"])
-        self.assertEqual(carousel["cover_page"]["source_image_url"], "https://opengraph.githubassets.com/1/example/cover")
+        self.assertEqual(carousel["cover_page"]["source_image_url"], "")
+        self.assertEqual(carousel["cover_page"]["source_image_urls"], ["https://opengraph.githubassets.com/1/example/cover"])
         self.assertEqual(carousel["cover_page"]["image_prompt"], "Cover image prompt")
         self.assertEqual(carousel["cover_page"]["alt_text"], "Cover alt text")
         self.assertTrue(carousel["cover_page"]["kinetic_fly_lines"])
@@ -95,11 +97,216 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertIn("private docs", carousel["item_1"]["body"])
         self.assertEqual(carousel["item_1"]["best_for"], "")
         self.assertEqual(carousel["item_1"]["takeaway"], "")
-        self.assertEqual(carousel["item_1"]["sources"], [])
-        self.assertEqual(carousel["item_1"]["source_image_url"], "")
+        self.assertEqual(carousel["item_1"]["sources"], [{
+            "title": "Mintplex-Labs/anything-llm",
+            "url": "https://github.com/Mintplex-Labs/anything-llm",
+        }])
+        self.assertEqual(carousel["item_1"]["source_image_url"], "https://opengraph.githubassets.com/1/example/item")
         self.assertEqual(carousel["item_1"]["source_image_urls"], ["https://opengraph.githubassets.com/1/example/item"])
         self.assertEqual(carousel["item_1"]["image_prompt"], "Supporting image prompt")
         self.assertNotIn("cta", carousel)
+
+    def test_single_source_image_is_used_once_starting_on_slide_two(self) -> None:
+        source_url = "https://example.com/source.webp"
+        brief = {
+            "id": "brief-single-source",
+            "workingTitle": "Open model economics",
+            "hook": "The hidden cost pattern driving open models",
+            "slides": [
+                {
+                    "slideNumber": 1,
+                    "type": "cover",
+                    "headline": "The hidden cost pattern driving open models",
+                    "image": {
+                        "kind": "source_image",
+                        "sourceImageUrl": source_url,
+                        "sourceImageUrls": [source_url],
+                    },
+                },
+                {
+                    "slideNumber": 2,
+                    "type": "hook_detail",
+                    "headline": "Long-running loops consume tokens quickly.",
+                    "image": {
+                        "kind": "generated_prompt",
+                        "sourceImageUrls": [source_url],
+                        "promptBase": "Token loop visual",
+                    },
+                },
+                {
+                    "slideNumber": 3,
+                    "type": "hook_detail",
+                    "headline": "Open models change the unit economics.",
+                    "image": {
+                        "kind": "generated_prompt",
+                        "sourceImageUrls": [source_url],
+                        "promptBase": "Economics visual",
+                    },
+                },
+            ],
+        }
+
+        carousel = build_idea_carousel.normalize_carousel_for_render(brief)
+
+        self.assertEqual(carousel["cover_page"]["source_image_url"], "")
+        self.assertEqual(carousel["cover_page"]["source_image_urls"], [source_url])
+        self.assertEqual(carousel["item_1"]["source_image_url"], source_url)
+        self.assertEqual(carousel["item_1"]["source_image_urls"], [source_url])
+        self.assertEqual(carousel["item_2"]["source_image_url"], "")
+        self.assertEqual(carousel["item_2"]["source_image_urls"], [source_url])
+
+    def test_localize_research_brief_copy_preserves_assets_and_qas_japanese(self) -> None:
+        brief = {
+            "id": "brief-ja",
+            "workingTitle": "Agentic Loops",
+            "hook": "Why builders are shifting to loop engineering",
+            "slides": [
+                {
+                    "slideNumber": 1,
+                    "type": "cover",
+                    "headline": "Why builders are shifting to loop engineering",
+                    "lines": [],
+                    "image": {
+                        "kind": "source_image",
+                        "sourceImageUrl": "https://example.com/source.jpg",
+                    },
+                },
+                {
+                    "slideNumber": 2,
+                    "type": "hook_detail",
+                    "headline": "Agentic coding starts with a product spec.",
+                    "lines": ["The loop keeps improving the code."],
+                    "image": {
+                        "kind": "generated_prompt",
+                        "promptBase": "English image prompt should stay untouched",
+                    },
+                },
+            ],
+            "instagramDescription": "A short caption with Source: https://example.com",
+        }
+        gemini_payload = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "workingTitle": "エージェント開発のループ",
+                                        "hook": "AI開発はQAよりループ設計に寄っています",
+                                        "instagramDescription": "AI開発の現場では、QAだけでなくループ設計が重要になっています。\n\n出典: https://example.com",
+                                        "slides": [
+                                            {
+                                                "slideNumber": 1,
+                                                "headline": "AI開発はQAよりループ設計に寄っています",
+                                                "lines": [],
+                                                "altText": "カバー",
+                                            },
+                                            {
+                                                "slideNumber": 2,
+                                                "headline": "エージェント開発は仕様から始まります",
+                                                "lines": ["コードはループの中で少しずつ良くなります。"],
+                                                "altText": "本文",
+                                            },
+                                        ],
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+        with patch.object(build_idea_carousel, "gemini_api_key", return_value="key"), patch.object(
+            build_idea_carousel, "gemini_text_model", return_value="gemini-test"
+        ), patch.object(
+            build_idea_carousel, "gemini_generate_content", return_value=gemini_payload
+        ):
+            localized, qa = build_idea_carousel.localize_research_brief_copy(
+                brief,
+                channel=build_idea_carousel.load_channel("aibrief_jp"),
+                source_payload={"generatedAt": "2026-07-02T00:00:00.000Z"},
+            )
+
+        self.assertTrue(qa["passed"])
+        self.assertEqual(localized["hook"], "AI開発はQAよりループ設計に寄っています")
+        self.assertEqual(localized["slides"][0]["image"]["sourceImageUrl"], "https://example.com/source.jpg")
+        self.assertEqual(localized["slides"][1]["image"]["promptBase"], "English image prompt should stay untouched")
+        self.assertEqual(localized["slides"][1]["lines"], ["コードはループの中で少しずつ良くなります。"])
+
+    def test_japanese_localization_qa_rejects_english_headline(self) -> None:
+        qa = build_idea_carousel.qa_localized_research_brief(
+            {
+                "workingTitle": "English Title",
+                "hook": "English hook only",
+                "slides": [
+                    {"headline": "English slide headline", "lines": []},
+                ],
+            },
+            channel_language="Japanese",
+        )
+
+        self.assertFalse(qa["passed"])
+        self.assertTrue(any("does not contain Japanese text" in error for error in qa["errors"]))
+
+    def test_japanese_localization_qa_caps_cover_hook_at_25_chars(self) -> None:
+        qa = build_idea_carousel.qa_localized_research_brief(
+            {
+                "workingTitle": "ループ設計",
+                "hook": "エージェント開発はQAからループ設計へ大きく移っています",
+                "slides": [
+                    {"headline": "ループ設計の話", "lines": []},
+                ],
+            },
+            channel_language="Japanese",
+        )
+
+        self.assertFalse(qa["passed"])
+        self.assertIn("hook is too long for the Japanese cover template", qa["errors"])
+
+    def test_japanese_kinetic_cover_chunks_particles_naturally(self) -> None:
+        lines = build_idea_carousel.kinetic_fly_lines(
+            {"headline": "AI開発はQAからループ設計へ"},
+            "Japanese",
+        )
+        tokens = [word["text"] for line in lines for word in line]
+        markup = build_idea_carousel.kinetic_hook_title_markup(
+            "AI開発はQAからループ設計へ",
+            japanese=True,
+        )
+
+        self.assertIn("AI開発は", tokens)
+        self.assertIn("QAから", tokens)
+        self.assertNotIn("QAか", tokens)
+        self.assertNotIn("らループ", tokens)
+        self.assertIn('<span class="hook-line">QAから</span>', markup)
+        self.assertIn('<span class="hook-line">ループ設計へ</span>', markup)
+
+    def test_japanese_item_title_markup_keeps_terms_and_particles_together(self) -> None:
+        markup = build_idea_carousel.item_title_markup("1. エージェントの自律ループ")
+        chunks = build_idea_carousel.japanese_phrase_chunks(
+            "1. エージェントの自律ループ",
+            max_chars=10,
+        )
+
+        self.assertEqual(chunks, ["1. エージェントの", "自律ループ"])
+        self.assertIn('<span class="jp-phrase">1. エージェントの</span>', markup)
+        self.assertIn('<span class="jp-phrase">自律ループ</span>', markup)
+        self.assertNotIn("エージェン", chunks)
+        self.assertNotIn("の自律", chunks)
+
+    def test_japanese_phrase_chunks_keep_toshite_together(self) -> None:
+        chunks = build_idea_carousel.japanese_phrase_chunks(
+            "分子を言語として読み解くAI",
+            max_chars=9,
+        )
+
+        self.assertIn("分子を言語として", chunks)
+        self.assertIn("読み解くAI", chunks)
+        self.assertNotIn("分子を言語と", chunks)
+        self.assertNotIn("して読み解くAI", chunks)
 
     def test_render_carousel_accepts_research_carousel_brief_standard(self) -> None:
         brief = {
@@ -122,6 +329,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                     "type": "hook_detail",
                     "headline": "Smart routing sends simple tasks to cheaper models.",
                     "lines": [],
+                    "sourceUrls": ["https://github.com/getagentseal/codeburn"],
                     "altText": "Detail alt text",
                 },
             ],
@@ -155,8 +363,9 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(manifest["source_brief_id"], "brief-router")
         self.assertEqual(manifest["source_brief_hook_style"], "contrarian")
         self.assertEqual(manifest["slide_count"], 2)
+        self.assertEqual(manifest["instagram_caption"], brief["instagramDescription"])
         self.assertTrue(manifest["suppress_cta"])
-        self.assertEqual(manifest["slides"][1]["source_url"], "")
+        self.assertEqual(manifest["slides"][1]["source_url"], "https://github.com/getagentseal/codeburn")
         self.assertFalse(any(slide["type"] == "cta" for slide in manifest["slides"]))
         page = render_item.call_args.args[0]
         self.assertEqual(page["headline"], "Smart routing sends simple tasks to cheaper models.")
@@ -195,10 +404,11 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         )
 
         html_text = build_idea_carousel.kinetic_fly_cover_html(carousel, count=2, channel=channel)
+        body_html = html_text.split("<body>", 1)[1]
 
         self.assertIn("Only this hook belongs on the cover", html_text)
-        self.assertIn("source-art", html_text)
-        self.assertIn("https://opengraph.githubassets.com/1/example/repo", html_text)
+        self.assertNotIn('<div class="source-art"', body_html)
+        self.assertNotIn("https://opengraph.githubassets.com/1/example/repo", body_html)
         self.assertNotIn("A deeper working title", html_text)
         self.assertNotIn("This is slide two", html_text)
         self.assertNotIn('<header class="brand-bar">', html_text)
@@ -641,6 +851,64 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(manifest["cover_template"], "metric-snap")
         self.assertEqual(manifest["slides"][0]["cover_template"], "metric-snap")
         self.assertEqual(render_fly.call_args.kwargs["cover_template"], "metric-snap")
+
+    def test_render_carousel_uses_assigned_source_image_before_generating(self) -> None:
+        carousel = {
+            "id": "source-then-generated",
+            "page_order": ["cover_page", "item_1", "item_2"],
+            "suppress_cta": True,
+            "cover_page": {
+                "headline": "The hidden cost pattern driving open models",
+                "hook_only_cover": True,
+            },
+            "item_1": {
+                "headline": "Long-running loops consume tokens quickly.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+                "source_image_url": "https://example.com/source.webp",
+            },
+            "item_2": {
+                "headline": "Open models change the unit economics.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+                "image_prompt": "Generated economics visual",
+            },
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_kinetic_fly_cover"
+        ), patch.object(
+            build_idea_carousel, "render_item_slide"
+        ) as render_item, patch.object(
+            build_idea_carousel, "maybe_cache_source_image"
+        ) as cache_source, patch.object(
+            build_idea_carousel, "maybe_generate_image"
+        ) as maybe_generate:
+            source_path = Path(tmp) / "source.webp"
+            generated = Path(tmp) / "generated.png"
+            cache_source.return_value = source_path
+            maybe_generate.return_value = generated
+            manifest_path = build_idea_carousel.render_carousel(
+                carousel,
+                out_dir=Path(tmp),
+                generate_images=True,
+                channel_id="vibecodersph",
+                cover_style="kinetic-fly",
+                cover_template="auto",
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(render_item.call_args_list[0].kwargs["image_path"], source_path)
+        self.assertEqual(render_item.call_args_list[1].kwargs["image_path"], generated)
+        cache_source.assert_called_once_with(Path(tmp), "https://example.com/source.webp")
+        maybe_generate.assert_called_once()
+        self.assertEqual(manifest["slides"][1]["source_image_url"], "https://example.com/source.webp")
+        self.assertEqual(manifest["slides"][1]["image_path"], str(source_path))
+        self.assertEqual(manifest["slides"][2]["image_path"], str(generated))
 
 
 if __name__ == "__main__":

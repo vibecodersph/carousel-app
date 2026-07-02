@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.carousel.the-batch-research-source</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/aiagent/GitHub/carousel-app/scripts/run_the_batch_research_source.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/aiagent/GitHub/carousel-app</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>604800</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/the_batch_research_source.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/the_batch_research_source.launchd.err.log</string>
+</dict>
+</plist>

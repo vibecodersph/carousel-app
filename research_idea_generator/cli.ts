@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { loadDotEnv } from "../sourcing/env.ts";
 import { readJsonFile, writeJsonFile } from "../sourcing/utils.ts";
+import { scanCarouselBriefRunArchives, unpublishedCarouselBriefs } from "./briefQueue.ts";
 import { generateCarouselBriefs } from "./carouselBriefs.ts";
 import { enhanceInsightCardWithGemini } from "./generator.ts";
 import { generateHookVariants } from "./hooks.ts";
@@ -15,6 +16,7 @@ function parseSources(value: string): ResearchSourceName[] {
   return value.split(",").map((source) => {
     const normalized = source.trim().toLowerCase();
     if (normalized === "hn" || normalized === "hackernews") return "hacker_news";
+    if (normalized === "batch" || normalized === "thebatch" || normalized === "the_batch") return "the_batch";
     if (normalized === "reddit" || normalized === "github" || normalized === "hacker_news") return normalized;
     throw new Error(`Unknown research source: ${source}`);
   });
@@ -40,11 +42,15 @@ export function parseArgs(argv: string[]): { command: string; options: ResearchG
     else if (arg === "--report") options.report = rest[++i];
     else if (arg === "--carousel-out") options.carouselOut = rest[++i];
     else if (arg === "--runs-dir") options.runsDir = rest[++i];
+    else if (arg === "--queue") options.briefQueue = rest[++i];
     else if (arg === "--no-archive") options.noArchive = true;
     else if (arg === "--memory") options.memory = rest[++i];
     else if (arg === "--no-memory") options.noMemory = true;
     else if (arg === "--reddit-queue") options.redditQueue = rest[++i];
     else if (arg === "--reddit-live") options.redditLive = true;
+    else if (arg === "--the-batch-queue") options.theBatchQueue = rest[++i];
+    else if (arg === "--the-batch-live") options.theBatchLive = true;
+    else if (arg === "--the-batch-issue-url") options.theBatchIssueUrl = rest[++i];
     else if (arg === "--taxonomy") options.taxonomyPath = rest[++i];
     else if (arg === "--max-items-per-source") options.maxItemsPerSource = Number(rest[++i]);
     else throw new Error(`Unknown argument: ${arg}`);
@@ -163,6 +169,24 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       report: result.report,
       carouselOut: result.carouselOut,
       cardCount: result.cardCount,
+    }, null, 2));
+    return 0;
+  }
+  if (command === "scan-briefs") {
+    const result = await scanCarouselBriefRunArchives({
+      runsDir: options.runsDir,
+      queuePath: options.briefQueue,
+    });
+    console.log(JSON.stringify({
+      queue: result.queuePath,
+      runsDir: result.runsDir,
+      scannedFiles: result.scannedFiles.length,
+      briefCount: result.briefCount,
+      added: result.added,
+      updated: result.updated,
+      unchanged: result.unchanged,
+      unpublishedCount: unpublishedCarouselBriefs(result.queue).length,
+      statusCounts: result.statusCounts,
     }, null, 2));
     return 0;
   }

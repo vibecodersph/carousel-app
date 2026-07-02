@@ -333,6 +333,267 @@ function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (match) => match.toUpperCase());
 }
 
+function isTheBatchEvidence(evidence: EvidenceItem): boolean {
+  return evidence.sourceName === "the_batch"
+    || evidence.source === "The Batch (DeepLearning.AI)"
+    || evidence.url.includes("deeplearning.ai/the-batch");
+}
+
+function primaryTheBatchEvidence(card: InsightCard): EvidenceItem | undefined {
+  return card.evidence.find(isTheBatchEvidence);
+}
+
+function cleanEvidenceParagraph(value: string): string {
+  const text = normalizeWhitespace(value)
+    .replace(/\s+Tags:\s*.+$/i, "")
+    .replace(/^-+\s*/, "");
+  if (/^(?:article|tags):?$/i.test(text)) return "";
+  if (/^tags:/i.test(text)) return "";
+  return text.replace(/^(?:title|summary|article):\s*/i, "").trim();
+}
+
+function evidenceParagraphs(evidence: EvidenceItem): string[] {
+  const seen = new Set<string>();
+  const paragraphs: string[] = [];
+  for (const raw of `${evidence.title}\n${evidence.excerpt}`.split(/\n+/)) {
+    const text = cleanEvidenceParagraph(raw);
+    if (!text) continue;
+    const units = text.length > 260 && !/^[A-Z][A-Za-z0-9 /+().-]{2,52}:\s+/.test(text)
+      ? splitSentences(text)
+      : [text];
+    for (const unit of units) {
+      const paragraph = cleanEvidenceParagraph(unit);
+      const key = paragraph.toLowerCase();
+      if (!paragraph || seen.has(key)) continue;
+      seen.add(key);
+      paragraphs.push(paragraph);
+    }
+  }
+  return paragraphs;
+}
+
+function sourceUrlsFor(evidence: EvidenceItem): string[] {
+  return evidence.url ? [evidence.url] : [];
+}
+
+function sourceItemIdsFor(evidence: EvidenceItem): string[] | undefined {
+  return evidence.sourceItemId ? [evidence.sourceItemId] : undefined;
+}
+
+function hasConcreteEvidenceToken(value: string): boolean {
+  return /\b[A-Z]{2,}(?:[-.][A-Z0-9]+)*\b/.test(value)
+    || /\b[A-Z]\.ai\b/.test(value)
+    || /\b[A-Za-z]+(?:[-.]\d+|\d)[A-Za-z0-9.-]*\b/.test(value)
+    || /\b\d[\d,.]*\s*(?:%|x|tokens?|parameters?|billion|million|thousand|seconds?|cents?|dollars?|API calls?)\b/i.test(value)
+    || /\b[A-Z][A-Za-z]+(?:\s+[a-z][A-Za-z-]+){0,4}\s+loop\b/.test(value);
+}
+
+function versionedSubject(value: string): string | undefined {
+  const candidates = [
+    ...value.matchAll(/\b[A-Za-z]+(?:[-.]\d+(?:\.\d+)*|\d)[A-Za-z0-9.-]*\b/g),
+    ...value.matchAll(/\b[A-Z][A-Za-z]+(?:\s+[A-Z]?[A-Za-z]*\d(?:\.\d+)*)\b/g),
+    ...value.matchAll(/\b[A-Z]\.ai\b/g),
+  ]
+    .map((match) => cleanLineEnding(match[0]))
+    .filter((candidate) => !/^(?:AI|API|LLM|GPU|CPU)$/i.test(candidate));
+  return candidates[0];
+}
+
+function articleSubject(evidence: EvidenceItem, paragraphs: string[]): string {
+  const context = `${evidence.title} ${paragraphs.slice(0, 4).join(" ")}`;
+  const versioned = versionedSubject(context);
+  if (versioned) return versioned;
+  if (/three key loops/i.test(evidence.title)) return line(evidence.title, 74);
+  return line(evidence.title, 74);
+}
+
+function firstArticleSummary(evidence: EvidenceItem, paragraphs: string[]): string {
+  const titleKey = normalizeWhitespace(evidence.title).toLowerCase();
+  return paragraphs
+    .filter((paragraph) => paragraph.toLowerCase() !== titleKey)
+    .find((paragraph) => paragraph.length >= 24 && !/^tags:/i.test(paragraph))
+    ?? "";
+}
+
+function storySlide(
+  evidence: EvidenceItem,
+  headline: string,
+  lines: string[],
+  altText: string,
+): CarouselBriefSlideDraft {
+  const cleanLines = Array.from(new Set(lines.map(storyLine).filter(hasUsefulStoryLine))).slice(0, 2);
+  return {
+    slideNumber: 0,
+    type: "hook_detail",
+    headline: line(headline, 76),
+    lines: cleanLines,
+    altText,
+    sourceUrls: sourceUrlsFor(evidence),
+    sourceItemIds: sourceItemIdsFor(evidence),
+  };
+}
+
+function storyLine(value: string): string {
+  const text = line(
+    normalizeWhitespace(value)
+      .replace(/\s+\u2014\s+[^\u2014-]{8,110}\s+\u2014\s+/g, " ")
+      .replace(/\s+\([^)]{8,120}\)/g, ""),
+    156,
+  );
+  return cleanLineEnding(text.replace(/\b(?:of|in|on|for|to|from|with|by|as|is|are|was|were|a|an|the|its|their|this|that|not)\s*$/i, ""));
+}
+
+function hasUsefulStoryLine(value: string): boolean {
+  return value.length >= 24 || /[0-9;,]|\b(?:API|MIT|MSA|MoE|DNA|RNA|VRAM)\b/.test(value);
+}
+
+function articlePointSlide(evidence: EvidenceItem, paragraphs: string[], subject: string): CarouselBriefSlideDraft {
+  const headline = subject && !/^three key loops/i.test(subject)
+    ? `${subject}: The Article's Point`
+    : subject || "The Article's Point";
+  const summary = firstArticleSummary(evidence, paragraphs);
+  const title = line(evidence.title, 104);
+  const lines = summary ? [summary] : [title];
+  return storySlide(
+    evidence,
+    headline,
+    lines.filter(Boolean),
+    line(`Article point slide for ${evidence.title}.`, 160),
+  );
+}
+
+function isMetaFactLabel(label: string): boolean {
+  return /^(?:title|summary|article|tags|source|sources)$/i.test(normalizeWhitespace(label));
+}
+
+function colonFactSlide(evidence: EvidenceItem, paragraph: string): CarouselBriefSlideDraft | undefined {
+  if (paragraph.toLowerCase() === normalizeWhitespace(evidence.title).toLowerCase()) return undefined;
+  const match = paragraph.match(/^([A-Z][A-Za-z0-9 /+().-]{2,52}):\s+(.{12,})$/);
+  if (!match || isMetaFactLabel(match[1])) return undefined;
+  const detail = match[2];
+  if (!hasConcreteEvidenceToken(paragraph) && !/\b(loop|agent|coding|cost|training|architecture|benchmark|performance)\b/i.test(paragraph)) {
+    return undefined;
+  }
+  return storySlide(
+    evidence,
+    titleCase(cleanLineEnding(match[1])),
+    splitSentences(detail).length ? splitSentences(detail) : [detail],
+    line(`Article fact slide about ${match[1]} from ${evidence.title}.`, 160),
+  );
+}
+
+function namedLoopFromParagraph(paragraph: string): string | undefined {
+  for (const match of paragraph.matchAll(/\b([A-Z][A-Za-z]+(?:\s+(?:[a-z][A-Za-z-]+|[A-Z][A-Za-z-]+)){0,4}\s+loop)\b/g)) {
+    const loopName = cleanLineEnding(match[1]);
+    if (!/^(?:this|the|a|an|each|key)\s/i.test(loopName)) return loopName;
+  }
+  return undefined;
+}
+
+function loopFactSlides(evidence: EvidenceItem, paragraphs: string[]): CarouselBriefSlideDraft[] {
+  const slides: CarouselBriefSlideDraft[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < paragraphs.length; index += 1) {
+    const paragraph = paragraphs[index];
+    const loopName = namedLoopFromParagraph(paragraph);
+    if (!loopName || seen.has(loopName.toLowerCase())) continue;
+    const rest = cleanLineEnding(paragraph.slice(paragraph.indexOf(loopName) + loopName.length).replace(/^[-:.\s]+/, ""));
+    const detail = rest.length >= 24 ? rest : paragraphs[index + 1] ?? "";
+    seen.add(loopName.toLowerCase());
+    slides.push(storySlide(
+      evidence,
+      titleCase(loopName),
+      detail ? splitSentences(detail) : [],
+      line(`Named loop slide ${loopName} from ${evidence.title}.`, 160),
+    ));
+  }
+  return slides;
+}
+
+function isHeadingParagraph(paragraph: string): boolean {
+  return paragraph.length >= 8
+    && paragraph.length <= 88
+    && !/[.!?]$/u.test(paragraph)
+    && /\b(loop|architecture|training|performance|availability|input|output|benchmark|cost|why it matters|how it works)\b/i.test(paragraph);
+}
+
+function headingFactSlides(evidence: EvidenceItem, paragraphs: string[]): CarouselBriefSlideDraft[] {
+  const slides: CarouselBriefSlideDraft[] = [];
+  for (let index = 0; index < paragraphs.length - 1; index += 1) {
+    const heading = paragraphs[index];
+    if (!isHeadingParagraph(heading)) continue;
+    const detail = paragraphs[index + 1];
+    if (!detail || isHeadingParagraph(detail)) continue;
+    slides.push(storySlide(
+      evidence,
+      titleCase(heading),
+      splitSentences(detail).length ? splitSentences(detail) : [detail],
+      line(`Article section slide ${heading} from ${evidence.title}.`, 160),
+    ));
+  }
+  return slides;
+}
+
+function factHeadline(sentence: string, subject: string): string {
+  const prefix = subject && !/^three key loops/i.test(subject) ? `${subject}: ` : "";
+  if (/\b(input|output|context|token)\b/i.test(sentence)) return `${prefix}Input And Output`;
+  if (/\b(architecture|parameter|mixture|expert|transformer)\b/i.test(sentence)) return `${prefix}Architecture`;
+  if (/\b(benchmark|score|leaderboard|performance|outperform|rival)\b/i.test(sentence)) return `${prefix}Performance`;
+  if (/\b(cost|price|pricing|cheap|low cost)\b/i.test(sentence)) return `${prefix}Cost`;
+  if (/\b(function calling|structured output|context caching|reasoning)\b/i.test(sentence)) return `${prefix}Builder Features`;
+  if (/\b(train|training|data)\b/i.test(sentence)) return `${prefix}Training`;
+  return line(sentence, 76);
+}
+
+function genericFactSlides(evidence: EvidenceItem, paragraphs: string[], subject: string): CarouselBriefSlideDraft[] {
+  const sentences = paragraphs
+    .flatMap((paragraph) => splitSentences(paragraph).length ? splitSentences(paragraph) : [paragraph])
+    .filter((sentence) => sentence.length >= 32)
+    .filter(hasConcreteEvidenceToken);
+  return sentences.map((sentence) => storySlide(
+    evidence,
+    factHeadline(sentence, subject),
+    [sentence],
+    line(`Concrete fact slide from ${evidence.title}.`, 160),
+  ));
+}
+
+function uniqueStorySlides(slides: CarouselBriefSlideDraft[]): CarouselBriefSlideDraft[] {
+  const seen = new Set<string>();
+  const unique: CarouselBriefSlideDraft[] = [];
+  for (const slide of slides) {
+    const signature = `${slide.headline}\n${slide.lines.join("\n")}`.toLowerCase();
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    unique.push(slide);
+  }
+  return unique;
+}
+
+function theBatchStorySlides(card: InsightCard): CarouselBriefSlideDraft[] {
+  const evidence = primaryTheBatchEvidence(card);
+  if (!evidence) return [];
+  const paragraphs = evidenceParagraphs(evidence);
+  const subject = articleSubject(evidence, paragraphs);
+  const slides = [articlePointSlide(evidence, paragraphs, subject)];
+  const candidates = uniqueStorySlides([
+    ...paragraphs.map((paragraph) => colonFactSlide(evidence, paragraph)).filter((slide): slide is CarouselBriefSlideDraft => Boolean(slide)),
+    ...loopFactSlides(evidence, paragraphs),
+    ...headingFactSlides(evidence, paragraphs),
+    ...genericFactSlides(evidence, paragraphs, subject),
+  ]);
+  const usedHeadlines = new Set(slides.map((slide) => slide.headline.toLowerCase()));
+  for (const candidate of candidates) {
+    if (slides.length >= 5) break;
+    if (usedHeadlines.has(candidate.headline.toLowerCase())) continue;
+    if (!candidate.lines.length && !/\bloop\b/i.test(candidate.headline)) continue;
+    if (candidate.lines.length === 1 && candidate.lines[0].toLowerCase() === candidate.headline.toLowerCase()) continue;
+    usedHeadlines.add(candidate.headline.toLowerCase());
+    slides.push(candidate);
+  }
+  return slides;
+}
+
 function hookDetailUnits(lines: string[]): string[] {
   const units: string[] = [];
   let pending = "";
@@ -387,7 +648,8 @@ function buildSlides(card: InsightCard, selectedHook: HookVariant): CarouselBrie
     lines: [],
     altText: altFor(card, "Cover"),
   });
-  slides.push(...hookDetailSlides(card, selectedHook));
+  const articleSlides = theBatchStorySlides(card);
+  slides.push(...(articleSlides.length ? articleSlides : hookDetailSlides(card, selectedHook)));
   const assets = sourceImageAssets(card);
   return renumberSlides(slides).map((slide) => ({
     ...slide,

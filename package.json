@@ -5,7 +5,9 @@
     "rank:ai": "node sourcing/cli.ts rank",
     "pipeline:ai": "node sourcing/cli.ts run",
     "ideas:research": "node research_idea_generator/cli.ts",
+    "ideas:scan-briefs": "node research_idea_generator/cli.ts scan-briefs",
     "source:reddit-research": "node research_idea_generator/redditCollectorCli.ts collect",
+    "source:the-batch-research": "node research_idea_generator/cli.ts run --sources the_batch --the-batch-live --days 10 --provider local --cards 5",
     "test:ts-pipeline": "node --test tests/ts-pipeline/*.test.ts"
   },
   "engines": {

@@ -303,6 +303,29 @@ accepts this brief shape directly and renders only the selected brief's
 `slides[]`: the cover uses the hook, and each following slide uses only its JSON
 headline plus any provided `lines[]`.
 
+Every archived research run also writes its own immutable `carousel_briefs.json`
+under `out/research_idea_generator/runs/**/`. Source-specific jobs can keep
+their own cadence and output folders, then a queue scanner can discover
+unpublished briefs across all archived runs without merging source outputs:
+
+```sh
+npm run ideas:scan-briefs
+```
+
+The scanner writes `out/research_idea_generator/carousel_brief_queue.json`, keyed
+by the carousel brief id plus evidence URLs. It preserves publish lifecycle
+state (`new`, `rendered`, `scheduled`, `published`, `skipped`, `failed`) in the
+queue file instead of mutating archived run folders. Newly discovered briefs are
+assigned `aibrief_jp` publish slots at `09:00`, `12:00`, `18:00`, and `21:00`
+Asia/Tokyo, so every queued item carries a concrete `scheduledAt` value.
+
+The publisher wrapper scans archived runs, then publishes the next rendered
+queue item:
+
+```sh
+scripts/run_research_carousel_publisher_due.sh
+```
+
 When `--cover-style kinetic-fly` is enabled, `--cover-template auto` scores the
 hook and chooses a motion cover template from `stop-signal`, `pattern-break`,
 `metric-snap`, `split-switch`, and `loom-reveal`. You can pass any template id

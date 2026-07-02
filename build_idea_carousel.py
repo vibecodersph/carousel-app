@@ -9,6 +9,7 @@ carousel-shaped JSON can still be rendered when passed explicitly.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import html
 import json
@@ -16,6 +17,9 @@ import os
 import re
 import shutil
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +31,14 @@ from build_x_carousel import (
     SLIDE_W,
     cover_poster_path,
     dot_markup,
+    extract_gemini_text,
+    gemini_api_key,
+    gemini_generate_content,
+    gemini_text_model,
+    load_env_file,
     openai_title_image_model,
     openai_title_image_size,
+    parse_json_object,
     render_animated_title_slide,
     render_cta_slide,
     render_html_slide,
@@ -220,6 +230,13 @@ def brief_source_records(urls: object) -> list[dict[str, str]]:
     return records
 
 
+def brief_slide_sources(slide: dict[str, Any]) -> list[dict[str, str]]:
+    urls = slide.get("sourceUrls")
+    if not isinstance(urls, list):
+        urls = slide.get("source_urls")
+    return brief_source_records(urls)
+
+
 def brief_image_meta(slide: dict[str, Any]) -> dict[str, Any]:
     image = slide.get("image")
     return image if isinstance(image, dict) else {}
@@ -240,18 +257,32 @@ def brief_image_url(image: dict[str, Any]) -> str:
 
 
 def brief_image_urls(image: dict[str, Any]) -> list[str]:
+    raw_values: list[object] = []
+    source_url = string_value(image.get("sourceImageUrl"))
+    if source_url:
+        raw_values.append(source_url)
     urls = image.get("sourceImageUrls")
-    if not isinstance(urls, list):
-        url = string_value(image.get("sourceImageUrl"))
-        return [url] if url else []
+    if isinstance(urls, list):
+        raw_values.extend(urls)
     seen: set[str] = set()
     values: list[str] = []
-    for raw_url in urls:
+    for raw_url in raw_values:
         url = string_value(raw_url)
         if url and url not in seen:
             seen.add(url)
             values.append(url)
     return values
+
+
+def brief_source_image_queue(cover_slide: dict[str, Any], story_slides: list[dict[str, Any]]) -> list[str]:
+    queue: list[str] = []
+    seen: set[str] = set()
+    for slide in [cover_slide, *story_slides]:
+        for url in brief_image_urls(brief_image_meta(slide)):
+            if url and url not in seen:
+                seen.add(url)
+                queue.append(url)
+    return queue
 
 
 def brief_description_sections(brief: dict[str, Any]) -> dict[str, str]:
@@ -288,6 +319,216 @@ def brief_description_sections(brief: dict[str, Any]) -> dict[str, str]:
     if len(free_parts) > 1:
         sections["why"] = free_parts[1]
     return sections
+
+
+def has_japanese_text(value: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", value))
+
+
+def visible_character_count(value: str) -> int:
+    return len(re.sub(r"\s+", "", normalize_space(value)))
+
+
+def multiline_string_value(value: object) -> str:
+    return str(value or "").strip()
+
+
+def brief_localization_payload(brief: dict[str, Any]) -> dict[str, Any]:
+    slides = []
+    for slide in brief.get("slides", []):
+        if not isinstance(slide, dict):
+            continue
+        slides.append(
+            {
+                "slideNumber": slide.get("slideNumber"),
+                "type": string_value(slide.get("type")),
+                "headline": string_value(slide.get("headline")),
+                "lines": brief_slide_lines(slide),
+                "altText": string_value(slide.get("altText")),
+            }
+        )
+    return {
+        "id": string_value(brief.get("id")),
+        "workingTitle": string_value(brief.get("workingTitle")),
+        "hook": string_value(brief.get("hook")),
+        "instagramDescription": multiline_string_value(brief.get("instagramDescription")),
+        "evidenceUrls": brief.get("evidenceUrls") if isinstance(brief.get("evidenceUrls"), list) else [],
+        "slides": slides,
+    }
+
+
+def qa_localized_research_brief(
+    brief: dict[str, Any],
+    *,
+    channel_language: str,
+) -> dict[str, Any]:
+    fields: list[tuple[str, str]] = [
+        ("workingTitle", string_value(brief.get("workingTitle"))),
+        ("hook", string_value(brief.get("hook"))),
+    ]
+    for index, slide in enumerate(brief.get("slides", []), start=1):
+        if not isinstance(slide, dict):
+            continue
+        fields.append((f"slides[{index}].headline", string_value(slide.get("headline"))))
+        for line_index, line in enumerate(brief_slide_lines(slide), start=1):
+            fields.append((f"slides[{index}].lines[{line_index}]", line))
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    japanese = channel_language.lower().startswith("japanese")
+    for name, value in fields:
+        if not value:
+            errors.append(f"{name} is empty")
+            continue
+        if "..." in value or "\u2026" in value:
+            errors.append(f"{name} contains ellipsis")
+        if "\u2014" in value:
+            errors.append(f"{name} contains em dash")
+        if japanese and ("[" in value or "]" in value):
+            errors.append(f"{name} contains bracket markup")
+        if japanese and name in {"hook"} | {field_name for field_name, _ in fields if ".headline" in field_name}:
+            if not has_japanese_text(value):
+                errors.append(f"{name} does not contain Japanese text")
+        if japanese and name == "hook":
+            if visible_character_count(value) > 25:
+                errors.append("hook is too long for the Japanese cover template")
+            if "スワイプ" in value or "次のスライド" in value:
+                errors.append("hook contains swipe/navigation copy")
+        if japanese and ".headline" in name and visible_character_count(value) > 28:
+            errors.append(f"{name} is too long for the Japanese slide template")
+        latin_words = re.findall(r"\b[A-Za-z][A-Za-z-]{3,}\b", value)
+        if japanese and name != "workingTitle" and len(latin_words) >= 4:
+            warnings.append(f"{name} has several Latin words: {', '.join(latin_words[:5])}")
+
+    caption = multiline_string_value(brief.get("instagramDescription"))
+    if caption:
+        if "..." in caption or "\u2026" in caption:
+            errors.append("instagramDescription contains ellipsis")
+        if "\u2014" in caption:
+            errors.append("instagramDescription contains em dash")
+        if japanese and not has_japanese_text(caption):
+            warnings.append("instagramDescription does not contain Japanese text")
+
+    return {
+        "passed": not errors,
+        "language": channel_language,
+        "checked_fields": len(fields),
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def apply_localized_research_copy(
+    brief: dict[str, Any],
+    localized: dict[str, Any],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(brief)
+    for key in ("workingTitle", "hook", "instagramDescription"):
+        value = (
+            multiline_string_value(localized.get(key))
+            if key == "instagramDescription"
+            else string_value(localized.get(key))
+        )
+        if value:
+            updated[key] = value
+
+    localized_slides = localized.get("slides")
+    if isinstance(localized_slides, list) and isinstance(updated.get("slides"), list):
+        for index, slide in enumerate(updated["slides"]):
+            if not isinstance(slide, dict) or index >= len(localized_slides):
+                continue
+            localized_slide = localized_slides[index]
+            if not isinstance(localized_slide, dict):
+                continue
+            headline = string_value(localized_slide.get("headline"))
+            if headline:
+                slide["headline"] = headline
+            lines = localized_slide.get("lines")
+            if isinstance(lines, list):
+                slide["lines"] = [string_value(line) for line in lines if string_value(line)]
+            alt_text = string_value(localized_slide.get("altText"))
+            if alt_text:
+                slide["altText"] = alt_text
+    return updated
+
+
+def localize_research_brief_copy(
+    brief: dict[str, Any],
+    *,
+    channel: Any,
+    source_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    load_env_file(ROOT / ".env")
+    load_env_file(Path.home() / ".hermes" / ".env")
+    api_key = gemini_api_key()
+    if not api_key:
+        raise SystemExit("GEMINI_API_KEY or GOOGLE_API_KEY is required for --localize-copy")
+
+    voice = channel.voice_prompt or channel.default_cover_voice()
+    payload = brief_localization_payload(brief)
+    language = string_value(channel.language_name) or "Japanese"
+    prompt = f"""
+You are localizing one research-idea Instagram carousel for {channel.brand_name}.
+Translate and adapt the reader-facing copy into natural {language} for {channel.audience}.
+
+Return JSON only with this exact shape:
+{{
+  "workingTitle": "localized internal/editorial title",
+  "hook": "localized cover hook",
+  "instagramDescription": "localized Instagram caption",
+  "slides": [
+    {{"slideNumber": 1, "headline": "localized slide headline", "lines": [], "altText": "localized alt text"}}
+  ]
+}}
+
+Rules:
+- Localize naturally, not line-by-line. It should sound like a working Japanese engineer if the target language is Japanese.
+- Keep model names, product names, company names, benchmark names, numbers, URLs, and source titles in their standard spelling.
+- Do not invent facts, numbers, claims, source names, or conclusions.
+- Slide 1 is the cover. Its headline should be the localized hook only: no swipe instruction, no subtitle, no bracket markup.
+- Every slide after the cover must use only the localized JSON headline plus localized lines when lines exist.
+- Keep the same slide count and order. Return one slides item for every input slide.
+- Preserve empty lines arrays as empty unless the source slide has lines.
+- Avoid hype phrases, markdown bullets, emoji, quotes around values, em dashes, ellipsis, and the literal string "...".
+- For Japanese, use natural punctuation such as 、。：（） and concise です・ます調 where it fits.
+- For Japanese, keep hook at 25 visible characters or fewer. Good example: AI開発はQAからループ設計へ
+- For Japanese, keep every slide headline at 28 visible characters or fewer. Lines may carry the nuance.
+- Keep captions short enough for Instagram and include source attribution when the input caption includes it.
+
+{channel.brand_name} voice guide:
+{voice}
+
+Source payload generatedAt: {string_value((source_payload or {}).get("generatedAt"))}
+Brief JSON:
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
+
+    response = gemini_generate_content(
+        gemini_text_model(),
+        api_key,
+        {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.25,
+                "responseMimeType": "application/json",
+            },
+        },
+        api_version=os.environ.get("GEMINI_TEXT_API_VERSION") or "v1beta",
+        timeout=75,
+    )
+    parsed = parse_json_object(extract_gemini_text(response))
+    if not isinstance(parsed, dict):
+        raise SystemExit("Gemini did not return localization JSON")
+
+    localized = apply_localized_research_copy(brief, parsed)
+    qa = qa_localized_research_brief(localized, channel_language=language)
+    qa["provider"] = "gemini"
+    qa["model"] = gemini_text_model()
+    qa["channel_id"] = channel.id
+    qa["source_brief_id"] = string_value(brief.get("id"))
+    if not qa["passed"]:
+        raise SystemExit("localized brief failed QA: " + "; ".join(qa["errors"]))
+    return localized, qa
 
 
 def strip_numbered_prefix(value: str) -> str:
@@ -447,8 +688,8 @@ def research_brief_to_render_carousel(
     working_title = string_value(brief.get("workingTitle"))
     cover_image = brief_image_meta(cover_slide)
     cover_image_kind = string_value(cover_image.get("kind"))
-    cover_source_image_url = brief_image_url(cover_image) if cover_image_kind == "source_image" else ""
-    used_render_image_urls = {cover_source_image_url} if cover_source_image_url else set()
+    source_image_queue = brief_source_image_queue(cover_slide, story_slides)
+    allocated_source_image_urls: set[str] = set()
     carousel: dict[str, Any] = {
         "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
         "channel_id": "",
@@ -460,7 +701,7 @@ def research_brief_to_render_carousel(
         "source_brief_hook_style": brief.get("hookStyle"),
         "source_brief_evidence_urls": [record["url"] for record in source_records],
         "generated_at": string_value((source_payload or {}).get("generatedAt")),
-        "instagram_caption": string_value(brief.get("instagramDescription")),
+        "instagram_caption": multiline_string_value(brief.get("instagramDescription")),
         "suppress_cta": True,
         "cover_page": {
             "kicker": "RESEARCH LEAD",
@@ -470,7 +711,7 @@ def research_brief_to_render_carousel(
             "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
             "hook_only_cover": True,
             "image_kind": cover_image_kind,
-            "source_image_url": cover_source_image_url,
+            "source_image_url": "",
             "source_image_urls": brief_image_urls(cover_image),
             "image_prompt": string_value(cover_image.get("promptBase")),
             "image_alt_text": string_value(cover_image.get("altText")),
@@ -484,11 +725,20 @@ def research_brief_to_render_carousel(
         body = brief_body_for_slide(slide)
         slide_image = brief_image_meta(slide)
         slide_image_kind = string_value(slide_image.get("kind"))
-        slide_source_image_url = brief_image_url(slide_image) if slide_image_kind == "source_image" else ""
-        if slide_source_image_url in used_render_image_urls:
-            slide_source_image_url = ""
+        slide_source_image_urls = brief_image_urls(slide_image)
+        slide_source_image_url = next(
+            (url for url in slide_source_image_urls if url not in allocated_source_image_urls),
+            "",
+        )
+        if not slide_source_image_url:
+            slide_source_image_url = next(
+                (url for url in source_image_queue if url not in allocated_source_image_urls),
+                "",
+            )
         if slide_source_image_url:
-            used_render_image_urls.add(slide_source_image_url)
+            allocated_source_image_urls.add(slide_source_image_url)
+        if slide_source_image_url and slide_source_image_url not in slide_source_image_urls:
+            slide_source_image_urls = [slide_source_image_url, *slide_source_image_urls]
         page_order.append(key)
         carousel[key] = {
             "item_name": "",
@@ -498,12 +748,12 @@ def research_brief_to_render_carousel(
             "watch_out": "",
             "takeaway": "",
             "proof_points": brief_slide_lines(slide),
-            "sources": [],
+            "sources": brief_slide_sources(slide),
             "show_source": False,
             "literal_slide": True,
             "image_kind": slide_image_kind,
             "source_image_url": slide_source_image_url,
-            "source_image_urls": brief_image_urls(slide_image),
+            "source_image_urls": slide_source_image_urls,
             "image_prompt": string_value(slide_image.get("promptBase")),
             "image_alt_text": string_value(slide_image.get("altText")),
             "alt_text": string_value(slide.get("altText")) or f"Story slide {item_index} for {hook}.",
@@ -560,6 +810,44 @@ def openai_item_image_size() -> str:
 def generated_image_path(out_dir: Path, topic: str, prompt: str) -> Path:
     digest = hashlib.sha1(f"{topic}\n{prompt}".encode("utf-8")).hexdigest()[:10]
     return out_dir / "generated_assets" / f"{digest}.png"
+
+
+def source_image_asset_path(out_dir: Path, source_image_url: str) -> Path:
+    parsed = urllib.parse.urlparse(source_image_url)
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in {".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}:
+        suffix = ".img"
+    digest = hashlib.sha1(source_image_url.encode("utf-8")).hexdigest()[:10]
+    return out_dir / "source_assets" / f"{digest}{suffix}"
+
+
+def maybe_cache_source_image(out_dir: Path, source_image_url: str) -> Path | None:
+    source_image_url = string_value(source_image_url)
+    if not source_image_url:
+        return None
+    if not re.match(r"^https?://", source_image_url, flags=re.I):
+        path = Path(source_image_url)
+        return path if path.exists() else None
+    path = source_image_asset_path(out_dir, source_image_url)
+    if path.exists() and path.stat().st_size > 0:
+        print(f"[asset] using cached source image -> {path}")
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(
+        source_image_url,
+        headers={
+            "User-Agent": "Mozilla/5.0 carousel-app source-image renderer",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            path.write_bytes(response.read())
+    except (OSError, urllib.error.URLError) as exc:
+        print(f"[asset] source image download failed -> {source_image_url} ({exc})")
+        return None
+    print(f"[asset] cached source image -> {path}")
+    return path
 
 
 def cover_image_composition(path: Path | None) -> str:
@@ -758,6 +1046,67 @@ def contains_japanese(value: str) -> bool:
     return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", value or ""))
 
 
+def is_katakana_char(value: str) -> bool:
+    return bool(value and re.match(r"[\u30a0-\u30ffー]", value))
+
+
+def is_ascii_word_char(value: str) -> bool:
+    return bool(value and re.match(r"[A-Za-z0-9'._+-]", value))
+
+
+def japanese_phrase_chunks(text: str, max_chars: int = 9) -> list[str]:
+    """Create short Japanese chunks without splitting common particles or terms."""
+    text = normalize_space(text)
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    soft_suffixes = (
+        "から",
+        "まで",
+        "なら",
+        "では",
+        "には",
+        "にも",
+        "ので",
+        "ため",
+        "こと",
+        "です",
+        "ます",
+        "として",
+    )
+    soft_particles = set("でにをがはへとものか")
+    suffix_starts = {suffix[:2] for suffix in soft_suffixes if len(suffix) >= 2}
+    for index, char in enumerate(text):
+        current += char
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if char in "、。！？!?":
+            chunks.append(current)
+            current = ""
+            continue
+        if (len(current) >= 4 and current.endswith(soft_suffixes)) or (
+            len(current) >= 5 and char in soft_particles and f"{char}{next_char}" not in suffix_starts
+        ):
+            if next_char and next_char not in "、。！？!?":
+                chunks.append(current)
+                current = ""
+                continue
+        if len(current) >= max_chars:
+            if (is_katakana_char(char) and is_katakana_char(next_char)) or (
+                is_ascii_word_char(char) and is_ascii_word_char(next_char)
+            ) or (
+                next_char in soft_particles
+            ) or (
+                f"{char}{next_char}" in suffix_starts
+            ):
+                continue
+            chunks.append(current)
+            current = ""
+    if current:
+        chunks.append(current)
+    return [chunk for chunk in (normalize_space(chunk) for chunk in chunks) if chunk]
+
+
 def bracket_plain_text(value: str) -> str:
     return normalize_space((value or "").replace("[", "").replace("]", ""))
 
@@ -794,8 +1143,9 @@ def kinetic_fly_tokens(headline: str, *, japanese: bool) -> list[str]:
     if not headline:
         return []
     if japanese and " " not in headline:
-        tokens = re.findall(r"[A-Za-z0-9.+#/-]+|[\u3040-\u30ff\u3400-\u9fffー々]{1,6}", headline)
-        return [token for token in tokens if token.strip()]
+        visible_chars = visible_character_count(headline)
+        max_chars = 7 if visible_chars > 18 else 9
+        return japanese_phrase_chunks(headline, max_chars=max_chars)
     return [token for token in headline.split() if token.strip()]
 
 
@@ -1225,6 +1575,13 @@ body {{ background: var(--bg); }}
 .hook-title::first-letter {{
   color: var(--primary);
 }}
+.hook-title .hook-line {{
+  display: block;
+  white-space: nowrap;
+}}
+.hook-title .hook-first {{
+  color: var(--primary);
+}}
 .line {{
   display: flex;
   align-items: baseline;
@@ -1243,6 +1600,7 @@ body {{ background: var(--bg); }}
   will-change: transform, filter, opacity;
   animation: flyWord var(--cycle) 0s infinite;
   text-shadow: 0 12px 0 rgba(var(--primary-rgb), 0.12);
+  white-space: nowrap;
 }}
 .word.is-accent {{ color: var(--primary); }}
 .option-row {{
@@ -1467,6 +1825,24 @@ def kinetic_hook_title_size(headline: str) -> int:
     return 104
 
 
+def kinetic_hook_title_markup(headline: str, *, japanese: bool) -> str:
+    headline = string_value(headline)
+    if not headline:
+        return ""
+    if not japanese and not contains_japanese(headline):
+        return html.escape(headline)
+    tokens = kinetic_fly_tokens(headline, japanese=True)
+    if not tokens:
+        return html.escape(headline)
+    rows: list[str] = []
+    for index, token in enumerate(tokens):
+        escaped = html.escape(token)
+        if index == 0 and escaped:
+            escaped = f'<span class="hook-first">{escaped[0]}</span>{escaped[1:]}'
+        rows.append(f'<span class="hook-line">{escaped}</span>')
+    return "".join(rows)
+
+
 def kinetic_fly_cover_html(
     carousel: dict[str, Any],
     *,
@@ -1503,11 +1879,12 @@ def kinetic_fly_cover_html(
     if hook_only_cover:
         headline_text = string_value(cover.get("headline")) or headline_text
         hook_title_size = kinetic_hook_title_size(headline_text)
+        hook_title_markup = kinetic_hook_title_markup(headline_text, japanese=japanese)
         head_markup = (
             '<section class="head is-hook-only" aria-label="'
             f'{html.escape(headline_text, quote=True)}">'
             f'<h1 class="hook-title" data-kinetic data-delay-ms="80" style="--hook-title-size:{hook_title_size}px">'
-            f'{html.escape(headline_text)}</h1>'
+            f'{hook_title_markup}</h1>'
             '</section>'
         )
         secondary_markup = ""
@@ -1648,6 +2025,17 @@ def bracket_markup(text: str) -> str:
     return escaped.replace("[", '<span class="accent">').replace("]", "</span>")
 
 
+def item_title_markup(text: str) -> str:
+    text = string_value(text)
+    if contains_japanese(text):
+        visible_chars = visible_character_count(text)
+        max_chars = 10 if visible_chars <= 24 else 9
+        chunks = japanese_phrase_chunks(bracket_plain_text(text), max_chars=max_chars)
+        if chunks:
+            return "".join(f'<span class="jp-phrase">{html.escape(chunk)}</span>' for chunk in chunks)
+    return bracket_markup(text)
+
+
 def concise_body(page: dict[str, Any]) -> str:
     body = normalize_space(page.get("body"))
     if body:
@@ -1711,7 +2099,7 @@ def title_context(
         "source_people": [],
         "topic_entity": None,
         "post_explanations": [],
-        "instagram_caption": string_value(carousel.get("instagram_caption")),
+        "instagram_caption": multiline_string_value(carousel.get("instagram_caption")),
         "brand_voice_doc": channel.voice_doc_rel,
         "google_enabled": False,
         "provider": string_value(carousel.get("render_source")) or RESEARCH_BRIEF_RENDER_SOURCE,
@@ -1818,6 +2206,14 @@ body {{ background: #777; }}
 .item-title .accent {{
   color: var(--primary);
 }}
+.item-title.has-japanese {{
+  word-break: keep-all;
+  overflow-wrap: normal;
+}}
+.item-title.has-japanese .jp-phrase {{
+  display: inline-block;
+  white-space: nowrap;
+}}
 .item-body {{
   margin-top: 34px;
   max-width: 880px;
@@ -1863,32 +2259,68 @@ body {{ background: #777; }}
   bottom: 170px;
   justify-content: center;
 }}
+.slide.is-literal .item-cluster::before {{
+  content: '';
+  width: 104px;
+  height: 8px;
+  margin-bottom: 28px;
+  background: var(--primary);
+}}
 .slide.is-literal .item-visual.has-source-image {{
-  height: 100%;
-  opacity: 0.2;
-  filter: grayscale(1) contrast(1.08) blur(5px);
-  transform: scale(1.04);
+  left: 40px;
+  right: 40px;
+  top: 34px;
+  height: 650px;
+  opacity: 0.96;
+  filter: saturate(.94) contrast(1.06);
+  transform: none;
+  background-position: top center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-color: rgba(255, 255, 255, .78);
+  border: 1px solid rgba(20, 18, 14, .08);
+  box-shadow: 0 18px 42px rgba(20, 18, 14, .08);
   -webkit-mask-image: none;
   mask-image: none;
 }}
 .slide.is-literal .item-visual.has-source-image::after {{
   background:
-    linear-gradient(180deg, rgba(var(--bg-rgb), .74) 0%, rgba(var(--bg-rgb), .9) 42%, rgba(var(--bg-rgb), .97) 100%),
-    radial-gradient(circle at 78% 24%, rgba(var(--primary-rgb), .18), transparent 320px);
+    linear-gradient(180deg, rgba(var(--bg-rgb), 0) 0%, rgba(var(--bg-rgb), .03) 78%, rgba(var(--bg-rgb), .42) 100%);
+}}
+.slide.is-literal .item-visual.has-source-image + .item-cluster {{
+  top: 740px;
+  bottom: 132px;
+  justify-content: flex-start;
+}}
+.slide.is-literal .item-visual.has-source-image + .item-cluster .item-title {{
+  max-width: 940px;
+  font-size: 61px;
+  line-height: .98;
 }}
 .slide.is-literal .item-visual.has-generated-image {{
   height: 100%;
-  opacity: 0.58;
-  filter: saturate(.86) contrast(1.08);
+  opacity: 0.82;
+  filter: saturate(.96) contrast(1.12);
   transform: scale(1.02);
-  background-position: center;
+  background-position: center right;
   -webkit-mask-image: none;
   mask-image: none;
 }}
 .slide.is-literal .item-visual.has-generated-image::after {{
   background:
-    linear-gradient(90deg, rgba(var(--bg-rgb), .96) 0%, rgba(var(--bg-rgb), .88) 38%, rgba(var(--bg-rgb), .46) 100%),
-    linear-gradient(180deg, rgba(var(--bg-rgb), .1) 0%, rgba(var(--bg-rgb), .48) 100%);
+    linear-gradient(90deg, rgba(var(--bg-rgb), .98) 0%, rgba(var(--bg-rgb), .93) 38%, rgba(var(--bg-rgb), .48) 68%, rgba(var(--bg-rgb), .16) 100%),
+    linear-gradient(180deg, rgba(var(--bg-rgb), .06) 0%, rgba(var(--bg-rgb), .32) 100%);
+}}
+.slide.is-literal .item-visual.has-generated-image + .item-cluster {{
+  top: 560px;
+  right: 380px;
+  bottom: 116px;
+  justify-content: center;
+}}
+.slide.is-literal .item-visual.has-generated-image + .item-cluster .item-title {{
+  max-width: 650px;
+  font-size: 58px;
+  line-height: .98;
 }}
 .slide.is-literal .item-title {{
   display: block;
@@ -1929,7 +2361,7 @@ def render_item_slide(
     )
     visual_class = "item-visual"
     if visual_uri:
-        image_source_class = "has-generated-image" if image_path else "has-source-image"
+        image_source_class = "has-source-image" if source_image_url else "has-generated-image"
         visual_class = f"item-visual has-image {image_source_class}"
     item_name = string_value(page.get("item_name"))
     item_rule_markup = f'<div class="item-rule"><span>{html.escape(item_name)}</span></div>' if item_name else ""
@@ -1950,6 +2382,8 @@ def render_item_slide(
     )
     count_markup = f'<div class="count">{active:02d} / {count:02d}</div>' if show_chrome else ""
     dots_markup = f'<div class="dots">{dot_markup(active, count)}</div>' if show_chrome else ""
+    headline = string_value(page.get("headline"))
+    title_class = "item-title has-japanese" if contains_japanese(headline) else "item-title"
     html_path = out_path.with_suffix(".html")
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -1962,7 +2396,7 @@ def render_item_slide(
   {count_markup}
   <div class="item-cluster">
     {item_rule_markup}
-    <h1 class="item-title">{bracket_markup(string_value(page.get("headline")))}</h1>
+    <h1 class="{title_class}">{item_title_markup(headline)}</h1>
     {body_markup}
     {takeaway_markup}
   </div>
@@ -2044,8 +2478,8 @@ def render_carousel(
         {
             "index": 1,
             "type": "title",
-            "path": str(cover_path),
-            "poster": str(cover_poster),
+            "path": str(cover_path.resolve()),
+            "poster": str(cover_poster.resolve()),
             "image_path": str(cover_image or ""),
             "source_image_url": string_value(cover.get("source_image_url")),
             "source_image_urls": cover.get("source_image_urls") if isinstance(cover.get("source_image_urls"), list) else [],
@@ -2068,14 +2502,17 @@ def render_carousel(
             print(f"[asset] reusing {page.get('item_name')} image -> {image_path}")
         else:
             source_image_url = string_value(page.get("source_image_url"))
-            use_source_image_fallback = source_image_url and not generate_images
-            image_path = maybe_generate_image(
-                out_dir,
-                topic=string_value(page.get("item_name")) or key,
-                prompt=prompt,
-                generate_images=generate_images and not use_source_image_fallback,
-                size=openai_item_image_size(),
-            )
+            if source_image_url:
+                image_path = maybe_cache_source_image(out_dir, source_image_url)
+                print(f"[asset] using source image for {key} -> {source_image_url}")
+            else:
+                image_path = maybe_generate_image(
+                    out_dir,
+                    topic=string_value(page.get("item_name")) or key,
+                    prompt=prompt,
+                    generate_images=generate_images,
+                    size=openai_item_image_size(),
+                )
         slide_path = out_dir / f"slide_{offset:02d}.png"
         render_item_slide(
             page,
@@ -2088,7 +2525,7 @@ def render_carousel(
             {
                 "index": offset,
                 "type": "item",
-                "path": str(slide_path),
+                "path": str(slide_path.resolve()),
                 "item_name": string_value(page.get("item_name")),
                 "image_path": str(image_path or ""),
                 "source_image_url": string_value(page.get("source_image_url")),
@@ -2116,7 +2553,7 @@ def render_carousel(
         slides.append({
             "index": total,
             "type": "cta",
-            "path": str(cta_path),
+            "path": str(cta_path.resolve()),
             "alt_text": string_value(cta.get("alt_text")),
         })
     manifest = {
@@ -2127,6 +2564,7 @@ def render_carousel(
         "cover_style": cover_style,
         "cover_template": cover_template_id,
         "cover_image_provider": "reused" if cover_image and reusable_assets.get("cover") else "openai" if cover_image else "",
+        "instagram_caption": multiline_string_value(carousel.get("instagram_caption")),
         "suppress_cta": suppress_cta,
         "slides": slides,
     }
@@ -2137,6 +2575,8 @@ def render_carousel(
         "source_brief_confidence",
         "source_brief_hook_style",
         "source_brief_evidence_urls",
+        "localized_channel_id",
+        "localized_language",
     ):
         if string_value(carousel.get(key)):
             manifest[key] = carousel.get(key)
@@ -2154,6 +2594,11 @@ def main() -> int:
     parser.add_argument("--asset-manifest", type=Path, help="Reuse generated images from another render manifest")
     parser.add_argument("--no-generate-images", action="store_true")
     parser.add_argument(
+        "--localize-copy",
+        action="store_true",
+        help="Localize reader-facing research brief copy to the selected channel language before rendering",
+    )
+    parser.add_argument(
         "--cover-style",
         default=os.environ.get("IDEA_COVER_STYLE", DEFAULT_COVER_STYLE),
         help="Cover renderer: default/usual or kinetic-fly/fly",
@@ -2166,13 +2611,35 @@ def main() -> int:
     args = parser.parse_args()
 
     payload = read_json(args.input)
+    channel = load_channel(args.channel)
+    selected = copy.deepcopy(selected_carousel(payload, args.index))
+    localization_qa: dict[str, Any] | None = None
+    if args.localize_copy:
+        selected, localization_qa = localize_research_brief_copy(
+            selected,
+            channel=channel,
+            source_payload=payload,
+        )
     carousel = normalize_carousel_for_render(
-        selected_carousel(payload, args.index),
+        selected,
         source_payload=payload,
     )
+    if args.localize_copy:
+        carousel["localized_channel_id"] = channel.id
+        carousel["localized_language"] = channel.language_name
     out_dir = args.out_dir
     if args.out_dir == DEFAULT_OUT:
         out_dir = DEFAULT_OUT / carousel_slug(carousel, args.index)
+    if args.localize_copy:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "localized_carousel_brief.json").write_text(
+            json.dumps(selected, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / "localization_qa.json").write_text(
+            json.dumps(localization_qa or {}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     manifest_path = render_carousel(
         carousel,
         out_dir=out_dir,

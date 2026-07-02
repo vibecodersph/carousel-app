@@ -6,7 +6,13 @@ const SOURCE_QUALITY: Record<string, number> = {
   github: 0.82,
   hacker_news: 0.72,
   reddit: 0.68,
+  the_batch: 0.9,
 };
+
+// Curated editorial sources carry no engagement metrics, so freshness stands in
+// for engagement velocity and a stored hook judgment stands in for term-based
+// hookability.
+const EDITORIAL_SOURCES = new Set(["the_batch"]);
 
 const BUILDER_TERMS = [
   "api",
@@ -112,17 +118,30 @@ function confidenceFor(scores: ResearchScores, cluster: ResearchCluster): Confid
   const sourceCount = new Set(cluster.items.map((item) => item.source)).size;
   if (sourceCount >= 3 && cluster.items.length >= 3 && scores.overall >= 0.68) return "high";
   if (sourceCount >= 2 && cluster.items.length >= 3 && scores.overall >= 0.58) return "medium-high";
+  if (isEditorialCluster(cluster) && scores.hookability >= 0.7 && scores.overall >= 0.55) return "medium-high";
   if (scores.overall >= 0.42) return "medium";
   return "low";
 }
 
+function isEditorialCluster(cluster: ResearchCluster): boolean {
+  return cluster.items.length > 0 && cluster.items.every((item) => EDITORIAL_SOURCES.has(item.source));
+}
+
+export function hookJudgmentScore(item: SourceItem): number | undefined {
+  const raw = item.raw as { hookJudgment?: { score?: unknown } } | undefined;
+  const score = raw?.hookJudgment?.score;
+  return typeof score === "number" && Number.isFinite(score) ? clamp(score) : undefined;
+}
+
 export function scoreResearchCluster(cluster: ResearchCluster, now = new Date()): ScoredResearchCluster {
   const sourceCount = new Set(cluster.items.map((item) => item.source)).size;
+  const editorial = isEditorialCluster(cluster);
   const maxEngagement = Math.max(1, ...cluster.items.map(engagementValue));
   const engagementVelocity = clamp(
     cluster.items.reduce((sum, item) => {
       const age = Math.max(1, hoursSince(item.createdAt, now));
-      return sum + (engagementValue(item) / maxEngagement) * Math.exp(-age / 96);
+      const engagement = editorial ? 1 : engagementValue(item) / maxEngagement;
+      return sum + engagement * Math.exp(-age / (editorial ? 240 : 96));
     }, 0) / Math.max(1, Math.min(4, cluster.items.length)),
   );
   const sourceQualityScore = clamp(
@@ -133,7 +152,12 @@ export function scoreResearchCluster(cluster: ResearchCluster, now = new Date())
   const controversyOrTension = textScore(combinedText, TENSION_TERMS);
   const crossSourceConfirmation = clamp((sourceCount - 1) / 2 * 0.7 + Math.min(cluster.items.length, 4) / 4 * 0.3);
   const audienceFit = textScore(combinedText, BUILDER_TERMS);
-  const hookability = clamp(textScore(combinedText, HOOK_TERMS) * 0.75 + (cluster.items.length >= 3 ? 0.15 : 0));
+  const judgedScores = cluster.items
+    .map(hookJudgmentScore)
+    .filter((score): score is number => score !== undefined);
+  const hookability = judgedScores.length
+    ? clamp(judgedScores.reduce((sum, score) => sum + score, 0) / judgedScores.length)
+    : clamp(textScore(combinedText, HOOK_TERMS) * 0.75 + (cluster.items.length >= 3 ? 0.15 : 0));
   const novelty = clamp(0.62 + Math.min(cluster.keywords.length, 8) * 0.035 - Math.max(0, cluster.items.length - sourceCount) * 0.015);
   const scores: ResearchScores = {
     engagementVelocity: Number(engagementVelocity.toFixed(4)),
