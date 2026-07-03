@@ -25,6 +25,8 @@ import hmac
 import json
 import mimetypes
 import os
+import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -35,6 +37,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from carousel_music import (
+    DEFAULT_MUSIC_LIBRARY,
+    DEFAULT_SHORT_CLIP_SECONDS,
+    add_music_to_video,
+    music_manifest,
+    select_music_track,
+    short_clip_duration,
+)
 from channel import available_channels, load_channel
 from fetch_tweet_data import load_env_file
 
@@ -63,6 +73,7 @@ class MediaItem:
     public_url: str
     slide_type: str
     source_url: str
+    audio: dict[str, Any] | None = None
 
 
 @dataclass
@@ -111,6 +122,16 @@ def env_int(default: int, *names: str) -> int:
         return default
     try:
         return int(value)
+    except ValueError:
+        return default
+
+
+def env_float(default: float, *names: str) -> float:
+    value = env_value(*names)
+    if not value:
+        return default
+    try:
+        return float(value)
     except ValueError:
         return default
 
@@ -338,6 +359,7 @@ def build_media_items(
                 public_url=public_url,
                 slide_type=str(raw_slide.get("type") or ""),
                 source_url=str(raw_slide.get("source_url") or ""),
+                audio=raw_slide.get("audio") if isinstance(raw_slide.get("audio"), dict) else None,
             )
         )
     if not items:
@@ -496,6 +518,96 @@ def upload_media_to_r2(
         item.public_url = str(result["public_url"])
         uploads.append(result)
     return uploads
+
+
+def run_ffmpeg(command: list[str]) -> None:
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"ffmpeg failed while adding carousel music: {exc}") from exc
+
+
+def clean_music_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._") or "clip"
+
+
+def manifest_carousel_id(manifest: dict[str, Any], manifest_path: Path) -> str:
+    return str(manifest.get("carousel_id") or manifest.get("source_brief_id") or manifest_path.parent.name).strip()
+
+
+def manifest_already_has_music(manifest: dict[str, Any], items: list[MediaItem]) -> bool:
+    manifest_music = manifest.get("carousel_music")
+    if isinstance(manifest_music, dict) and manifest_music.get("clip_id"):
+        return True
+    return any(isinstance(item.audio, dict) and item.audio.get("clip_id") for item in items)
+
+
+def apply_carousel_music(
+    items: list[MediaItem],
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    *,
+    media_base_url: str,
+    music_library: Path | None,
+    music_clip_id: str,
+    music_duration_seconds: float | None,
+    enabled: bool,
+    single_video_media_type: str,
+) -> dict[str, Any]:
+    if not enabled or len(items) <= 1 or single_video_media_type.upper() == "REELS":
+        return {}
+    if manifest_already_has_music(manifest, items):
+        return {}
+
+    target = next((item for item in items if item.kind == "video"), None)
+    if target is None:
+        return {}
+
+    track = select_music_track(
+        library_path=music_library,
+        carousel_id=manifest_carousel_id(manifest, manifest_path),
+        requested_clip_id=music_clip_id,
+    )
+    if track is None:
+        return {}
+
+    duration = short_clip_duration(
+        music_duration_seconds if music_duration_seconds is not None else track.duration_seconds,
+        track.duration_seconds,
+    )
+    source_path = Path(target.local_path)
+    clip_part = clean_music_filename_part(track.clip_id)
+    out_path = manifest_path.parent / "instagram_music" / f"{source_path.stem}_{clip_part}_{int(round(duration))}s.mp4"
+    print(f"[music] baking {track.clip_id} ({duration:.1f}s) into carousel slide {target.index}")
+    add_music_to_video(
+        source_path,
+        track,
+        out_path,
+        duration_seconds=duration,
+        run_command=run_ffmpeg,
+        loop_video=True,
+    )
+
+    public_url = media_public_url(
+        slide={"index": target.index},
+        local_path=out_path,
+        media_base_url=media_base_url,
+        overrides={},
+    )
+    if not public_url:
+        raise SystemExit("Carousel music needs --media-base-url or --upload-r2 to publish the derived MP4")
+    validate_public_url(public_url, dry_run=False)
+
+    target.local_path = str(out_path.resolve())
+    target.public_url = public_url
+    target.audio = music_manifest(track, duration_seconds=duration)
+    return {
+        "slide_index": target.index,
+        "source_local_path": str(source_path),
+        "derived_local_path": target.local_path,
+        "public_url": target.public_url,
+        **target.audio,
+    }
 
 
 def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
@@ -884,6 +996,7 @@ def build_report(
     single_video_media_type: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
+    carousel_music: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "created_at": utc_now(),
@@ -898,6 +1011,7 @@ def build_report(
         "graph_api_root": graph_api_root,
         "caption": caption,
         "media": [asdict(item) for item in items],
+        "carousel_music": carousel_music or {},
         "uploads": uploads or [],
         "api_steps": api_steps(items, caption, single_video_media_type=single_video_media_type),
         "result": result or {},
@@ -978,6 +1092,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-timeout", type=int, default=600)
     parser.add_argument("--wait-interval", type=int, default=10)
     parser.add_argument(
+        "--music-library",
+        type=Path,
+        default=Path(env_value("CAROUSEL_MUSIC_LIBRARY") or DEFAULT_MUSIC_LIBRARY),
+        help="JSON library of local short music clips for carousel video items",
+    )
+    parser.add_argument(
+        "--music-clip",
+        default=env_value("CAROUSEL_MUSIC_CLIP"),
+        help="Specific music clip id from --music-library; defaults to deterministic selection",
+    )
+    parser.add_argument(
+        "--music-duration",
+        type=float,
+        default=env_float(DEFAULT_SHORT_CLIP_SECONDS, "CAROUSEL_MUSIC_DURATION"),
+        help="Short clip duration in seconds; defaults to 60 and caps at 60",
+    )
+    parser.add_argument(
+        "--no-carousel-music",
+        action="store_true",
+        help="Disable local music clip muxing during carousel publish",
+    )
+    parser.add_argument(
         "--publish-retries",
         type=int,
         default=env_int(DEFAULT_PUBLISH_RETRIES, "INSTAGRAM_PUBLISH_RETRIES", "IG_PUBLISH_RETRIES"),
@@ -1027,12 +1163,27 @@ def main() -> int:
     media_base_url = args.media_base_url.strip()
     if args.upload_r2 and not media_base_url:
         media_base_url = args.r2_public_base_url.strip()
+    overrides = parse_media_url_overrides(args.media_url)
+    effective_media_base_url = media_base_url
+    if args.dry_run and not effective_media_base_url and not overrides:
+        effective_media_base_url = PLACEHOLDER_MEDIA_BASE_URL
     media_items = build_media_items(
         manifest,
         manifest_path,
         media_base_url=media_base_url,
-        overrides=parse_media_url_overrides(args.media_url),
+        overrides=overrides,
         dry_run=args.dry_run,
+    )
+    carousel_music = apply_carousel_music(
+        media_items,
+        manifest,
+        manifest_path,
+        media_base_url=effective_media_base_url,
+        music_library=args.music_library,
+        music_clip_id=args.music_clip,
+        music_duration_seconds=args.music_duration,
+        enabled=not args.no_carousel_music,
+        single_video_media_type=args.single_video_media_type,
     )
     uploads: list[dict[str, Any]] = []
     if args.upload_r2:
@@ -1078,6 +1229,7 @@ def main() -> int:
         single_video_media_type=args.single_video_media_type,
         uploads=uploads,
         result=result,
+        carousel_music=carousel_music,
     )
     report_path = args.out or manifest_path.with_name(DEFAULT_REPORT_NAME)
     write_json(report_path, report)

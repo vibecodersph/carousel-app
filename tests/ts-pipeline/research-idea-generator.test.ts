@@ -853,11 +853,19 @@ test("carousel brief archive scanner queues unpublished run briefs idempotently"
   );
 
   const routerQueueId = carouselBriefQueueId(routerBrief);
+  const renderedManifestPath = join(batchRun, "rendered", "manifest.json");
+  const renderedAt = "2026-07-03T03:10:39.925Z";
   const publishedQueue = {
     ...firstScan.queue,
-    items: firstScan.queue.items.map((entry) => entry.id === routerQueueId
-      ? { ...entry, status: "published", publishedAt: "2026-07-04T00:00:00.000Z" }
-      : entry),
+    items: firstScan.queue.items.map((entry) => {
+      if (entry.id === routerQueueId) {
+        return { ...entry, status: "published", publishedAt: "2026-07-04T00:00:00.000Z" };
+      }
+      if (entry.briefId === "brief-batch") {
+        return { ...entry, renderedManifestPath, renderedAt };
+      }
+      return entry;
+    }),
   };
   await writeFile(queuePath, JSON.stringify(publishedQueue), "utf8");
 
@@ -869,6 +877,10 @@ test("carousel brief archive scanner queues unpublished run briefs idempotently"
   assert.equal(secondScan.added, 0);
   assert.equal(secondScan.queue.items.length, 2);
   assert.equal(secondScan.queue.items.find((entry) => entry.id === routerQueueId)?.status, "published");
+  const renderedBatch = secondScan.queue.items.find((entry) => entry.briefId === "brief-batch");
+  assert.equal(renderedBatch?.status, "scheduled");
+  assert.equal(renderedBatch?.renderedManifestPath, renderedManifestPath);
+  assert.equal(renderedBatch?.renderedAt, renderedAt);
   assert.equal(unpublishedCarouselBriefs(secondScan.queue).length, 1);
 
   const parsed = parseArgs(["scan-briefs", "--runs-dir", runsDir, "--queue", queuePath]);

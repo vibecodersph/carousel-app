@@ -1,0 +1,14 @@
+{
+  "tracks": [
+    {
+      "id": "signal-glow",
+      "title": "Signal Glow",
+      "path": "clips/signal-glow-60s.mp3",
+      "source": "suno",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    }
+  ]
+}

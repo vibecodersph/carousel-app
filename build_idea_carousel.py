@@ -45,6 +45,14 @@ from build_x_carousel import (
     shared_css,
     string_value,
 )
+from carousel_music import (
+    DEFAULT_MUSIC_LIBRARY,
+    DEFAULT_SHORT_CLIP_SECONDS,
+    add_music_to_video,
+    music_manifest,
+    select_music_track,
+    short_clip_duration,
+)
 from channel import load_channel
 from generate_cover import generate_openai, openai_api_key
 
@@ -58,6 +66,13 @@ DEFAULT_COVER_TEMPLATE = "auto"
 KINETIC_FLY_CYCLE_SECONDS = 5.2
 KINETIC_FLY_FPS = 30
 RESEARCH_BRIEF_RENDER_SOURCE = "research_idea_generator"
+FIXED_RESEARCH_CTA_COPY = {
+    "kicker": "コメント歓迎",
+    "headline": "気になる論点をコメントで教えて",
+    "body": "AI開発のニュースを一次情報ベースで毎日整理します。続きはフォローでチェック。",
+    "action": "フォローして次の要点を見る",
+    "alt_text": "コメントとフォローを促すAIブリーフのCTAスライド。",
+}
 
 KINETIC_COVER_TEMPLATE_CATALOG: tuple[dict[str, Any], ...] = (
     {
@@ -132,6 +147,16 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def env_float(default: float, name: str) -> float:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def is_render_ready_carousel(carousel: dict[str, Any]) -> bool:
     return isinstance(carousel.get("page_order"), list) and isinstance(carousel.get("cover_page"), dict)
 
@@ -142,6 +167,10 @@ def is_research_carousel_brief(carousel: dict[str, Any]) -> bool:
         and not isinstance(carousel.get("page_order"), list)
         and not isinstance(carousel.get("cover_page"), dict)
     )
+
+
+def fixed_research_cta_copy() -> dict[str, str]:
+    return dict(FIXED_RESEARCH_CTA_COPY)
 
 
 def carousel_slug(carousel: dict[str, Any], index: int) -> str:
@@ -702,7 +731,8 @@ def research_brief_to_render_carousel(
         "source_brief_evidence_urls": [record["url"] for record in source_records],
         "generated_at": string_value((source_payload or {}).get("generatedAt")),
         "instagram_caption": multiline_string_value(brief.get("instagramDescription")),
-        "suppress_cta": True,
+        "suppress_cta": False,
+        "cta": fixed_research_cta_copy(),
         "cover_page": {
             "kicker": "RESEARCH LEAD",
             "headline": hook,
@@ -759,6 +789,8 @@ def research_brief_to_render_carousel(
             "alt_text": string_value(slide.get("altText")) or f"Story slide {item_index} for {hook}.",
         }
 
+    if not carousel["suppress_cta"]:
+        page_order.append("cta")
     carousel["page_order"] = page_order
     carousel["page_count"] = len(page_order)
     return carousel
@@ -2418,6 +2450,10 @@ def render_carousel(
     reusable_assets: dict[str, Any] | None = None,
     cover_style: str = DEFAULT_COVER_STYLE,
     cover_template: str | None = DEFAULT_COVER_TEMPLATE,
+    music_library: Path | None = DEFAULT_MUSIC_LIBRARY,
+    music_clip_id: str = "",
+    music_duration_seconds: float | None = DEFAULT_SHORT_CLIP_SECONDS,
+    enable_music: bool = True,
 ) -> Path:
     carousel = normalize_carousel_for_render(carousel)
     channel = load_channel(channel_id or string_value(carousel.get("channel_id")) or None)
@@ -2430,6 +2466,23 @@ def render_carousel(
     cover_style = normalize_cover_style(cover_style)
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
+    music_track = (
+        select_music_track(
+            library_path=music_library,
+            carousel_id=string_value(carousel.get("id")),
+            requested_clip_id=music_clip_id,
+        )
+        if enable_music
+        else None
+    )
+    music_duration = (
+        short_clip_duration(
+            music_duration_seconds if music_duration_seconds is not None else music_track.duration_seconds,
+            music_track.duration_seconds,
+        )
+        if music_track
+        else 0.0
+    )
     slides: list[dict[str, Any]] = []
     cover_path = out_dir / "slide_01.mp4"
     cover_poster = cover_poster_path(cover_path)
@@ -2444,6 +2497,7 @@ def render_carousel(
             count=total,
             channel=channel,
             cover_template=cover_template_id,
+            **({"duration_seconds": music_duration} if music_track else {}),
         )
     else:
         context, _cover_copy, cover_image = title_context(
@@ -2473,14 +2527,30 @@ def render_carousel(
             None,
             context,
             channel.account_name or DEFAULT_ACCOUNT_NAME,
+            **({"duration_seconds": music_duration} if music_track else {}),
         )
+    cover_media_path = cover_path
+    cover_audio: dict[str, Any] = {}
+    if music_track:
+        cover_media_path = cover_path.with_name(f"{cover_path.stem}_music.mp4")
+        print(f"[music] adding {music_track.clip_id} ({music_duration:.1f}s) -> {cover_media_path}")
+        add_music_to_video(
+            cover_path,
+            music_track,
+            cover_media_path,
+            duration_seconds=music_duration,
+            run_command=run,
+        )
+        cover_audio = music_manifest(music_track, duration_seconds=music_duration)
     slides.append(
         {
             "index": 1,
             "type": "title",
-            "path": str(cover_path.resolve()),
+            "path": str(cover_media_path.resolve()),
             "poster": str(cover_poster.resolve()),
             "image_path": str(cover_image or ""),
+            "source_video_path": str(cover_path.resolve()) if cover_media_path != cover_path else "",
+            "audio": cover_audio,
             "source_image_url": string_value(cover.get("source_image_url")),
             "source_image_urls": cover.get("source_image_urls") if isinstance(cover.get("source_image_urls"), list) else [],
             "image_composition": image_composition,
@@ -2538,23 +2608,25 @@ def render_carousel(
     if not suppress_cta:
         cta = carousel.get("cta")
         cta = cta if isinstance(cta, dict) else {}
+        cta_copy = {
+            "kicker": string_value(cta.get("kicker")) or "FOLLOW",
+            "headline": string_value(cta.get("headline")) or "Follow for more",
+            "body": string_value(cta.get("body")),
+            "action": string_value(cta.get("action")) or "Follow + Save",
+            "alt_text": string_value(cta.get("alt_text")),
+        }
         cta_path = out_dir / f"slide_{total:02d}.png"
         render_cta_slide(
             cta_path,
             total,
             total,
-            {
-                "kicker": "FOLLOW",
-                "headline": string_value(cta.get("headline")) or "Follow for more",
-                "body": string_value(cta.get("body")),
-                "action": string_value(cta.get("action")) or "Follow + Save",
-            },
+            cta_copy,
         )
         slides.append({
             "index": total,
             "type": "cta",
             "path": str(cta_path.resolve()),
-            "alt_text": string_value(cta.get("alt_text")),
+            "alt_text": string_value(cta_copy.get("alt_text")),
         })
     manifest = {
         "source": string_value(carousel.get("render_source")) or RESEARCH_BRIEF_RENDER_SOURCE,
@@ -2566,6 +2638,7 @@ def render_carousel(
         "cover_image_provider": "reused" if cover_image and reusable_assets.get("cover") else "openai" if cover_image else "",
         "instagram_caption": multiline_string_value(carousel.get("instagram_caption")),
         "suppress_cta": suppress_cta,
+        "carousel_music": cover_audio,
         "slides": slides,
     }
     for key in (
@@ -2608,6 +2681,28 @@ def main() -> int:
         default=os.environ.get("IDEA_COVER_TEMPLATE", DEFAULT_COVER_TEMPLATE),
         help="Kinetic cover template: auto, stop-signal, pattern-break, metric-snap, split-switch, or loom-reveal",
     )
+    parser.add_argument(
+        "--music-library",
+        type=Path,
+        default=Path(os.environ.get("CAROUSEL_MUSIC_LIBRARY", DEFAULT_MUSIC_LIBRARY)),
+        help="JSON library of local short music clips for carousel cover videos",
+    )
+    parser.add_argument(
+        "--music-clip",
+        default=os.environ.get("CAROUSEL_MUSIC_CLIP", ""),
+        help="Specific music clip id from --music-library; defaults to deterministic selection",
+    )
+    parser.add_argument(
+        "--music-duration",
+        type=float,
+        default=env_float(DEFAULT_SHORT_CLIP_SECONDS, "CAROUSEL_MUSIC_DURATION"),
+        help="Short clip duration in seconds; defaults to 60 and caps at 60",
+    )
+    parser.add_argument(
+        "--no-carousel-music",
+        action="store_true",
+        help="Disable local music clip muxing even when a library exists",
+    )
     args = parser.parse_args()
 
     payload = read_json(args.input)
@@ -2648,6 +2743,10 @@ def main() -> int:
         reusable_assets=load_reusable_assets(args.asset_manifest),
         cover_style=args.cover_style,
         cover_template=args.cover_template,
+        music_library=args.music_library,
+        music_clip_id=args.music_clip,
+        music_duration_seconds=args.music_duration,
+        enable_music=not args.no_carousel_music,
     )
     print(manifest_path)
     return 0

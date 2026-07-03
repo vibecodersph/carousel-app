@@ -80,8 +80,9 @@ class IdeaCarouselRendererTests(unittest.TestCase):
 
         self.assertEqual(carousel["render_source"], "research_idea_generator")
         self.assertEqual(carousel["id"], "research-brief-local-agents")
-        self.assertEqual(carousel["page_order"], ["cover_page", "item_1"])
-        self.assertTrue(carousel["suppress_cta"])
+        self.assertEqual(carousel["page_order"], ["cover_page", "item_1", "cta"])
+        self.assertFalse(carousel["suppress_cta"])
+        self.assertEqual(carousel["cta"], build_idea_carousel.fixed_research_cta_copy())
         self.assertEqual(carousel["cover_page"]["headline"], brief["hook"])
         self.assertEqual(carousel["cover_page"]["subheadline"], "")
         self.assertEqual(carousel["cover_page"]["kinetic_subline"], "")
@@ -104,7 +105,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["item_1"]["source_image_url"], "https://opengraph.githubassets.com/1/example/item")
         self.assertEqual(carousel["item_1"]["source_image_urls"], ["https://opengraph.githubassets.com/1/example/item"])
         self.assertEqual(carousel["item_1"]["image_prompt"], "Supporting image prompt")
-        self.assertNotIn("cta", carousel)
+        self.assertEqual(carousel["cta"]["headline"], "気になる論点をコメントで教えて")
 
     def test_single_source_image_is_used_once_starting_on_slide_two(self) -> None:
         source_url = "https://example.com/source.webp"
@@ -356,21 +357,24 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                 out_dir=Path(tmp),
                 generate_images=False,
                 channel_id="vibecodersph",
+                enable_music=False,
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["source"], "research_idea_generator")
         self.assertEqual(manifest["source_brief_id"], "brief-router")
         self.assertEqual(manifest["source_brief_hook_style"], "contrarian")
-        self.assertEqual(manifest["slide_count"], 2)
+        self.assertEqual(manifest["slide_count"], 3)
         self.assertEqual(manifest["instagram_caption"], brief["instagramDescription"])
-        self.assertTrue(manifest["suppress_cta"])
+        self.assertFalse(manifest["suppress_cta"])
         self.assertEqual(manifest["slides"][1]["source_url"], "https://github.com/getagentseal/codeburn")
-        self.assertFalse(any(slide["type"] == "cta" for slide in manifest["slides"]))
+        self.assertEqual(manifest["slides"][2]["type"], "cta")
+        self.assertEqual(manifest["slides"][2]["alt_text"], build_idea_carousel.FIXED_RESEARCH_CTA_COPY["alt_text"])
         page = render_item.call_args.args[0]
         self.assertEqual(page["headline"], "Smart routing sends simple tasks to cheaper models.")
         self.assertEqual(page["body"], "")
-        render_cta.assert_not_called()
+        render_cta.assert_called_once()
+        self.assertEqual(render_cta.call_args.args[3], build_idea_carousel.fixed_research_cta_copy())
 
     def test_hook_only_research_cover_omits_content_labels(self) -> None:
         channel = build_idea_carousel.load_channel("vibecodersph")
@@ -601,13 +605,14 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             build_idea_carousel, "render_item_slide"
         ), patch.object(
             build_idea_carousel, "render_cta_slide"
-        ):
+        ) as render_cta:
             out_dir = Path(tmp)
             manifest_path = build_idea_carousel.render_carousel(
                 carousel,
                 out_dir=out_dir,
                 generate_images=False,
                 channel_id=None,
+                enable_music=False,
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -622,6 +627,80 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         title_context = render_cover.call_args.args[4]
         self.assertEqual(title_context["cover_animation"], "text-motion-lines")
         self.assertEqual(title_context["image_composition"], "")
+        self.assertNotIn("duration_seconds", render_cover.call_args.kwargs)
+        cta_copy = render_cta.call_args.args[3]
+        self.assertEqual(cta_copy["headline"], "Save the stack")
+        self.assertEqual(cta_copy["body"], "Follow for more tools.")
+        self.assertEqual(cta_copy["action"], "Follow + Save")
+        self.assertNotEqual(cta_copy["headline"], build_idea_carousel.FIXED_RESEARCH_CTA_COPY["headline"])
+
+    def test_render_carousel_mixes_short_music_into_cover_video(self) -> None:
+        carousel = {
+            "id": "music-enabled",
+            "page_order": ["cover_page", "item_1"],
+            "suppress_cta": True,
+            "cover_page": {
+                "headline": "Short clips belong on carousel covers",
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "headline": "The music is baked into the MP4.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+            },
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "signal.mp3"
+            audio.write_bytes(b"audio")
+            library = root / "library.json"
+            library.write_text(
+                json.dumps(
+                    {
+                        "tracks": [
+                            {
+                                "id": "signal-glow",
+                                "title": "Signal Glow",
+                                "path": str(audio),
+                                "duration_seconds": 26,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                build_idea_carousel, "render_animated_title_slide"
+            ) as render_cover, patch.object(
+                build_idea_carousel, "render_item_slide"
+            ), patch.object(
+                build_idea_carousel, "add_music_to_video"
+            ) as add_music:
+                manifest_path = build_idea_carousel.render_carousel(
+                    carousel,
+                    out_dir=root,
+                    generate_images=False,
+                    channel_id="vibecodersph",
+                    music_library=library,
+                    music_clip_id="signal-glow",
+                    music_duration_seconds=18,
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        cover = manifest["slides"][0]
+        self.assertTrue(cover["path"].endswith("slide_01_music.mp4"))
+        self.assertTrue(cover["source_video_path"].endswith("slide_01.mp4"))
+        self.assertEqual(cover["audio"]["clip_id"], "signal-glow")
+        self.assertEqual(cover["audio"]["duration_seconds"], 18)
+        self.assertEqual(manifest["carousel_music"]["clip_id"], "signal-glow")
+        self.assertEqual(render_cover.call_args.kwargs["duration_seconds"], 18)
+        add_music.assert_called_once()
+        self.assertEqual(add_music.call_args.args[1].clip_id, "signal-glow")
+        self.assertEqual(add_music.call_args.kwargs["duration_seconds"], 18)
 
     def test_kinetic_fly_cover_html_uses_circular_aibrief_logo_and_plain_handle(self) -> None:
         channel = build_idea_carousel.load_channel("aibrief_jp")
@@ -799,6 +878,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                 generate_images=False,
                 channel_id="aibrief_jp",
                 cover_style="kinetic-fly",
+                enable_music=False,
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -845,6 +925,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                 channel_id="vibecodersph",
                 cover_style="kinetic-fly",
                 cover_template="auto",
+                enable_music=False,
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -899,6 +980,7 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                 channel_id="vibecodersph",
                 cover_style="kinetic-fly",
                 cover_template="auto",
+                enable_music=False,
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 

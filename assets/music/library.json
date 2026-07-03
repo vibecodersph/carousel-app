@@ -1,0 +1,84 @@
+{
+  "tracks": [
+    {
+      "id": "compute-room-104074e9-v45",
+      "title": "Compute Room",
+      "path": "clips/compute-room-104074e9-v45-60s.mp3",
+      "source": "suno:v4.5-all:104074e9-da16-440b-91a6-35b8abd8f9b2",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "data-sunrise-de8b61cc-v45",
+      "title": "Data Sunrise",
+      "path": "clips/data-sunrise-de8b61cc-v45-60s.mp3",
+      "source": "suno:v4.5-all:de8b61cc-046e-458c-a491-d2ea16897aa7",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "signal-glow-f861f584-v45",
+      "title": "Signal Glow",
+      "path": "clips/signal-glow-f861f584-v45-60s.mp3",
+      "source": "suno:v4.5-all:f861f584-c06a-4ecd-bca2-2fed6a60a89b",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "neural-brief-08a73f7a-v45",
+      "title": "Neural Brief",
+      "path": "clips/neural-brief-08a73f7a-v45-60s.mp3",
+      "source": "suno:v4.5-all:08a73f7a-fe75-4738-a4ef-364002836a6a",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "midnight-compile-1798a852-v45",
+      "title": "Midnight Compile",
+      "path": "clips/midnight-compile-1798a852-v45-60s.mp3",
+      "source": "suno:v4.5:sha256:1798a85233f17cc91eac37598abff37ca4f5b44ee634a4b9fa6b138309d15916",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "midnight-compile-ad497c70-v45",
+      "title": "Midnight Compile",
+      "path": "clips/midnight-compile-ad497c70-v45-60s.mp3",
+      "source": "suno:v4.5:sha256:ad497c708ae68394ec2a2568de6c63256d54667eb0db18b6da1f883b3a9e2639",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "tsuki-no-yohaku-fc886f64-v45",
+      "title": "Tsuki no Yohaku",
+      "path": "clips/tsuki-no-yohaku-fc886f64-v45-60s.mp3",
+      "source": "suno:v4.5:sha256:fc886f643744fc14c468f1dd3c0eeb4c2a4af1049e2f5378ebc174346a0c6531",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    },
+    {
+      "id": "tsuki-no-yohaku-d5c3e2d0-v45",
+      "title": "Tsuki no Yohaku",
+      "path": "clips/tsuki-no-yohaku-d5c3e2d0-v45-60s.mp3",
+      "source": "suno:v4.5:sha256:d5c3e2d0db62e9e7dbd19aeb9772760bea8433196d30885185417f2cb3afc541",
+      "start_seconds": 0,
+      "duration_seconds": 60,
+      "volume": 0.42,
+      "fade_seconds": 0.7
+    }
+  ]
+}

@@ -319,12 +319,39 @@ queue file instead of mutating archived run folders. Newly discovered briefs are
 assigned `aibrief_jp` publish slots at `09:00`, `12:00`, `18:00`, and `21:00`
 Asia/Tokyo, so every queued item carries a concrete `scheduledAt` value.
 
-The publisher wrapper scans archived runs, then publishes the next rendered
-queue item:
+The publisher wrapper scans archived runs, then publishes the next due queue
+item with a rendered manifest:
 
 ```sh
 scripts/run_research_carousel_publisher_due.sh
 ```
+
+#### Carousel Music Clips
+
+Instagram's Graph API does not expose the in-app carousel music picker, so this
+repo treats music as a local render/publish step. Put short audio clips in
+`assets/music/clips/`, copy `assets/music/library.example.json` to
+`assets/music/library.json`, and point each track at a 15-60 second file.
+
+If Suno generates a full song, trim it before adding it to the library:
+
+```sh
+mkdir -p assets/music/clips
+ffmpeg -y -ss 0 -t 60 -i ~/Downloads/suno-track.mp3 \
+  -af "afade=t=in:st=0:d=0.7,afade=t=out:st=59.3:d=0.7" \
+  assets/music/clips/signal-glow-60s.mp3
+```
+
+`build_idea_carousel.py` muxes the selected clip into the cover MP4 when a
+library exists, and `instagram_publish.py` has the same fallback before R2
+upload for already-rendered carousel manifests. Both paths skip one-item video
+publishes/Reels, and both support:
+
+```sh
+--music-library assets/music/library.json --music-clip signal-glow --music-duration 60
+```
+
+Use `--no-carousel-music` to disable the local clip step for a render or publish.
 
 When `--cover-style kinetic-fly` is enabled, `--cover-template auto` scores the
 hook and chooses a motion cover template from `stop-signal`, `pattern-break`,

@@ -32,6 +32,7 @@ export interface QueuedCarouselBrief {
   firstSeenAt: string;
   lastSeenAt: string;
   renderedManifestPath?: string;
+  renderedAt?: string;
   scheduledAt?: string;
   publishedAt?: string;
   permalink?: string;

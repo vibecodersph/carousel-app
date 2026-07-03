@@ -1,6 +1,8 @@
+import json
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import instagram_publish
@@ -83,6 +85,128 @@ class InstagramPublishMediaItemTests(unittest.TestCase):
 
         self.assertNotIn("--facebook", help_text)
         self.assertNotIn("Facebook Page", help_text)
+
+
+class InstagramPublishCarouselMusicTests(unittest.TestCase):
+    def test_applies_carousel_music_to_first_video_item_before_upload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "slide_01.mp4"
+            image = root / "slide_02.png"
+            audio = root / "signal.mp3"
+            manifest_path = root / "manifest.json"
+            library = root / "music.json"
+            video.write_bytes(b"video")
+            image.write_bytes(b"image")
+            audio.write_bytes(b"audio")
+            library.write_text(
+                json.dumps(
+                    {
+                        "tracks": [
+                            {
+                                "id": "signal-glow",
+                                "path": str(audio),
+                                "duration_seconds": 24,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = {
+                "carousel_id": "brief-router",
+                "slides": [
+                    {"index": 1, "type": "title", "path": str(video)},
+                    {"index": 2, "type": "item", "path": str(image)},
+                ],
+            }
+            items = instagram_publish.build_media_items(
+                manifest,
+                manifest_path,
+                media_base_url="https://cdn.example.com/run",
+                overrides={},
+                dry_run=False,
+            )
+
+            with patch.object(instagram_publish, "add_music_to_video") as add_music:
+                result = instagram_publish.apply_carousel_music(
+                    items,
+                    manifest,
+                    manifest_path,
+                    media_base_url="https://cdn.example.com/run",
+                    music_library=library,
+                    music_clip_id="signal-glow",
+                    music_duration_seconds=18,
+                    enabled=True,
+                    single_video_media_type="VIDEO",
+                )
+
+        self.assertEqual(result["clip_id"], "signal-glow")
+        self.assertEqual(result["duration_seconds"], 18)
+        self.assertTrue(items[0].local_path.endswith("instagram_music/slide_01_signal-glow_18s.mp4"))
+        self.assertEqual(
+            items[0].public_url,
+            "https://cdn.example.com/run/slide_01_signal-glow_18s.mp4",
+        )
+        self.assertEqual(items[0].audio["clip_id"], "signal-glow")
+        add_music.assert_called_once()
+        self.assertTrue(add_music.call_args.kwargs["loop_video"])
+
+    def test_skips_carousel_music_for_reels_and_single_video_publishes(self) -> None:
+        item = instagram_publish.MediaItem(
+            index=1,
+            kind="video",
+            local_path="/tmp/reel.mp4",
+            public_url="https://cdn.example.com/reel.mp4",
+            slide_type="video",
+            source_url="",
+        )
+
+        with patch.object(instagram_publish, "add_music_to_video") as add_music:
+            result = instagram_publish.apply_carousel_music(
+                [item],
+                {"source_type": "scheduled_reel"},
+                instagram_publish.ROOT / "out" / "manifest.json",
+                media_base_url="https://cdn.example.com",
+                music_library=None,
+                music_clip_id="",
+                music_duration_seconds=18,
+                enabled=True,
+                single_video_media_type="REELS",
+            )
+
+        self.assertEqual(result, {})
+        add_music.assert_not_called()
+
+    def test_skips_carousel_music_when_manifest_already_has_audio(self) -> None:
+        items = [
+            instagram_publish.MediaItem(
+                index=1,
+                kind="video",
+                local_path="/tmp/slide_01_music.mp4",
+                public_url="https://cdn.example.com/slide_01_music.mp4",
+                slide_type="title",
+                source_url="",
+                audio={"clip_id": "signal-glow"},
+            ),
+            image_item(2),
+        ]
+
+        with patch.object(instagram_publish, "add_music_to_video") as add_music:
+            result = instagram_publish.apply_carousel_music(
+                items,
+                {"carousel_music": {"clip_id": "signal-glow"}},
+                instagram_publish.ROOT / "out" / "manifest.json",
+                media_base_url="https://cdn.example.com",
+                music_library=None,
+                music_clip_id="",
+                music_duration_seconds=18,
+                enabled=True,
+                single_video_media_type="VIDEO",
+            )
+
+        self.assertEqual(result, {})
+        add_music.assert_not_called()
 
 
 class InstagramPublishRetryTests(unittest.TestCase):
