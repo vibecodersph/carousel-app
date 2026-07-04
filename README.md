@@ -465,6 +465,14 @@ Instagram metrics. When `queue-ui` is running, the report's **Update Instagram
 Insights** button fetches fresh Graph API insights and regenerates all report
 artifacts.
 
+Cadence is controlled by each channel's `publishing.instagram_reels.slots` in
+`channels/<id>/channel.json`. The LaunchAgent in
+`ops/com.carousel.reel-scheduler.plist` should stay on its 900-second check
+interval; that timer controls pickup latency, not posts per day. For
+`aibrief_jp`, use `scripts/apply_aibrief_4day_reflow.sh --dry-run --start-at
+2026-07-04` to preview the four-Reel schedule migration, then rerun with
+`--apply` only when intentionally updating the live ledger.
+
 To rebuild only the readable table from an existing JSON export:
 
 ```sh

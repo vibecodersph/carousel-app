@@ -67,6 +67,8 @@ class ReelSchedulePlanTests(unittest.TestCase):
             self.assertEqual(manifest["slides"][0]["type"], "video")
             self.assertTrue(manifest["slides"][0]["path"].endswith("001-clip-1/reel.mp4"))
             self.assertIn("Claude Codeの話 1", manifest["instagram_caption"])
+            self.assertIn("気になったら保存して、あとで見返してください", manifest["instagram_caption"])
+            self.assertNotIn("毎日のAI開発ニュースはフォローでチェック", manifest["instagram_caption"])
             self.assertIn("#AIブリーフ", manifest["instagram_caption"])
             self.assertIn("#ClaudeCode", manifest["hashtags"])
             self.assertEqual(manifest["source_url"], "https://www.youtube.com/watch?v=example")
@@ -78,6 +80,154 @@ class ReelSchedulePlanTests(unittest.TestCase):
             clips.mkdir()
             with self.assertRaisesRegex(SystemExit, "No 'reel.mp4' files"):
                 reel_scheduler.discover_clips(clips, "reel.mp4")
+
+
+class ReelCaptionRefreshTests(unittest.TestCase):
+    def test_refresh_queued_captions_is_dry_run_until_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            clip = root / "SRC123" / "clips" / "001"
+            clip.mkdir(parents=True)
+            media = clip / "reel.ja.aibrief_jp.mp4"
+            media.write_bytes(b"video")
+            (clip / "notes.json").write_text(
+                json.dumps(
+                    {
+                        "one_liner": "Claude Code changed how builders work",
+                        "one_liner_translated": "Claude Codeで開発の働き方が変わった",
+                        "reason": "A developer talks about AI agents in software work.",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "SRC123" / "metadata.json").write_text(
+                json.dumps({"webpage_url": "https://www.youtube.com/watch?v=SRC123"}),
+                encoding="utf-8",
+            )
+            manifest_path = root / "manifests" / "queued" / "manifest.json"
+            old_caption = "古いキャプション\n\n気になったら保存して、あとで見返してください。"
+            reel_scheduler.write_json(
+                manifest_path,
+                {
+                    "instagram_caption": old_caption,
+                    "hashtags": ["#old"],
+                    "topic": "old",
+                    "description": "old",
+                    "source_url": "https://www.youtube.com/watch?v=SRC123",
+                    "slides": [{"source_url": "https://www.youtube.com/watch?v=SRC123"}],
+                },
+            )
+            caption_path = manifest_path.parent / "caption.txt"
+            caption_path.write_text(old_caption + "\n", encoding="utf-8")
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="queued-caption",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=clip,
+                    media_path=media,
+                    source_video="SRC123",
+                    title="Claude Codeで開発の働き方が変わった",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    scheduled_at="2026-07-04T09:00:00+09:00",
+                    manifest_path=str(manifest_path),
+                )
+                conn.execute(
+                    "UPDATE reels SET caption=? WHERE content_hash=? AND channel_id=?",
+                    (old_caption, "queued-caption", "aibrief_jp"),
+                )
+
+            preview_path = root / "caption_refresh_preview.md"
+            with patch.object(reel_scheduler.subprocess, "run") as run:
+                changed = reel_scheduler.refresh_queued_captions(
+                    db_path=db,
+                    channel_filter="aibrief_jp",
+                    settings_key="instagram_reels",
+                    apply=False,
+                    preview_out=preview_path,
+                )
+                run.assert_not_called()
+            self.assertEqual(changed, 1)
+            preview = preview_path.read_text(encoding="utf-8")
+            self.assertIn("# Queued Caption Refresh Preview", preview)
+            self.assertIn("Claude Codeで開発の働き方が変わった", preview)
+            self.assertIn("気になったら保存して、あとで見返してください", preview)
+            self.assertIn("Publisher subprocess invoked: False", preview)
+            self.assertIn("Fingerprint before:", preview)
+            with reel_ledger.connect(db) as conn:
+                row = reel_ledger.get_reel(conn, "queued-caption", "aibrief_jp")
+                self.assertEqual(row["caption"], old_caption)
+            self.assertEqual(reel_scheduler.read_json(manifest_path)["instagram_caption"], old_caption)
+            self.assertEqual(caption_path.read_text(encoding="utf-8"), old_caption + "\n")
+
+            with patch.object(reel_scheduler.subprocess, "run") as run:
+                changed = reel_scheduler.refresh_queued_captions(
+                    db_path=db,
+                    channel_filter="aibrief_jp",
+                    settings_key="instagram_reels",
+                    apply=True,
+                )
+                run.assert_not_called()
+            self.assertEqual(changed, 1)
+            with reel_ledger.connect(db) as conn:
+                row = reel_ledger.get_reel(conn, "queued-caption", "aibrief_jp")
+                self.assertIn("気になったら保存して、あとで見返してください", row["caption"])
+                self.assertNotIn("毎日のAI開発ニュースはフォローでチェック", row["caption"])
+            manifest = reel_scheduler.read_json(manifest_path)
+            self.assertIn("気になったら保存して、あとで見返してください", manifest["instagram_caption"])
+            self.assertIn("#AIブリーフ", manifest["hashtags"])
+            self.assertEqual(caption_path.read_text(encoding="utf-8"), manifest["instagram_caption"] + "\n")
+
+
+class ReelQueueGrowthAuditTests(unittest.TestCase):
+    def test_queue_growth_audit_reports_source_and_cta_risks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                for index in range(1, 5):
+                    source = "SRC_A" if index <= 3 else "SRC_B"
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=f"queued-audit-{index}",
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=root / source / "clips" / f"{index:03d}",
+                        media_path=root / source / "clips" / f"{index:03d}" / "reel.ja.aibrief_jp.mp4",
+                        source_video=source,
+                        title=f"Claude audit title {index}",
+                        status=reel_ledger.STATUS_SCHEDULED,
+                        scheduled_at=f"2026-07-0{index}T09:00:00+09:00",
+                    )
+                    conn.execute(
+                        "UPDATE reels SET caption=? WHERE content_hash=? AND channel_id=?",
+                        (
+                            "AI開発の現場で何が起きているのか、短いクリップで紹介します。\n\n"
+                            "気になったら保存して、あとで見返してください。",
+                            f"queued-audit-{index}",
+                            "aibrief_jp",
+                        ),
+                    )
+
+            audit = reel_scheduler.build_queue_growth_audit(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                platform="instagram",
+                limit=None,
+            )
+            self.assertEqual(audit["queued_count"], 4)
+            self.assertEqual(audit["cta"]["follow_cta_count"], 0)
+            self.assertEqual(audit["cta"]["old_save_cta_count"], 4)
+            self.assertEqual(audit["source_counts"][0]["source_video"], "SRC_A")
+            self.assertEqual(audit["source_counts"][0]["count"], 3)
+            self.assertTrue(any("Top source SRC_A" in warning for warning in audit["warnings"]))
+            markdown = reel_scheduler.render_queue_growth_audit_markdown(audit)
+            self.assertIn("# Queued Reel Growth Audit", markdown)
+            self.assertNotIn("No queued captions contain a follow CTA", markdown)
+            self.assertIn("| SRC_A | 3 | 75.0%", markdown)
 
 
 class ReelScheduleRunTests(unittest.TestCase):
@@ -655,13 +805,63 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                         ("queued-1", "2026-06-25T09:00:00+09:00"),
                         ("queued-2", "2026-06-25T13:00:00+09:00"),
                         ("queued-3", "2026-06-25T19:00:00+09:00"),
-                        ("queued-4", "2026-06-26T09:00:00+09:00"),
+                        ("queued-4", "2026-06-25T22:00:00+09:00"),
                     ],
                 )
                 manifest = reel_scheduler.read_json(
                     root / "manifests" / "queued-1" / "manifest.json"
                 )
                 self.assertEqual(manifest["scheduled_at"], "2026-06-25T09:00:00+09:00")
+
+    def test_reflow_queue_preserves_queued_rows_before_start_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                for content_hash, scheduled_at in [
+                    ("before-boundary", "2026-06-24T19:00:00+09:00"),
+                    ("after-boundary-1", "2026-06-25T01:00:00+09:00"),
+                    ("after-boundary-2", "2026-06-25T02:00:00+09:00"),
+                ]:
+                    clip = root / "clips" / content_hash
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(content_hash.encode("utf-8"))
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=content_hash,
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video="AAA111",
+                        title=content_hash,
+                        status=reel_ledger.STATUS_PREVIEWED,
+                        scheduled_at=scheduled_at,
+                    )
+
+            reel_scheduler.reflow_queue_rows(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                start_at_text="2026-06-25",
+                jitter_minutes=0,
+                settings_key="instagram_reels",
+                apply=True,
+            )
+            with reel_ledger.connect(db) as conn:
+                rows = conn.execute(
+                    "SELECT content_hash, scheduled_at FROM reels "
+                    "WHERE channel_id='aibrief_jp' AND status=? ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [
+                        ("before-boundary", "2026-06-24T19:00:00+09:00"),
+                        ("after-boundary-1", "2026-06-25T09:00:00+09:00"),
+                        ("after-boundary-2", "2026-06-25T13:00:00+09:00"),
+                    ],
+                )
 
     def test_reflow_queue_can_start_today_after_posts_were_published_early(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -770,7 +970,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     [(row["content_hash"], row["scheduled_at"]) for row in rows],
                     [
                         ("queued-no-ad-hoc-1", "2026-06-25T19:00:00+09:00"),
-                        ("queued-no-ad-hoc-2", "2026-06-26T09:00:00+09:00"),
+                        ("queued-no-ad-hoc-2", "2026-06-25T22:00:00+09:00"),
                     ],
                 )
 
@@ -818,6 +1018,34 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                         scheduled_at=scheduled_at,
                         manifest_path=str(manifest),
                     )
+
+            preview_path = root / "alternate_preview.md"
+            changed = reel_scheduler.alternate_source_queue_rows(
+                db_path=db,
+                after_text="2026-06-24T09:45:00+09:00",
+                channel_filter=None,
+                apply=False,
+                preview_out=preview_path,
+            )
+            self.assertEqual(changed, 4)
+            preview = preview_path.read_text(encoding="utf-8")
+            self.assertIn("# Alternate Source Preview", preview)
+            self.assertIn("Rows that would move: 2", preview)
+            with reel_ledger.connect(db) as conn:
+                dry_run_scheduled = conn.execute(
+                    "SELECT content_hash, source_video, scheduled_at FROM reels "
+                    "WHERE status=? ORDER BY scheduled_at",
+                    (reel_ledger.STATUS_PREVIEWED,),
+                ).fetchall()
+                self.assertEqual(
+                    [(row["content_hash"], row["source_video"], row["scheduled_at"]) for row in dry_run_scheduled],
+                    [
+                        ("queued-1", "We7BZVKbCVw", "2026-06-24T13:00:00+09:00"),
+                        ("queued-2", "We7BZVKbCVw", "2026-06-24T19:00:00+09:00"),
+                        ("queued-3", "PQU9o_5rHC4", "2026-06-25T09:00:00+09:00"),
+                        ("queued-4", "PQU9o_5rHC4", "2026-06-25T13:00:00+09:00"),
+                    ],
+                )
 
             reel_scheduler.alternate_source_queue_rows(
                 db_path=db,
@@ -941,7 +1169,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 db=db,
                 limit=None,
                 dry_run=False,
-                metrics="views,saved,total_interactions",
+                metrics="views,total_views,likes,total_likes,comments,total_comments,saved,total_interactions",
                 access_token="",
                 graph_api_version="v23.0",
                 graph_api_root="https://graph.instagram.com",
@@ -956,6 +1184,11 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 return_value={
                     "data": [
                         {"name": "views", "values": [{"value": 1200}]},
+                        {"name": "total_views", "values": [{"value": 2200}]},
+                        {"name": "likes", "values": [{"value": 12}]},
+                        {"name": "total_likes", "values": [{"value": 15}]},
+                        {"name": "comments", "values": [{"value": 2}]},
+                        {"name": "total_comments", "values": [{"value": 3}]},
                         {"name": "saved", "values": [{"value": 44}]},
                         {"name": "total_interactions", "values": [{"value": 88}]},
                     ]
@@ -966,7 +1199,9 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             with reel_ledger.connect(db) as conn:
                 row = conn.execute("SELECT * FROM insights WHERE media_id='178900002'").fetchone()
-                self.assertEqual(row["views"], 1200)
+                self.assertEqual(row["views"], 2200)
+                self.assertEqual(row["likes"], 15)
+                self.assertEqual(row["comments"], 3)
                 self.assertEqual(row["saved"], 44)
 
     def test_sync_insights_skips_one_graph_error_and_continues(self) -> None:
@@ -1117,6 +1352,18 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     raw=json.dumps({"data": [{"name": "views", "values": [{"value": 1234}]}]}),
                     captured_at="2026-06-25T00:00:00+00:00",
                 )
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="h-report-jp",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=clip,
+                    media_path=media_path,
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    source_video="VID123",
+                    title="JP queued",
+                    scheduled_at="2026-06-24T09:00:00+09:00",
+                )
 
             report_path = root / "reel_report.html"
             rc = reel_scheduler.report_command(
@@ -1136,6 +1383,16 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertIn("Update Instagram Insights", html)
             self.assertIn("reel_report.insights.json", html)
             self.assertIn("reel_report.insights.md", html)
+            self.assertIn('href="#channel-aibrief_jp"', html)
+            self.assertIn('href="#channel-vibecodersph"', html)
+            self.assertIn('id="channel-aibrief_jp"', html)
+            self.assertIn('id="channel-vibecodersph"', html)
+            self.assertIn("AI Brief JP (aibrief_jp)", html)
+            self.assertIn("VibeCoders PH (vibecodersph)", html)
+            self.assertIn("June 24, 9AM JST", html)
+            self.assertIn("June 24, 8AM PHT", html)
+            self.assertIn("June 25, 8AM PHT", html)
+            self.assertNotIn("<th>Published</th><th>Channel</th>", html)
             payload = json.loads(report_path.with_suffix(".insights.json").read_text(encoding="utf-8"))
             item = payload["items"][0]
             self.assertEqual(item["insights"]["metrics"]["views"], 1234)
@@ -1296,6 +1553,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 settings_key="instagram_reels",
                 platform="instagram",
                 report_out=report_out,
+                report_sync_action_url="http://127.0.0.1:9999/sync-insights",
             )
             server = reel_scheduler.ThreadingHTTPServer(("127.0.0.1", 0), handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1315,6 +1573,8 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertNotIn("error=", location)
                 sync.assert_called_once()
                 self.assertTrue(report_out.exists())
+                html = report_out.read_text(encoding="utf-8")
+                self.assertIn('action="http://127.0.0.1:9999/sync-insights"', html)
                 self.assertTrue(report_out.with_suffix(".insights.json").exists())
                 self.assertTrue(report_out.with_suffix(".insights.md").exists())
             finally:

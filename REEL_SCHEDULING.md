@@ -277,7 +277,7 @@ The published media id is captured in each **real** publish report
 (`result.published.id` in `instagram_publish.json`; dry-run reports have an empty
 `result`, so only live publishes are stats-eligible). `sync-insights` reads it
 and calls Graph
-`GET /{media-id}/insights?metric=views,reach,likes,comments,saved,shares,total_interactions`,
+`GET /{media-id}/insights?metric=views,total_views,reach,likes,total_likes,comments,total_comments,saved,shares,total_interactions`,
 storing a snapshot per run so trends are visible.
 
 **API caveats (verified against current Meta docs):**
@@ -292,6 +292,10 @@ storing a snapshot per run so trends are visible.
   out. `reach`, `likes`, `comments`, `shares`, `total_interactions` remain valid;
   reels-specific extras like `ig_reels_avg_watch_time` and `reposts` are
   available if wanted.
+- The report stores **`total_views`**, **`total_likes`**, and
+  **`total_comments`** into the visible `views`/`likes`/`comments` columns when
+  Meta returns them. This better matches the Instagram app on older/crossposted
+  reels while still falling back to the base metrics when the totals are absent.
 - Verify with a single `/insights` call before relying on live numbers.
 
 ### Dashboard

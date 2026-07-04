@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -1183,6 +1184,675 @@ def mark_manifest_unscheduled(manifest_path: Path) -> None:
     write_json(manifest_path, data)
 
 
+def rebuilt_caption_for_row(row: Any, settings_key: str) -> tuple[str, list[str], str]:
+    channel = load_channel(str(row["channel_id"]))
+    clip_dir = Path(str(row["clip_dir"]))
+    notes, _ = load_notes(clip_dir)
+    manifest_path = Path(str(row["manifest_path"] or ""))
+    manifest_data = read_optional_json(manifest_path) if str(row["manifest_path"] or "").strip() else None
+    manifest = manifest_data if isinstance(manifest_data, dict) else {}
+    source_metadata = load_source_metadata(clip_dir.parent)
+    source_url = manifest_source_url(manifest) or source_metadata_value(
+        source_metadata,
+        "webpage_url",
+        "original_url",
+        "url",
+    )
+    lang = str(row["lang"] or "")
+    title = (
+        str(row["title"] or "").strip()
+        or str(manifest.get("topic") or manifest.get("description") or "").strip()
+        or routed_title(lang, notes, load_one_liners(clip_dir))
+    )
+    caption, hashtags = build_caption(
+        channel,
+        clip_dir,
+        notes,
+        source_url=source_url,
+        title_override=title,
+        settings_key=settings_key,
+    )
+    return caption, hashtags, title
+
+
+def update_manifest_caption(manifest_path: Path, caption: str, hashtags: list[str], title: str) -> bool:
+    if not manifest_path.is_file():
+        return False
+    data = read_json(manifest_path)
+    if not isinstance(data, dict):
+        return False
+    data["instagram_caption"] = caption
+    data["hashtags"] = hashtags
+    if title:
+        data["topic"] = title
+        data["description"] = title
+    write_json(manifest_path, data)
+    (manifest_path.parent / "caption.txt").write_text(caption + "\n", encoding="utf-8")
+    return True
+
+
+def caption_refresh_excerpt(caption: str, max_chars: int = 220) -> str:
+    compact = re.sub(r"\s+", " ", caption).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 1].rstrip() + "…"
+
+
+def caption_refresh_hash(caption: str) -> str:
+    return hashlib.sha256(caption.encode("utf-8")).hexdigest()
+
+
+def manifest_hashtags(manifest: dict[str, Any]) -> list[str]:
+    values = manifest.get("hashtags")
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if str(value).strip()]
+
+
+def caption_refresh_record(
+    row: Any,
+    old_caption: str,
+    new_caption: str,
+    *,
+    has_manifest: bool,
+    manifest: dict[str, Any],
+    new_hashtags: list[str],
+) -> dict[str, Any]:
+    manifest_path = Path(str(row["manifest_path"] or ""))
+    caption_path = manifest_path.parent / "caption.txt" if str(row["manifest_path"] or "").strip() else Path("")
+    media_path = Path(str(row["media_path"] or ""))
+    ledger_caption = str(row["caption"] or "").strip()
+    manifest_caption = str(manifest.get("instagram_caption") or "").strip()
+    warnings: list[str] = []
+    if not has_manifest:
+        warnings.append("missing_manifest")
+    if str(row["media_path"] or "").strip() and not media_path.is_file():
+        warnings.append("missing_media")
+    if ledger_caption and manifest_caption and ledger_caption != manifest_caption:
+        warnings.append("ledger_manifest_caption_mismatch")
+    return {
+        "content_hash": str(row["content_hash"] or ""),
+        "channel_id": str(row["channel_id"] or ""),
+        "status": str(row["status"] or ""),
+        "scheduled_at": str(row["scheduled_at"] or ""),
+        "source_video": str(row["source_video"] or ""),
+        "title": str(row["title"] or ""),
+        "media_path": str(row["media_path"] or ""),
+        "caption_path": str(caption_path) if caption_path != Path("") else "",
+        "manifest_path": str(row["manifest_path"] or ""),
+        "has_manifest": has_manifest,
+        "has_media": media_path.is_file() if str(row["media_path"] or "").strip() else False,
+        "source_url": manifest_source_url(manifest),
+        "old_hashtags": manifest_hashtags(manifest),
+        "new_hashtags": new_hashtags,
+        "old_caption_hash": caption_refresh_hash(old_caption),
+        "new_caption_hash": caption_refresh_hash(new_caption),
+        "old_caption_length": len(old_caption),
+        "new_caption_length": len(new_caption),
+        "ledger_manifest_caption_mismatch": bool(
+            ledger_caption and manifest_caption and ledger_caption != manifest_caption
+        ),
+        "warnings": warnings,
+        "old_caption": old_caption,
+        "new_caption": new_caption,
+        "old_excerpt": caption_refresh_excerpt(old_caption),
+        "new_excerpt": caption_refresh_excerpt(new_caption),
+    }
+
+
+def caption_refresh_status_counts(conn: Any, channel_filter: str | None) -> dict[str, int]:
+    query = "SELECT status, COUNT(*) AS n FROM reels"
+    params: list[Any] = []
+    if channel_filter:
+        query += " WHERE channel_id=?"
+        params.append(channel_filter)
+    query += " GROUP BY status ORDER BY status"
+    return {str(row["status"]): int(row["n"]) for row in conn.execute(query, params).fetchall()}
+
+
+def caption_refresh_queue_fingerprint(conn: Any, channel_filter: str | None) -> dict[str, Any]:
+    statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    placeholders = ",".join("?" for _ in statuses)
+    query = (
+        "SELECT content_hash, channel_id, status, scheduled_at, updated_at "
+        "FROM reels WHERE status IN (" + placeholders + ")"
+    )
+    params: list[Any] = list(statuses)
+    if channel_filter:
+        query += " AND channel_id=?"
+        params.append(channel_filter)
+    query += " ORDER BY channel_id, scheduled_at, content_hash"
+    digest = hashlib.sha256()
+    count = 0
+    for row in conn.execute(query, params).fetchall():
+        count += 1
+        digest.update(
+            json.dumps(
+                [
+                    str(row["content_hash"] or ""),
+                    str(row["channel_id"] or ""),
+                    str(row["status"] or ""),
+                    str(row["scheduled_at"] or ""),
+                    str(row["updated_at"] or ""),
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return {"count": count, "sha256": digest.hexdigest()}
+
+
+def connect_ledger_readonly(db_path: Path) -> sqlite3.Connection:
+    path = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def render_caption_refresh_markdown(export: dict[str, Any]) -> str:
+    rows = export.get("items") if isinstance(export.get("items"), list) else []
+    lines = [
+        "# Queued Caption Refresh Preview",
+        "",
+        f"- Generated: {markdown_cell(export.get('generated_at'))}",
+        f"- Mode: {markdown_cell(export.get('mode'))}",
+        f"- Platform: {markdown_cell(export.get('platform'))}",
+        f"- Settings: {markdown_cell(export.get('settings_key'))}",
+        f"- Channel filter: {markdown_cell(export.get('channel_filter'))}",
+        f"- DB: {markdown_cell(export.get('db_path'))}",
+        f"- Statuses: {markdown_cell(', '.join(export.get('statuses') or []))}",
+        f"- Inspected rows: {markdown_number(export.get('inspected_count'))}",
+        f"- Changed queued captions: {len(rows)}",
+        f"- Unchanged rows: {markdown_number(export.get('unchanged_count'))}",
+        f"- Status counts before: {markdown_cell(json.dumps(export.get('status_counts_before') or {}, sort_keys=True))}",
+        f"- Status counts after: {markdown_cell(json.dumps(export.get('status_counts_after') or {}, sort_keys=True))}",
+        f"- Fingerprint before: {markdown_cell((export.get('fingerprint_before') or {}).get('sha256'))}",
+        f"- Fingerprint after: {markdown_cell((export.get('fingerprint_after') or {}).get('sha256'))}",
+        f"- Publisher subprocess invoked: {markdown_cell(str(export.get('publisher_subprocess_invoked')))}",
+        "",
+        "| # | Scheduled | Channel | Status | Source | Title | Old CTA/context | New CTA/context |",
+        "|---:|---|---|---|---|---|---|---|",
+    ]
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {scheduled} | {channel} | {status} | {source} | {title} | {old} | {new} |".format(
+                index=index,
+                scheduled=markdown_cell(item.get("scheduled_at")),
+                channel=markdown_cell(item.get("channel_id")),
+                status=markdown_cell(item.get("status")),
+                source=markdown_cell(item.get("source_video")),
+                title=markdown_cell(item.get("title")),
+                old=markdown_cell(item.get("old_excerpt")),
+                new=markdown_cell(item.get("new_excerpt")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_caption_refresh_preview(
+    out_path: Path,
+    records: list[dict[str, Any]],
+    *,
+    apply: bool,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    export = {
+        "generated_at": utc_now(),
+        "mode": "apply" if apply else "dry-run",
+        "changed_count": len(records),
+        "items": records,
+    }
+    if metadata:
+        export.update(metadata)
+    path = out_path.expanduser().resolve()
+    if path.suffix.lower() == ".json":
+        write_json(path, export)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_caption_refresh_markdown(export), encoding="utf-8")
+
+
+def refresh_queued_captions(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    settings_key: str,
+    apply: bool,
+    limit: int | None = None,
+    preview_out: Path | None = None,
+    platform: str = DEFAULT_PLATFORM,
+) -> int:
+    statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    placeholders = ",".join("?" for _ in statuses)
+    query = "SELECT * FROM reels WHERE status IN (" + placeholders + ") AND scheduled_at IS NOT NULL"
+    params: list[Any] = list(statuses)
+    if channel_filter:
+        query += " AND channel_id=?"
+        params.append(channel_filter)
+    query += " ORDER BY channel_id, scheduled_at, source_video, clip_dir, lang, content_hash"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+
+    previews: list[tuple[Any, str, str, bool]] = []
+    preview_records: list[dict[str, Any]] = []
+    status_counts_before: dict[str, int] = {}
+    status_counts_after: dict[str, int] = {}
+    fingerprint_before: dict[str, Any] = {}
+    fingerprint_after: dict[str, Any] = {}
+    inspected_count = 0
+
+    def inspect_and_optionally_update(conn: Any) -> None:
+        nonlocal inspected_count, status_counts_before, status_counts_after
+        nonlocal fingerprint_before, fingerprint_after
+        status_counts_before = caption_refresh_status_counts(conn, channel_filter)
+        fingerprint_before = caption_refresh_queue_fingerprint(conn, channel_filter)
+        rows = conn.execute(query, params).fetchall()
+        inspected_count = len(rows)
+        for row in rows:
+            new_caption, hashtags, title = rebuilt_caption_for_row(row, settings_key)
+            manifest_path = Path(str(row["manifest_path"] or ""))
+            manifest_data = read_optional_json(manifest_path) if str(row["manifest_path"] or "").strip() else None
+            manifest = manifest_data if isinstance(manifest_data, dict) else {}
+            ledger_caption = str(row["caption"] or "").strip()
+            manifest_caption = str(manifest.get("instagram_caption") or "").strip()
+            old_caption = ledger_caption or manifest_caption
+            changed = ledger_caption != new_caption or manifest_caption != new_caption
+            if not changed:
+                continue
+            previews.append((row, old_caption, new_caption, manifest_path.is_file()))
+            preview_records.append(
+                caption_refresh_record(
+                    row,
+                    old_caption,
+                    new_caption,
+                    has_manifest=manifest_path.is_file(),
+                    manifest=manifest,
+                    new_hashtags=hashtags,
+                )
+            )
+            if not apply:
+                continue
+            conn.execute(
+                "UPDATE reels SET caption=?, updated_at=? WHERE content_hash=? AND channel_id=?",
+                (new_caption, utc_now(), row["content_hash"], row["channel_id"]),
+            )
+            update_manifest_caption(manifest_path, new_caption, hashtags, title)
+        status_counts_after = caption_refresh_status_counts(conn, channel_filter)
+        fingerprint_after = caption_refresh_queue_fingerprint(conn, channel_filter)
+
+    if apply:
+        with reel_ledger.connect(db_path) as conn:
+            inspect_and_optionally_update(conn)
+    else:
+        conn = connect_ledger_readonly(db_path)
+        try:
+            inspect_and_optionally_update(conn)
+        finally:
+            conn.close()
+
+    for row, old_caption, new_caption, has_manifest in previews[:24]:
+        old_line = re.sub(r"\s+", " ", old_caption).strip()[:90]
+        new_line = re.sub(r"\s+", " ", new_caption).strip()[:90]
+        manifest_note = "" if has_manifest else " (missing manifest)"
+        print(
+            f"[reel-scheduler] refresh {row['channel_id']:<14} {row['status']:<16} "
+            f"{row['scheduled_at']}{manifest_note}"
+        )
+        print(f"  old: {old_line}")
+        print(f"  new: {new_line}")
+    if len(previews) > 24:
+        print(f"[reel-scheduler] ... {len(previews) - 24} more queued rows")
+    if preview_out is not None:
+        write_caption_refresh_preview(
+            preview_out,
+            preview_records,
+            apply=apply,
+            metadata={
+                "platform": platform,
+                "settings_key": settings_key,
+                "channel_filter": channel_filter or "",
+                "db_path": str(db_path.expanduser().resolve()),
+                "statuses": statuses,
+                "limit": limit,
+                "inspected_count": inspected_count,
+                "unchanged_count": inspected_count - len(preview_records),
+                "status_counts_before": status_counts_before,
+                "status_counts_after": status_counts_after,
+                "fingerprint_before": fingerprint_before,
+                "fingerprint_after": fingerprint_after,
+                "publisher_subprocess_invoked": False,
+            },
+        )
+        print(f"[reel-scheduler] wrote caption refresh preview -> {preview_out.expanduser().resolve()}")
+    action = "refreshed" if apply else "would refresh"
+    print(f"[reel-scheduler] {action} {len(previews)} queued caption(s)")
+    if not apply:
+        print("[reel-scheduler] dry run only; rerun with --apply to update the ledger and manifests")
+    return len(previews)
+
+
+QUEUE_AUDIT_KEYWORDS = (
+    ("Claude", ("claude", "クロード")),
+    ("Anthropic", ("anthropic",)),
+    ("OpenAI", ("openai", "chatgpt", "gpt")),
+    ("AI agent", ("aiエージェント", "エージェント", "agent")),
+    ("Claude Code", ("claude code",)),
+)
+
+
+def queue_audit_rows(
+    conn: Any,
+    *,
+    channel_filter: str | None,
+    limit: int | None,
+) -> list[Any]:
+    statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    placeholders = ",".join("?" for _ in statuses)
+    query = "SELECT * FROM reels WHERE status IN (" + placeholders + ") AND scheduled_at IS NOT NULL"
+    params: list[Any] = list(statuses)
+    if channel_filter:
+        query += " AND channel_id=?"
+        params.append(channel_filter)
+    query += " ORDER BY channel_id, scheduled_at, source_video, clip_dir, lang, content_hash"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(query, params).fetchall()
+
+
+def queue_audit_keyword_counts(rows: list[Any]) -> dict[str, int]:
+    counts = {label: 0 for label, _ in QUEUE_AUDIT_KEYWORDS}
+    for row in rows:
+        text = f"{row['title'] or ''}\n{row['caption'] or ''}".lower()
+        for label, needles in QUEUE_AUDIT_KEYWORDS:
+            if any(needle in text for needle in needles):
+                counts[label] += 1
+    return counts
+
+
+def queue_audit_source_counts(rows: list[Any]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        source = str(row["source_video"] or "(missing)")
+        grouped.setdefault(source, []).append(row)
+    out: list[dict[str, Any]] = []
+    total = len(rows)
+    for source, source_rows in grouped.items():
+        scheduled = [str(row["scheduled_at"] or "") for row in source_rows]
+        out.append(
+            {
+                "source_video": source,
+                "count": len(source_rows),
+                "share": round(len(source_rows) / total, 4) if total else 0,
+                "first_scheduled_at": min(scheduled) if scheduled else "",
+                "last_scheduled_at": max(scheduled) if scheduled else "",
+            }
+        )
+    return sorted(out, key=lambda item: (-int(item["count"]), str(item["source_video"])))
+
+
+def queue_audit_day_counts(rows: list[Any]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        day = str(row["scheduled_at"] or "")[:10]
+        if day:
+            counts[day] = counts.get(day, 0) + 1
+    return [{"date": day, "count": counts[day]} for day in sorted(counts)]
+
+
+def queue_audit_longest_source_run(rows: list[Any]) -> dict[str, Any]:
+    longest_source = ""
+    longest_count = 0
+    current_source = ""
+    current_count = 0
+    for row in rows:
+        source = str(row["source_video"] or "(missing)")
+        if source == current_source:
+            current_count += 1
+        else:
+            current_source = source
+            current_count = 1
+        if current_count > longest_count:
+            longest_source = current_source
+            longest_count = current_count
+    return {"source_video": longest_source, "count": longest_count}
+
+
+def alternate_source_preview_record(
+    *,
+    row: Any,
+    old_at: str,
+    new_at: str,
+    source: str,
+    desired_source: str,
+) -> dict[str, Any]:
+    return {
+        "content_hash": str(row["content_hash"] or ""),
+        "channel_id": str(row["channel_id"] or ""),
+        "status": str(row["status"] or ""),
+        "source_video": source,
+        "desired_source": desired_source,
+        "scheduled_at_before": old_at,
+        "scheduled_at_after": new_at,
+        "would_move": old_at != new_at,
+        "title": str(row["title"] or row["clip_dir"] or ""),
+    }
+
+
+def render_alternate_source_preview_markdown(export: dict[str, Any]) -> str:
+    rows = export.get("items") if isinstance(export.get("items"), list) else []
+    moves = sum(1 for item in rows if isinstance(item, dict) and item.get("would_move"))
+    lines = [
+        "# Alternate Source Preview",
+        "",
+        f"- Generated: {markdown_cell(export.get('generated_at'))}",
+        f"- Mode: {markdown_cell(export.get('mode'))}",
+        f"- Channel filter: {markdown_cell(export.get('channel_filter'))}",
+        f"- Boundary: {markdown_cell(export.get('boundary'))}",
+        f"- Rows inspected: {markdown_number(len(rows))}",
+        f"- Rows that would move: {markdown_number(moves)}",
+        f"- Fingerprint before: {markdown_cell((export.get('fingerprint_before') or {}).get('sha256'))}",
+        f"- Fingerprint after: {markdown_cell((export.get('fingerprint_after') or {}).get('sha256'))}",
+        "",
+        "| # | Action | Before | After | Source | Desired | Title |",
+        "|---:|---|---|---|---|---|---|",
+    ]
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {action} | {before} | {after} | {source} | {desired} | {title} |".format(
+                index=index,
+                action="move" if item.get("would_move") else "keep",
+                before=markdown_cell(item.get("scheduled_at_before")),
+                after=markdown_cell(item.get("scheduled_at_after")),
+                source=markdown_cell(item.get("source_video")),
+                desired=markdown_cell(item.get("desired_source")),
+                title=markdown_cell(item.get("title")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_alternate_source_preview(out_path: Path, export: dict[str, Any]) -> None:
+    path = out_path.expanduser().resolve()
+    if path.suffix.lower() == ".json":
+        write_json(path, export)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_alternate_source_preview_markdown(export), encoding="utf-8")
+
+
+def build_queue_growth_audit(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    platform: str,
+    limit: int | None,
+) -> dict[str, Any]:
+    conn = connect_ledger_readonly(db_path)
+    try:
+        rows = queue_audit_rows(conn, channel_filter=channel_filter, limit=limit)
+        status_counts = caption_refresh_status_counts(conn, channel_filter)
+        fingerprint = caption_refresh_queue_fingerprint(conn, channel_filter)
+    finally:
+        conn.close()
+    total = len(rows)
+    scheduled_values = [str(row["scheduled_at"] or "") for row in rows if str(row["scheduled_at"] or "")]
+    source_counts = queue_audit_source_counts(rows)
+    keyword_counts = queue_audit_keyword_counts(rows)
+    follow_cta_count = sum(1 for row in rows if "フォロー" in str(row["caption"] or ""))
+    old_save_cta_count = sum(1 for row in rows if "気になったら保存して" in str(row["caption"] or ""))
+    generic_context_count = sum(1 for row in rows if "AI開発の現場で何が起きているのか" in str(row["caption"] or ""))
+    top_source = source_counts[0] if source_counts else {}
+    warnings: list[str] = []
+    if total and int(top_source.get("count") or 0) / total >= 0.35:
+        warnings.append(
+            f"Top source {top_source.get('source_video')} is {int(top_source.get('count') or 0)}/{total} queued posts."
+        )
+    if len(source_counts) < 6 and total >= 30:
+        warnings.append(f"Only {len(source_counts)} source videos feed {total} queued posts.")
+    claude_total = max(keyword_counts.get("Claude", 0), keyword_counts.get("Claude Code", 0))
+    if total and claude_total / total >= 0.3:
+        warnings.append(f"Claude-related titles/captions appear in {claude_total}/{total} queued posts.")
+
+    return {
+        "generated_at": utc_now(),
+        "mode": "read-only",
+        "platform": platform,
+        "channel_filter": channel_filter or "",
+        "db_path": str(db_path.expanduser().resolve()),
+        "limit": limit,
+        "statuses": [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED],
+        "queued_count": total,
+        "first_scheduled_at": min(scheduled_values) if scheduled_values else "",
+        "last_scheduled_at": max(scheduled_values) if scheduled_values else "",
+        "status_counts": status_counts,
+        "queue_fingerprint": fingerprint,
+        "source_counts": source_counts,
+        "keyword_counts": keyword_counts,
+        "day_counts": queue_audit_day_counts(rows),
+        "longest_same_source_run": queue_audit_longest_source_run(rows),
+        "cta": {
+            "follow_cta_count": follow_cta_count,
+            "old_save_cta_count": old_save_cta_count,
+            "generic_context_count": generic_context_count,
+        },
+        "warnings": warnings,
+        "sample_upcoming": [
+            {
+                "scheduled_at": str(row["scheduled_at"] or ""),
+                "source_video": str(row["source_video"] or ""),
+                "title": str(row["title"] or ""),
+            }
+            for row in rows[:12]
+        ],
+    }
+
+
+def render_queue_growth_audit_markdown(audit: dict[str, Any]) -> str:
+    source_counts = audit.get("source_counts") if isinstance(audit.get("source_counts"), list) else []
+    keyword_counts = audit.get("keyword_counts") if isinstance(audit.get("keyword_counts"), dict) else {}
+    day_counts = audit.get("day_counts") if isinstance(audit.get("day_counts"), list) else []
+    warnings = audit.get("warnings") if isinstance(audit.get("warnings"), list) else []
+    samples = audit.get("sample_upcoming") if isinstance(audit.get("sample_upcoming"), list) else []
+    cta = audit.get("cta") if isinstance(audit.get("cta"), dict) else {}
+    longest = audit.get("longest_same_source_run") if isinstance(audit.get("longest_same_source_run"), dict) else {}
+    lines = [
+        "# Queued Reel Growth Audit",
+        "",
+        f"- Generated: {markdown_cell(audit.get('generated_at'))}",
+        f"- Mode: {markdown_cell(audit.get('mode'))}",
+        f"- Platform: {markdown_cell(audit.get('platform'))}",
+        f"- Channel filter: {markdown_cell(audit.get('channel_filter'))}",
+        f"- DB: {markdown_cell(audit.get('db_path'))}",
+        f"- Queued rows: {markdown_number(audit.get('queued_count'))}",
+        f"- Window: {markdown_cell(audit.get('first_scheduled_at'))} to {markdown_cell(audit.get('last_scheduled_at'))}",
+        f"- Status counts: {markdown_cell(json.dumps(audit.get('status_counts') or {}, sort_keys=True))}",
+        f"- Queue fingerprint: {markdown_cell((audit.get('queue_fingerprint') or {}).get('sha256'))}",
+        "",
+        "## Warnings",
+    ]
+    if warnings:
+        lines.extend(f"- {markdown_cell(warning)}" for warning in warnings)
+    else:
+        lines.append("- None")
+    lines.extend(
+        [
+            "",
+            "## Caption Markers",
+            "",
+            "| Follow CTA | Old save CTA | Generic context |",
+            "|---:|---:|---:|",
+            "| {follow} | {save} | {generic} |".format(
+                follow=markdown_number(cta.get("follow_cta_count")),
+                save=markdown_number(cta.get("old_save_cta_count")),
+                generic=markdown_number(cta.get("generic_context_count")),
+            ),
+            "",
+            "## Source Concentration",
+            "",
+            "| Source | Count | Share | First scheduled | Last scheduled |",
+            "|---|---:|---:|---|---|",
+        ]
+    )
+    for item in source_counts:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {source} | {count} | {share:.1f}% | {first} | {last} |".format(
+                source=markdown_cell(item.get("source_video")),
+                count=int(item.get("count") or 0),
+                share=float(item.get("share") or 0) * 100,
+                first=markdown_cell(item.get("first_scheduled_at")),
+                last=markdown_cell(item.get("last_scheduled_at")),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            f"Longest same-source run: {markdown_cell(longest.get('source_video'))} x {markdown_number(longest.get('count'))}",
+            "",
+            "## Topic Signals",
+            "",
+            "| Signal | Queued posts |",
+            "|---|---:|",
+        ]
+    )
+    for label in sorted(keyword_counts):
+        lines.append(f"| {markdown_cell(label)} | {markdown_number(keyword_counts[label])} |")
+    lines.extend(["", "## Daily Cadence", "", "| Date | Posts |", "|---|---:|"])
+    for item in day_counts:
+        if not isinstance(item, dict):
+            continue
+        lines.append(f"| {markdown_cell(item.get('date'))} | {markdown_number(item.get('count'))} |")
+    lines.extend(["", "## Upcoming Sample", "", "| Scheduled | Source | Title |", "|---|---|---|"])
+    for item in samples:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {scheduled} | {source} | {title} |".format(
+                scheduled=markdown_cell(item.get("scheduled_at")),
+                source=markdown_cell(item.get("source_video")),
+                title=markdown_cell(item.get("title")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_queue_growth_audit(out_path: Path, audit: dict[str, Any]) -> None:
+    path = out_path.expanduser().resolve()
+    if path.suffix.lower() == ".json":
+        write_json(path, audit)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_queue_growth_audit_markdown(audit), encoding="utf-8")
+
+
 def unschedule_queued_reel(
     *,
     db_path: Path,
@@ -1519,6 +2189,7 @@ def make_queue_ui_handler(
     settings_key: str,
     platform: str,
     report_out: Path,
+    report_sync_action_url: str = "",
 ) -> type[BaseHTTPRequestHandler]:
     class QueueUIHandler(BaseHTTPRequestHandler):
         server_version = "ReelQueueUI/1.0"
@@ -1591,7 +2262,7 @@ def make_queue_ui_handler(
                     insight_rows=insight_rows,
                     db_path=db_path,
                     platform=platform,
-                    sync_action_url=DEFAULT_REPORT_SYNC_ACTION_URL,
+                    sync_action_url=report_sync_action_url or DEFAULT_REPORT_SYNC_ACTION_URL,
                     insights_json_href=report_href(json_out, report_out),
                     insights_markdown_href=report_href(md_out, report_out),
                 ),
@@ -1708,7 +2379,7 @@ def make_queue_ui_handler(
                             db=db_path,
                             limit=None,
                             dry_run=False,
-                            metrics=",".join(INSIGHT_METRIC_KEYS),
+                            metrics=",".join(INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS),
                             access_token="",
                             graph_api_version="",
                             graph_api_root="",
@@ -1876,7 +2547,12 @@ def reflow_queue_rows(
                 if start_at_text
                 else datetime.now(timezone.utc)
             )
-            channel_rows = round_robin_sources(by_channel[channel_id])
+            eligible_rows = [
+                row
+                for row in by_channel[channel_id]
+                if (parse_row_datetime(row["scheduled_at"], timezone_name) or start_at) >= start_at
+            ]
+            channel_rows = round_robin_sources(eligible_rows)
             queue_hashes = {str(row["content_hash"]) for row in channel_rows}
             existing = [
                 row
@@ -1944,6 +2620,7 @@ def alternate_source_queue_rows(
     after_text: str | None,
     channel_filter: str | None,
     apply: bool,
+    preview_out: Path | None = None,
 ) -> int:
     """Shuffle queued content into existing slots so source_video alternates globally."""
     boundary = (
@@ -1961,92 +2638,218 @@ def alternate_source_queue_rows(
     ]
     scheduled_placeholders = ",".join("?" for _ in scheduled_statuses)
     previews: list[tuple[str, str, str, str, str, str, str]] = []
-    with reel_ledger.connect(db_path) as conn:
-        queued_query = (
-            "SELECT * FROM reels WHERE status IN (" + queued_placeholders + ") "
-            "AND scheduled_at IS NOT NULL"
-            + (" AND channel_id=?" if channel_filter else "")
-        )
-        queued_params: list[Any] = list(queue_statuses)
-        if channel_filter:
-            queued_params.append(channel_filter)
-        queued_rows = [
-            row
-            for row in conn.execute(queued_query, queued_params).fetchall()
-            if row_is_after(row, boundary)
-        ]
-        queued_rows.sort(key=row_chronological_key)
-        if not queued_rows:
-            print("[reel-scheduler] no queued rows after the requested boundary")
-            return 0
+    preview_records: list[dict[str, Any]] = []
+    fingerprint_before: dict[str, Any] = {}
+    fingerprint_after: dict[str, Any] = {}
 
-        history_query = (
-            "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
-            "AND scheduled_at IS NOT NULL"
-            + (" AND channel_id=?" if channel_filter else "")
-        )
-        history_params: list[Any] = list(scheduled_statuses)
-        if channel_filter:
-            history_params.append(channel_filter)
-        history_rows = [
-            row
-            for row in conn.execute(history_query, history_params).fetchall()
-            if row_is_at_or_before(row, boundary)
-        ]
-        history_rows.sort(key=row_chronological_key)
-        last_source = row_source_video(history_rows[-1]) if history_rows else None
-        source_order = source_order_from(queued_rows)
-        if last_source and last_source not in source_order:
-            source_order.append(last_source)
-        if len(source_order) < 2:
-            print("[reel-scheduler] fewer than two source videos remain in the queued rows")
-            return 0
+    def write_preview_if_requested() -> None:
+        if preview_out is None:
+            return
+        export = {
+            "generated_at": utc_now(),
+            "mode": "apply" if apply else "dry-run",
+            "channel_filter": channel_filter or "",
+            "boundary": boundary.isoformat(),
+            "fingerprint_before": fingerprint_before,
+            "fingerprint_after": fingerprint_after,
+            "items": preview_records,
+        }
+        write_alternate_source_preview(preview_out, export)
+        print(f"[reel-scheduler] wrote alternate source preview -> {preview_out.expanduser().resolve()}")
 
-        pools: dict[str, dict[str, list[Any]]] = {}
-        for row in queued_rows:
-            channel_id = str(row["channel_id"])
-            source = row_source_video(row)
-            pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
-
-        assignments: list[tuple[Any, Any, str]] = []
-        for slot in queued_rows:
-            channel_id = str(slot["channel_id"])
-            desired_source = next_source_after(source_order, last_source)
-            selected = pop_alternating_row(
-                pools,
-                channel_id=channel_id,
-                desired_source=desired_source,
-                source_order=source_order,
-                last_source=last_source,
+    if apply:
+        with reel_ledger.connect(db_path) as conn:
+            fingerprint_before = caption_refresh_queue_fingerprint(conn, channel_filter)
+            queued_query = (
+                "SELECT * FROM reels WHERE status IN (" + queued_placeholders + ") "
+                "AND scheduled_at IS NOT NULL"
+                + (" AND channel_id=?" if channel_filter else "")
             )
-            assignments.append((slot, selected, desired_source))
-            last_source = row_source_video(selected)
+            queued_params: list[Any] = list(queue_statuses)
+            if channel_filter:
+                queued_params.append(channel_filter)
+            queued_rows = [
+                row
+                for row in conn.execute(queued_query, queued_params).fetchall()
+                if row_is_after(row, boundary)
+            ]
+            queued_rows.sort(key=row_chronological_key)
+            if not queued_rows:
+                print("[reel-scheduler] no queued rows after the requested boundary")
+                write_preview_if_requested()
+                return 0
 
-        for slot, selected, desired_source in assignments:
-            channel_id = str(selected["channel_id"])
-            old_at = str(selected["scheduled_at"] or "")
-            new_at = str(slot["scheduled_at"] or "")
-            previews.append(
-                (
-                    channel_id,
-                    old_at,
-                    new_at,
-                    row_source_video(selected),
-                    desired_source,
-                    str(selected["status"] or ""),
-                    str(selected["title"] or selected["clip_dir"] or "")[:70],
+            history_query = (
+                "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
+                "AND scheduled_at IS NOT NULL"
+                + (" AND channel_id=?" if channel_filter else "")
+            )
+            history_params: list[Any] = list(scheduled_statuses)
+            if channel_filter:
+                history_params.append(channel_filter)
+            history_rows = [
+                row
+                for row in conn.execute(history_query, history_params).fetchall()
+                if row_is_at_or_before(row, boundary)
+            ]
+            history_rows.sort(key=row_chronological_key)
+            last_source = row_source_video(history_rows[-1]) if history_rows else None
+            source_order = source_order_from(queued_rows)
+            if last_source and last_source not in source_order:
+                source_order.append(last_source)
+            if len(source_order) < 2:
+                print("[reel-scheduler] fewer than two source videos remain in the queued rows")
+                write_preview_if_requested()
+                return 0
+
+            pools: dict[str, dict[str, list[Any]]] = {}
+            for row in queued_rows:
+                channel_id = str(row["channel_id"])
+                source = row_source_video(row)
+                pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
+
+            assignments: list[tuple[Any, Any, str]] = []
+            for slot in queued_rows:
+                channel_id = str(slot["channel_id"])
+                desired_source = next_source_after(source_order, last_source)
+                selected = pop_alternating_row(
+                    pools,
+                    channel_id=channel_id,
+                    desired_source=desired_source,
+                    source_order=source_order,
+                    last_source=last_source,
                 )
+                assignments.append((slot, selected, desired_source))
+                last_source = row_source_video(selected)
+
+            for slot, selected, desired_source in assignments:
+                channel_id = str(selected["channel_id"])
+                old_at = str(selected["scheduled_at"] or "")
+                new_at = str(slot["scheduled_at"] or "")
+                source = row_source_video(selected)
+                previews.append(
+                    (
+                        channel_id,
+                        old_at,
+                        new_at,
+                        source,
+                        desired_source,
+                        str(selected["status"] or ""),
+                        str(selected["title"] or selected["clip_dir"] or "")[:70],
+                    )
+                )
+                preview_records.append(
+                    alternate_source_preview_record(
+                        row=selected,
+                        old_at=old_at,
+                        new_at=new_at,
+                        source=source,
+                        desired_source=desired_source,
+                    )
+                )
+                scheduled_at = parse_row_datetime(new_at, DEFAULT_TIMEZONE)
+                if scheduled_at is None:
+                    continue
+                conn.execute(
+                    "UPDATE reels SET scheduled_at=?, updated_at=? WHERE content_hash=? AND channel_id=?",
+                    (new_at, utc_now(), selected["content_hash"], channel_id),
+                )
+                update_manifest_scheduled_at(Path(str(selected["manifest_path"] or "")), scheduled_at)
+            fingerprint_after = caption_refresh_queue_fingerprint(conn, channel_filter)
+    else:
+        conn = connect_ledger_readonly(db_path)
+        try:
+            fingerprint_before = caption_refresh_queue_fingerprint(conn, channel_filter)
+            fingerprint_after = fingerprint_before
+            queued_query = (
+                "SELECT * FROM reels WHERE status IN (" + queued_placeholders + ") "
+                "AND scheduled_at IS NOT NULL"
+                + (" AND channel_id=?" if channel_filter else "")
             )
-            if not apply:
-                continue
-            scheduled_at = parse_row_datetime(new_at, DEFAULT_TIMEZONE)
-            if scheduled_at is None:
-                continue
-            conn.execute(
-                "UPDATE reels SET scheduled_at=?, updated_at=? WHERE content_hash=? AND channel_id=?",
-                (new_at, utc_now(), selected["content_hash"], channel_id),
+            queued_params: list[Any] = list(queue_statuses)
+            if channel_filter:
+                queued_params.append(channel_filter)
+            queued_rows = [
+                row
+                for row in conn.execute(queued_query, queued_params).fetchall()
+                if row_is_after(row, boundary)
+            ]
+            queued_rows.sort(key=row_chronological_key)
+            if not queued_rows:
+                print("[reel-scheduler] no queued rows after the requested boundary")
+                write_preview_if_requested()
+                return 0
+
+            history_query = (
+                "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
+                "AND scheduled_at IS NOT NULL"
+                + (" AND channel_id=?" if channel_filter else "")
             )
-            update_manifest_scheduled_at(Path(str(selected["manifest_path"] or "")), scheduled_at)
+            history_params: list[Any] = list(scheduled_statuses)
+            if channel_filter:
+                history_params.append(channel_filter)
+            history_rows = [
+                row
+                for row in conn.execute(history_query, history_params).fetchall()
+                if row_is_at_or_before(row, boundary)
+            ]
+            history_rows.sort(key=row_chronological_key)
+            last_source = row_source_video(history_rows[-1]) if history_rows else None
+            source_order = source_order_from(queued_rows)
+            if last_source and last_source not in source_order:
+                source_order.append(last_source)
+            if len(source_order) < 2:
+                print("[reel-scheduler] fewer than two source videos remain in the queued rows")
+                write_preview_if_requested()
+                return 0
+
+            pools: dict[str, dict[str, list[Any]]] = {}
+            for row in queued_rows:
+                channel_id = str(row["channel_id"])
+                source = row_source_video(row)
+                pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
+
+            assignments: list[tuple[Any, Any, str]] = []
+            for slot in queued_rows:
+                channel_id = str(slot["channel_id"])
+                desired_source = next_source_after(source_order, last_source)
+                selected = pop_alternating_row(
+                    pools,
+                    channel_id=channel_id,
+                    desired_source=desired_source,
+                    source_order=source_order,
+                    last_source=last_source,
+                )
+                assignments.append((slot, selected, desired_source))
+                last_source = row_source_video(selected)
+
+            for slot, selected, desired_source in assignments:
+                channel_id = str(selected["channel_id"])
+                old_at = str(selected["scheduled_at"] or "")
+                new_at = str(slot["scheduled_at"] or "")
+                source = row_source_video(selected)
+                previews.append(
+                    (
+                        channel_id,
+                        old_at,
+                        new_at,
+                        source,
+                        desired_source,
+                        str(selected["status"] or ""),
+                        str(selected["title"] or selected["clip_dir"] or "")[:70],
+                    )
+                )
+                preview_records.append(
+                    alternate_source_preview_record(
+                        row=selected,
+                        old_at=old_at,
+                        new_at=new_at,
+                        source=source,
+                        desired_source=desired_source,
+                    )
+                )
+        finally:
+            conn.close()
 
     for channel_id, old_at, new_at, source, desired_source, status, title in previews[:24]:
         verb = "move" if old_at != new_at else "keep"
@@ -2057,6 +2860,7 @@ def alternate_source_queue_rows(
         )
     if len(previews) > 24:
         print(f"[reel-scheduler] ... {len(previews) - 24} more queued rows")
+    write_preview_if_requested()
     action = "alternated" if apply else "would alternate"
     print(f"[reel-scheduler] {action} {len(previews)} queued row(s) after {boundary.isoformat()}")
     if not apply:
@@ -2228,6 +3032,12 @@ def parse_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         value = latest.get("value") if isinstance(latest, dict) else None
         if isinstance(value, (int, float)):
             metrics[name] = int(value)
+    if "total_views" in metrics:
+        metrics["views"] = metrics["total_views"]
+    if "total_likes" in metrics:
+        metrics["likes"] = metrics["total_likes"]
+    if "total_comments" in metrics:
+        metrics["comments"] = metrics["total_comments"]
     return metrics
 
 
@@ -2261,7 +3071,24 @@ INSIGHT_METRIC_KEYS = (
     "shares",
     "total_interactions",
 )
+INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
+    "views",
+    "total_views",
+    "reach",
+    "likes",
+    "total_likes",
+    "comments",
+    "total_comments",
+    "saved",
+    "shares",
+    "total_interactions",
+)
 DEFAULT_REPORT_SYNC_ACTION_URL = "http://127.0.0.1:8765/sync-insights"
+REPORT_TIMEZONE_LABELS = {
+    "Asia/Tokyo": "JST",
+    "Asia/Manila": "PHT",
+    "UTC": "UTC",
+}
 
 
 def coerce_json_number(value: Any) -> int | float | None:
@@ -2699,6 +3526,43 @@ def load_report_data(
     return counts, upcoming, published, insight_rows
 
 
+def report_channel_timezone(
+    channel_id: Any,
+    *,
+    platform: str,
+    cache: dict[str, str],
+) -> str:
+    channel_key = str(channel_id or "").strip()
+    if not channel_key:
+        return DEFAULT_TIMEZONE
+    if channel_key not in cache:
+        try:
+            settings = reel_settings(load_channel(channel_key), settings_key_for(platform))
+            cache[channel_key] = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+        except (SystemExit, ValueError):
+            cache[channel_key] = DEFAULT_TIMEZONE
+    return cache[channel_key]
+
+
+def readable_report_datetime(value: Any, timezone_name: str = DEFAULT_TIMEZONE) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    tz = timezone_for(timezone_name)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz)
+    local = parsed.astimezone(tz)
+    hour = local.hour % 12 or 12
+    minute = f":{local.minute:02d}" if local.minute else ""
+    period = "AM" if local.hour < 12 else "PM"
+    label = REPORT_TIMEZONE_LABELS.get(timezone_name) or local.tzname() or timezone_name
+    return f"{local.strftime('%B')} {local.day}, {hour}{minute}{period} {label}"
+
+
 def markdown_cell(value: Any) -> str:
     text = str(value or "").strip()
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -2836,6 +3700,14 @@ def render_report_html(
     def esc(value: Any) -> str:
         return html.escape(str(value or ""))
 
+    timezone_cache: dict[str, str] = {}
+
+    def row_time(row: Any, key: str) -> str:
+        return readable_report_datetime(
+            row[key],
+            report_channel_timezone(row["channel_id"], platform=platform, cache=timezone_cache),
+        )
+
     order = [
         reel_ledger.STATUS_NEW,
         reel_ledger.STATUS_SCHEDULED,
@@ -2845,43 +3717,77 @@ def render_report_html(
         reel_ledger.STATUS_FAILED,
         reel_ledger.STATUS_SKIPPED,
     ]
-    count_rows = []
-    for channel_id in sorted(counts):
-        cells = "".join(f"<td>{counts[channel_id].get(status, 0)}</td>" for status in order)
-        count_rows.append(f"<tr><th>{esc(channel_id)}</th>{cells}</tr>")
-    upcoming_rows = [
-        "<tr>"
-        f"<td>{esc(row['scheduled_at'])}</td>"
-        f"<td>{esc(row['channel_id'])}</td>"
-        f"<td>{esc(row['status'])}</td>"
-        f"<td>{esc(row['title'] or row['clip_dir'])}</td>"
-        "</tr>"
-        for row in upcoming
-    ]
-    published_rows = [
-        "<tr>"
-        f"<td>{esc(row['published_at'])}</td>"
-        f"<td>{esc(row['channel_id'])}</td>"
-        f"<td><a href=\"{esc(row['permalink'])}\">{esc(row['permalink'] or row['media_id'])}</a></td>"
-        "</tr>"
-        for row in published
-    ]
-    insight_html = [
-        "<tr>"
-        f"<td>{esc(row['published_at'])}</td>"
-        f"<td>{esc(row['channel_id'])}</td>"
-        f"<td>{esc(row['title'])}</td>"
-        f"<td>{esc(row['views'])}</td>"
-        f"<td>{esc(row['reach'])}</td>"
-        f"<td>{esc(row['likes'])}</td>"
-        f"<td>{esc(row['comments'])}</td>"
-        f"<td>{esc(row['saved'])}</td>"
-        f"<td>{esc(row['shares'])}</td>"
-        f"<td>{esc(row['total_interactions'])}</td>"
-        f"<td>{esc(row['captured_at'] or 'not synced')}</td>"
-        "</tr>"
-        for row in insight_rows
-    ]
+    channel_ids = sorted(
+        {str(channel_id or "").strip() for channel_id in counts}
+        | {
+            str(row["channel_id"] or "").strip()
+            for row in [*upcoming, *published, *insight_rows]
+        }
+    ) or [""]
+    label_cache: dict[str, str] = {}
+
+    def channel_anchor(channel_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "-", channel_id).strip("-").lower()
+        return f"channel-{safe or 'all'}"
+
+    def channel_label(channel_id: str) -> str:
+        if not channel_id:
+            return "All Channels"
+        if channel_id not in label_cache:
+            try:
+                channel = load_channel(channel_id)
+                label = channel.brand_name or channel.account_name or channel_id
+            except (SystemExit, ValueError):
+                label = channel_id
+            label_cache[channel_id] = f"{label} ({channel_id})" if label != channel_id else channel_id
+        return label_cache[channel_id]
+
+    def rows_for_channel(rows: list[Any], channel_id: str) -> list[Any]:
+        return [row for row in rows if str(row["channel_id"] or "").strip() == channel_id]
+
+    def status_body(channel_id: str) -> str:
+        per_channel = counts.get(channel_id, {})
+        cells = "".join(f"<td>{per_channel.get(status, 0)}</td>" for status in order)
+        return f"<tr>{cells}</tr>"
+
+    def upcoming_body_for(channel_id: str) -> str:
+        rows = [
+            "<tr>"
+            f"<td>{esc(row_time(row, 'scheduled_at'))}</td>"
+            f"<td>{esc(row['status'])}</td>"
+            f"<td>{esc(row['title'] or row['clip_dir'])}</td>"
+            "</tr>"
+            for row in rows_for_channel(upcoming, channel_id)
+        ]
+        return "".join(rows) or '<tr><td colspan="3">No queued reels</td></tr>'
+
+    def published_body_for(channel_id: str) -> str:
+        rows = [
+            "<tr>"
+            f"<td>{esc(row_time(row, 'published_at'))}</td>"
+            f"<td><a href=\"{esc(row['permalink'])}\">{esc(row['permalink'] or row['media_id'])}</a></td>"
+            "</tr>"
+            for row in rows_for_channel(published, channel_id)
+        ]
+        return "".join(rows) or '<tr><td colspan="2">No published reels</td></tr>'
+
+    def insight_body_for(channel_id: str) -> str:
+        rows = [
+            "<tr>"
+            f"<td>{esc(row_time(row, 'published_at'))}</td>"
+            f"<td>{esc(row['title'])}</td>"
+            f"<td>{esc(row['views'])}</td>"
+            f"<td>{esc(row['reach'])}</td>"
+            f"<td>{esc(row['likes'])}</td>"
+            f"<td>{esc(row['comments'])}</td>"
+            f"<td>{esc(row['saved'])}</td>"
+            f"<td>{esc(row['shares'])}</td>"
+            f"<td>{esc(row['total_interactions'])}</td>"
+            f"<td>{esc(row_time(row, 'captured_at') or 'not synced')}</td>"
+            "</tr>"
+            for row in rows_for_channel(insight_rows, channel_id)
+        ]
+        return "".join(rows) or '<tr><td colspan="10">No published reels</td></tr>'
     platform_label = "Instagram" if platform == "instagram" else platform.title()
     sync_form = (
         "<form method=\"post\" "
@@ -2910,10 +3816,43 @@ def render_report_html(
     message_html = f"<div class=\"notice ok\">{esc(message)}</div>" if message else ""
     error_html = f"<div class=\"notice error\">{esc(error)}</div>" if error else ""
     status_headers = "".join(f"<th>{esc(status)}</th>" for status in order)
-    count_body = "".join(count_rows) or '<tr><td colspan="8">No rows</td></tr>'
-    upcoming_body = "".join(upcoming_rows) or '<tr><td colspan="4">No queued reels</td></tr>'
-    published_body = "".join(published_rows) or '<tr><td colspan="3">No published reels</td></tr>'
-    insight_body = "".join(insight_html) or '<tr><td colspan="11">No published reels</td></tr>'
+    channel_nav = (
+        '<nav class="channel-nav" aria-label="Channel views">'
+        + "".join(
+            f"<a class=\"channel-link\" href=\"#{esc(channel_anchor(channel_id))}\">{esc(channel_label(channel_id))}</a>"
+            for channel_id in channel_ids
+        )
+        + "</nav>"
+        if len(channel_ids) > 1
+        else ""
+    )
+    channel_sections = "\n".join(
+        f"""  <section class="channel-section" id="{esc(channel_anchor(channel_id))}">
+    <h2>{esc(channel_label(channel_id))}</h2>
+    <h3>Status Counts</h3>
+    <table>
+      <thead><tr>{status_headers}</tr></thead>
+      <tbody>{status_body(channel_id)}</tbody>
+    </table>
+    <h3>Upcoming Queue</h3>
+    <table>
+      <thead><tr><th>Scheduled</th><th>Status</th><th>Title</th></tr></thead>
+      <tbody>{upcoming_body_for(channel_id)}</tbody>
+    </table>
+    <h3>Recently Published</h3>
+    <table>
+      <thead><tr><th>Published</th><th>Permalink</th></tr></thead>
+      <tbody>{published_body_for(channel_id)}</tbody>
+    </table>
+    <h3>Latest Insights</h3>
+    <table>
+      <thead><tr><th>Published</th><th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
+      <tbody>{insight_body_for(channel_id)}</tbody>
+    </table>
+  </section>"""
+        for channel_id in channel_ids
+    )
+    generated_at = readable_report_datetime(utc_now(), DEFAULT_TIMEZONE)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2923,12 +3862,17 @@ def render_report_html(
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #151515; background: #fafafa; }}
     h1 {{ font-size: 28px; margin: 0 0 8px; }}
-    h2 {{ font-size: 18px; margin: 32px 0 10px; }}
+    h2 {{ font-size: 22px; margin: 0 0 12px; }}
+    h3 {{ font-size: 15px; margin: 22px 0 8px; }}
     .meta {{ color: #666; margin-bottom: 24px; }}
     .top {{ display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }}
     .actions {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
     button, .json-link {{ border: 1px solid #145cc7; border-radius: 6px; background: #145cc7; color: white; padding: 8px 11px; font-weight: 700; text-decoration: none; cursor: pointer; }}
     .json-link {{ background: white; color: #145cc7; }}
+    .channel-nav {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 24px; }}
+    .channel-link {{ border: 1px solid #c9d6e8; border-radius: 6px; background: white; color: #145cc7; padding: 7px 10px; font-weight: 700; text-decoration: none; }}
+    .channel-section {{ margin-top: 30px; }}
+    .channel-section + .channel-section {{ border-top: 2px solid #ddd; padding-top: 28px; }}
     .notice {{ margin: 12px 0; border: 1px solid #d2d2d2; border-radius: 6px; padding: 10px 12px; background: white; }}
     .notice.ok {{ border-color: rgba(20, 92, 199, 0.35); color: #145cc7; }}
     .notice.error {{ border-color: rgba(169, 53, 39, 0.45); color: #a93527; }}
@@ -2942,32 +3886,14 @@ def render_report_html(
   <div class="top">
     <div>
       <h1>Reel Ledger Report</h1>
-      <div class="meta">Generated {esc(utc_now())} from {esc(db_path)}</div>
+      <div class="meta">Generated {esc(generated_at)} from {esc(db_path)}</div>
     </div>
     {actions}
   </div>
   {message_html}
   {error_html}
-  <h2>Status Counts</h2>
-  <table>
-    <thead><tr><th>Channel</th>{status_headers}</tr></thead>
-    <tbody>{count_body}</tbody>
-  </table>
-  <h2>Upcoming Queue</h2>
-  <table>
-    <thead><tr><th>Scheduled</th><th>Channel</th><th>Status</th><th>Title</th></tr></thead>
-    <tbody>{upcoming_body}</tbody>
-  </table>
-  <h2>Recently Published</h2>
-  <table>
-    <thead><tr><th>Published</th><th>Channel</th><th>Permalink</th></tr></thead>
-    <tbody>{published_body}</tbody>
-  </table>
-  <h2>Latest Insights</h2>
-  <table>
-    <thead><tr><th>Published</th><th>Channel</th><th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
-    <tbody>{insight_body}</tbody>
-  </table>
+  {channel_nav}
+{channel_sections}
 </body>
 </html>
 """
@@ -3102,7 +4028,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     alternate_sources.add_argument("--channel", help="Limit to one channel id")
     alternate_sources.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    alternate_sources.add_argument("--out", type=Path, help="Write a .md or .json dry-run/apply preview")
     alternate_sources.add_argument("--apply", action="store_true", help="Actually update queued rows")
+
+    refresh_captions = subparsers.add_parser(
+        "refresh-captions",
+        help="Rebuild queued ledger captions from current channel settings",
+    )
+    refresh_captions.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which platform caption settings to use"
+    )
+    refresh_captions.add_argument("--channel", help="Limit to one channel id")
+    refresh_captions.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    refresh_captions.add_argument("--limit", type=int, help="Maximum queued rows to inspect")
+    refresh_captions.add_argument("--out", type=Path, help="Write a .md or .json preview of changed captions")
+    refresh_captions.add_argument("--apply", action="store_true", help="Actually update queued rows and manifests")
+
+    audit_queue = subparsers.add_parser(
+        "audit-queue",
+        help="Write a read-only growth audit for queued ledger reels",
+    )
+    audit_queue.add_argument(
+        "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to audit (default: instagram)"
+    )
+    audit_queue.add_argument("--channel", help="Limit to one channel id")
+    audit_queue.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    audit_queue.add_argument("--limit", type=int, help="Maximum queued rows to inspect")
+    audit_queue.add_argument("--out", type=Path, default=ROOT / "out" / "queue_growth_audit.md")
 
     importer = subparsers.add_parser(
         "import-schedules", help="Seed the ledger from existing schedule.json files"
@@ -3155,7 +4107,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--dry-run", action="store_true", help="Print rows that would be synced")
     sync.add_argument(
         "--metrics",
-        default="views,reach,likes,comments,saved,shares,total_interactions",
+        default=",".join(INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS),
         help="Comma-separated Instagram insight metrics",
     )
     sync.add_argument("--access-token", default="", help="Override Instagram access token")
@@ -3445,7 +4397,44 @@ def alternate_sources_command(args: argparse.Namespace) -> int:
         after_text=args.after,
         channel_filter=args.channel,
         apply=args.apply,
+        preview_out=args.out,
     )
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def refresh_captions_command(args: argparse.Namespace) -> int:
+    if args.limit is not None and args.limit <= 0:
+        raise SystemExit("--limit must be greater than zero")
+    platform = resolve_platform(args)
+    db_path = resolve_db(args)
+    refresh_queued_captions(
+        db_path=db_path,
+        channel_filter=args.channel,
+        settings_key=settings_key_for(platform),
+        apply=args.apply,
+        limit=args.limit,
+        preview_out=args.out,
+        platform=platform,
+    )
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def audit_queue_command(args: argparse.Namespace) -> int:
+    if args.limit is not None and args.limit <= 0:
+        raise SystemExit("--limit must be greater than zero")
+    platform = resolve_platform(args)
+    db_path = resolve_db(args)
+    audit = build_queue_growth_audit(
+        db_path=db_path,
+        channel_filter=args.channel,
+        platform=platform,
+        limit=args.limit,
+    )
+    write_queue_growth_audit(args.out, audit)
+    print(f"[reel-scheduler] wrote queue growth audit -> {args.out.expanduser().resolve()}")
+    print(f"[reel-scheduler] queued={audit['queued_count']} warnings={len(audit['warnings'])}")
     print(f"[reel-scheduler] ledger: {db_path}")
     return 0
 
@@ -3610,6 +4599,8 @@ def queue_ui_command(args: argparse.Namespace) -> int:
         raise SystemExit("--limit must be greater than zero")
     platform = resolve_platform(args)
     db_path = resolve_db(args)
+    public_host = "127.0.0.1" if args.host in {"", "0.0.0.0"} else args.host
+    report_sync_action_url = f"http://{public_host}:{args.port}/sync-insights"
     handler = make_queue_ui_handler(
         db_path=db_path,
         channel_filter=args.channel,
@@ -3617,6 +4608,7 @@ def queue_ui_command(args: argparse.Namespace) -> int:
         settings_key=settings_key_for(platform),
         platform=platform,
         report_out=args.report_out,
+        report_sync_action_url=report_sync_action_url,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}/"
@@ -3877,6 +4869,10 @@ def main() -> int:
         return reflow_queue_command(args)
     if args.command == "alternate-sources":
         return alternate_sources_command(args)
+    if args.command == "refresh-captions":
+        return refresh_captions_command(args)
+    if args.command == "audit-queue":
+        return audit_queue_command(args)
     if args.command == "scan":
         return scan_command(args)
     if args.command == "import-schedules":
