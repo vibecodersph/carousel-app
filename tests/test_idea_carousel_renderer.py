@@ -634,6 +634,77 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(cta_copy["action"], "Follow + Save")
         self.assertNotEqual(cta_copy["headline"], build_idea_carousel.FIXED_RESEARCH_CTA_COPY["headline"])
 
+    def test_render_carousel_static_cover_writes_png_manifest(self) -> None:
+        carousel = {
+            "id": "static-agent-stack",
+            "page_order": ["cover_page", "item_1", "cta"],
+            "cover_page": {
+                "headline": "Build agents without the [setup spiral]",
+                "subheadline": "A compact stack for tiny teams.",
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "item_name": "LiteLLM",
+                "body": "Route model calls without rewriting the app.",
+                "alt_text": "Item alt text",
+                "sources": [{"url": "https://example.com/litellm"}],
+            },
+            "cta": {"headline": "Save the stack", "body": "Follow for more tools.", "alt_text": "CTA alt text"},
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "signal.mp3"
+            audio.write_bytes(b"audio")
+            library = root / "library.json"
+            library.write_text(
+                json.dumps(
+                    {
+                        "tracks": [
+                            {
+                                "id": "signal-glow",
+                                "title": "Signal Glow",
+                                "path": str(audio),
+                                "duration_seconds": 26,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                build_idea_carousel, "render_title_slide"
+            ) as render_cover, patch.object(
+                build_idea_carousel, "render_animated_title_slide"
+            ) as render_animated_cover, patch.object(
+                build_idea_carousel, "render_item_slide"
+            ), patch.object(
+                build_idea_carousel, "render_cta_slide"
+            ), patch.object(
+                build_idea_carousel, "add_music_to_video"
+            ) as add_music:
+                manifest_path = build_idea_carousel.render_carousel(
+                    carousel,
+                    out_dir=root,
+                    generate_images=False,
+                    channel_id=None,
+                    cover_style="static",
+                    music_library=library,
+                    music_clip_id="signal-glow",
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        cover = manifest["slides"][0]
+        self.assertEqual(manifest["cover_style"], "static")
+        self.assertEqual(manifest["carousel_music"], {})
+        self.assertTrue(cover["path"].endswith("slide_01.png"))
+        self.assertTrue(cover["poster"].endswith("slide_01.png"))
+        self.assertEqual(cover["source_video_path"], "")
+        render_cover.assert_called_once()
+        render_animated_cover.assert_not_called()
+        add_music.assert_not_called()
+
     def test_render_carousel_mixes_short_music_into_cover_video(self) -> None:
         carousel = {
             "id": "music-enabled",

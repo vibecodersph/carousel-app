@@ -42,6 +42,7 @@ from build_x_carousel import (
     render_animated_title_slide,
     render_cta_slide,
     render_html_slide,
+    render_title_slide,
     shared_css,
     string_value,
 )
@@ -61,6 +62,7 @@ DEFAULT_INPUT = ROOT / "out" / "research_idea_generator" / "carousel_briefs.json
 DEFAULT_OUT = ROOT / "out" / "research_idea_generator" / "idea_carousel_render"
 DEFAULT_IDEA_ITEM_IMAGE_SIZE = "2048x1152"
 DEFAULT_COVER_STYLE = "default"
+STATIC_COVER_STYLE = "static"
 KINETIC_FLY_COVER_STYLE = "kinetic-fly"
 DEFAULT_COVER_TEMPLATE = "auto"
 KINETIC_FLY_CYCLE_SECONDS = 5.2
@@ -969,6 +971,8 @@ def render_image_uri(image_path: Path | None, source_image_url: str = "") -> str
 
 def normalize_cover_style(value: str | None) -> str:
     style = normalize_space(value).lower().replace("_", "-")
+    if style in {"static", "still", "png", "image"}:
+        return STATIC_COVER_STYLE
     if not style or style in {"default", "usual", "animated", "text-motion", "text-motion-lines"}:
         return DEFAULT_COVER_STYLE
     if style in {"fly", "fly-cover", "kinetic", "kinetic-fly"}:
@@ -2454,6 +2458,7 @@ def render_carousel(
     music_clip_id: str = "",
     music_duration_seconds: float | None = DEFAULT_SHORT_CLIP_SECONDS,
     enable_music: bool = True,
+    static_cover: bool = False,
 ) -> Path:
     carousel = normalize_carousel_for_render(carousel)
     channel = load_channel(channel_id or string_value(carousel.get("channel_id")) or None)
@@ -2464,6 +2469,9 @@ def render_carousel(
     total = len(keys) + (1 if suppress_cta else 2)
     reusable_assets = reusable_assets or {"cover": None, "items": {}}
     cover_style = normalize_cover_style(cover_style)
+    static_cover = static_cover or cover_style == STATIC_COVER_STYLE
+    if static_cover:
+        cover_style = STATIC_COVER_STYLE
     cover = carousel.get("cover_page")
     cover = cover if isinstance(cover, dict) else {}
     music_track = (
@@ -2484,10 +2492,10 @@ def render_carousel(
         else 0.0
     )
     slides: list[dict[str, Any]] = []
-    cover_path = out_dir / "slide_01.mp4"
-    cover_poster = cover_poster_path(cover_path)
+    cover_path = out_dir / ("slide_01.png" if static_cover else "slide_01.mp4")
+    cover_poster = cover_path if static_cover else cover_poster_path(cover_path)
     cover_template_id = ""
-    if cover_style == KINETIC_FLY_COVER_STYLE:
+    if cover_style == KINETIC_FLY_COVER_STYLE and not static_cover:
         cover_image = None
         image_composition = ""
         cover_template_id = select_kinetic_cover_template(carousel, cover_template)
@@ -2520,18 +2528,28 @@ def render_carousel(
             ),
             "date": string_value(carousel.get("generated_at")),
         }
-        render_animated_title_slide(
-            post,
-            cover_path,
-            total,
-            None,
-            context,
-            channel.account_name or DEFAULT_ACCOUNT_NAME,
-            **({"duration_seconds": music_duration} if music_track else {}),
-        )
+        if static_cover:
+            render_title_slide(
+                post,
+                cover_path,
+                total,
+                None,
+                context,
+                channel.account_name or DEFAULT_ACCOUNT_NAME,
+            )
+        else:
+            render_animated_title_slide(
+                post,
+                cover_path,
+                total,
+                None,
+                context,
+                channel.account_name or DEFAULT_ACCOUNT_NAME,
+                **({"duration_seconds": music_duration} if music_track else {}),
+            )
     cover_media_path = cover_path
     cover_audio: dict[str, Any] = {}
-    if music_track:
+    if music_track and not static_cover:
         cover_media_path = cover_path.with_name(f"{cover_path.stem}_music.mp4")
         print(f"[music] adding {music_track.clip_id} ({music_duration:.1f}s) -> {cover_media_path}")
         add_music_to_video(
@@ -2674,7 +2692,7 @@ def main() -> int:
     parser.add_argument(
         "--cover-style",
         default=os.environ.get("IDEA_COVER_STYLE", DEFAULT_COVER_STYLE),
-        help="Cover renderer: default/usual or kinetic-fly/fly",
+        help="Cover renderer: default/usual, static/png, or kinetic-fly/fly",
     )
     parser.add_argument(
         "--cover-template",
@@ -2702,6 +2720,11 @@ def main() -> int:
         "--no-carousel-music",
         action="store_true",
         help="Disable local music clip muxing even when a library exists",
+    )
+    parser.add_argument(
+        "--static-cover",
+        action="store_true",
+        help="Render the title cover as a static PNG instead of an MP4",
     )
     args = parser.parse_args()
 
@@ -2747,6 +2770,7 @@ def main() -> int:
         music_clip_id=args.music_clip,
         music_duration_seconds=args.music_duration,
         enable_music=not args.no_carousel_music,
+        static_cover=args.static_cover,
     )
     print(manifest_path)
     return 0
