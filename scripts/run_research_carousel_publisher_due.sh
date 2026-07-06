@@ -32,6 +32,13 @@ if [ "$scan_exit" -ne 0 ]; then
   exit "$scan_exit"
 fi
 
+"$UV" run python research_carousel_queue_renderer.py --channel aibrief_jp --limit 1 --generate-images --localize-copy --cover-style aibrief-study --cover-template auto
+render_exit=$?
+if [ "$render_exit" -ne 0 ]; then
+  echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] research carousel render exit=$render_exit"
+  exit "$render_exit"
+fi
+
 "$UV" run python research_carousel_publisher.py --channel aibrief_jp
 publish_exit=$?
 echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] research carousel publisher run exit=$publish_exit"

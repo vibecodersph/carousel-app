@@ -10,6 +10,7 @@ import { generateHookVariants } from "./hooks.ts";
 import { runResearchIdeaGenerator } from "./pipeline.ts";
 import { renderInsightReport } from "./report.ts";
 import { loadTaxonomy } from "./taxonomy.ts";
+import { generateTheBatchIssuePackage } from "./theBatchIssueBriefs.ts";
 import type { InsightCardOutput, ResearchGeneratorOptions, ResearchProvider, ResearchSourceName } from "./types.ts";
 
 function parseSources(value: string): ResearchSourceName[] {
@@ -41,6 +42,8 @@ export function parseArgs(argv: string[]): { command: string; options: ResearchG
     else if (arg === "--out") options.out = rest[++i];
     else if (arg === "--report") options.report = rest[++i];
     else if (arg === "--carousel-out") options.carouselOut = rest[++i];
+    else if (arg === "--cover-candidates-out") options.coverCandidatesOut = rest[++i];
+    else if (arg === "--source-items-out") options.sourceItemsOut = rest[++i];
     else if (arg === "--runs-dir") options.runsDir = rest[++i];
     else if (arg === "--queue") options.briefQueue = rest[++i];
     else if (arg === "--no-archive") options.noArchive = true;
@@ -169,6 +172,20 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       report: result.report,
       carouselOut: result.carouselOut,
       cardCount: result.cardCount,
+    }, null, 2));
+    return 0;
+  }
+  if (command === "the-batch-issue") {
+    const result = await generateTheBatchIssuePackage(options);
+    console.log(JSON.stringify({
+      generatedAt: result.generatedAt,
+      sourceCount: result.sourceItems.length,
+      candidateCount: result.coverCandidates.candidates.length,
+      carouselCount: result.carouselBriefs.carouselCount,
+      out: options.coverCandidatesOut ?? options.out ?? "out/research_idea_generator/the_batch/issue_cover_candidates.json",
+      carouselOut: options.carouselOut ?? "out/research_idea_generator/the_batch/issue_carousel_briefs.json",
+      report: options.report,
+      runDir: result.runDir,
     }, null, 2));
     return 0;
   }

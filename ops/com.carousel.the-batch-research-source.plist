@@ -14,11 +14,15 @@
   <key>WorkingDirectory</key>
   <string>/Users/aiagent/GitHub/carousel-app</string>
 
-  <key>RunAtLoad</key>
-  <true/>
-
-  <key>StartInterval</key>
-  <integer>604800</integer>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>6</integer>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
 
   <key>StandardOutPath</key>
   <string>/Users/aiagent/GitHub/carousel-app/out/logs/the_batch_research_source.launchd.log</string>

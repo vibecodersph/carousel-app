@@ -1130,15 +1130,252 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertEqual(row["status"], reel_ledger.STATUS_PUBLISHED)
                 self.assertEqual(row["scheduled_at"], "2026-06-24T09:45:00+09:00")
 
-    def test_queue_ui_renders_refill_action(self) -> None:
+    def test_queue_ui_renders_reshuffle_action(self) -> None:
         html = reel_scheduler.render_queue_ui_html(
             rows=[],
             counts={},
             db_path=Path("/tmp/reels.db"),
         )
 
-        self.assertIn('action="/refill"', html)
-        self.assertIn("Refill Queue", html)
+        self.assertIn('action="/reshuffle"', html)
+        self.assertIn("Reshuffle Queue", html)
+
+    def test_queue_append_start_ignores_old_published_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="old-published",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "old"),
+                    media_path=str(root / "old" / "reel.ja.aibrief_jp.mp4"),
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-07-01T09:00:00+09:00",
+                    published_at="2026-07-01T00:00:00+00:00",
+                )
+
+            start = reel_scheduler.queue_append_start_text(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                now=datetime(2026, 7, 5, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo")),
+            )
+
+            self.assertEqual(start, "2026-07-05T12:00:00+09:00")
+
+    def test_queue_append_start_uses_latest_future_queued_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                for content_hash, scheduled_at in (
+                    ("old-published", "2026-07-01T09:00:00+09:00"),
+                    ("future-queued", "2026-07-08T22:00:00+09:00"),
+                ):
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=content_hash,
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=str(root / content_hash),
+                        media_path=str(root / content_hash / "reel.ja.aibrief_jp.mp4"),
+                        status=(
+                            reel_ledger.STATUS_PUBLISHED
+                            if content_hash == "old-published"
+                            else reel_ledger.STATUS_SCHEDULED
+                        ),
+                        scheduled_at=scheduled_at,
+                        published_at=(
+                            "2026-07-01T00:00:00+00:00"
+                            if content_hash == "old-published"
+                            else None
+                        ),
+                    )
+
+            start = reel_scheduler.queue_append_start_text(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                now=datetime(2026, 7, 5, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo")),
+            )
+
+            self.assertEqual(start, "2026-07-08T22:00:00+09:00")
+
+    def test_scan_and_reshuffle_outputs_scans_outputs_and_plans_new_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = root / "outputs"
+            clip = outputs / "VID123" / "clips" / "001-clip"
+            clip.mkdir(parents=True)
+            (outputs / "VID123" / "metadata.json").write_text(
+                json.dumps({"webpage_url": "https://example.com/source"}), encoding="utf-8"
+            )
+            (clip / "reel.ja.aibrief_jp.mp4").write_bytes(b"ja-video")
+            (clip / "notes.json").write_text(
+                json.dumps({"index": 1, "one_liner": "English hook"}), encoding="utf-8"
+            )
+            (clip / "one_liners.json").write_text(
+                json.dumps({"ja": "日本語フック"}, ensure_ascii=False), encoding="utf-8"
+            )
+            db = root / "reels.db"
+
+            result = reel_scheduler.scan_and_reshuffle_outputs(
+                db_path=db,
+                outputs_root=outputs,
+                out_dir=root / "manifests",
+                channel_filter="aibrief_jp",
+                platform="instagram",
+                settings_key="instagram_reels",
+                limit_per_channel=None,
+                jitter_minutes=0,
+                start_at_text="2026-06-24T09:45:00+09:00",
+            )
+
+            self.assertEqual(result["clips_dirs"], 1)
+            self.assertEqual(result["planned"], {"aibrief_jp": 1})
+            self.assertEqual(result["reflowed"], {"aibrief_jp": 1})
+            with reel_ledger.connect(db) as conn:
+                row = conn.execute("SELECT * FROM reels WHERE channel_id='aibrief_jp'").fetchone()
+                self.assertEqual(row["status"], reel_ledger.STATUS_SCHEDULED)
+                self.assertEqual(row["source_video"], "VID123")
+                self.assertEqual(row["scheduled_at"], "2026-06-24T13:00:00+09:00")
+                self.assertTrue(Path(row["manifest_path"]).is_file())
+
+    def test_scan_and_plan_outputs_is_noop_without_output_clip_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = root / "outputs"
+            outputs.mkdir()
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                clip = root / "already-discovered" / "clips" / "001"
+                clip.mkdir(parents=True)
+                media = clip / "reel.ja.aibrief_jp.mp4"
+                media.write_bytes(b"video")
+                reel_ledger.upsert_discovered(
+                    conn,
+                    content_hash="new-row",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=clip,
+                    media_path=media,
+                    source_video="already-discovered",
+                    title="new row",
+                )
+
+            result = reel_scheduler.scan_and_plan_outputs(
+                db_path=db,
+                outputs_root=outputs,
+                out_dir=root / "manifests",
+                channel_filter="aibrief_jp",
+                platform="instagram",
+                settings_key="instagram_reels",
+                limit_per_channel=None,
+                jitter_minutes=0,
+                start_at_text="2026-06-24",
+            )
+
+            self.assertEqual(result["clips_dirs"], 0)
+            self.assertEqual(result["planned"], {})
+            with reel_ledger.connect(db) as conn:
+                row = reel_ledger.get_reel(conn, "new-row", "aibrief_jp")
+                self.assertEqual(row["status"], reel_ledger.STATUS_NEW)
+
+    def test_scan_and_reshuffle_outputs_does_not_append_after_old_published_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = root / "outputs"
+            clip = outputs / "VID123" / "clips" / "001-clip"
+            clip.mkdir(parents=True)
+            (clip / "reel.ja.aibrief_jp.mp4").write_bytes(b"ja-video")
+            (clip / "notes.json").write_text(
+                json.dumps({"index": 1, "one_liner": "English hook"}), encoding="utf-8"
+            )
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="old-published",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=str(root / "old"),
+                    media_path=str(root / "old" / "reel.ja.aibrief_jp.mp4"),
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    scheduled_at="2026-07-01T09:00:00+09:00",
+                    published_at="2026-07-01T00:00:00+00:00",
+                )
+
+            result = reel_scheduler.scan_and_reshuffle_outputs(
+                db_path=db,
+                outputs_root=outputs,
+                out_dir=root / "manifests",
+                channel_filter="aibrief_jp",
+                platform="instagram",
+                settings_key="instagram_reels",
+                limit_per_channel=None,
+                jitter_minutes=0,
+                now=datetime(2026, 7, 5, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo")),
+            )
+
+            self.assertEqual(result["append_start"], "2026-07-05T12:00:00+09:00")
+            with reel_ledger.connect(db) as conn:
+                row = conn.execute(
+                    "SELECT * FROM reels WHERE channel_id='aibrief_jp' AND status=?",
+                    (reel_ledger.STATUS_SCHEDULED,),
+                ).fetchone()
+                self.assertEqual(row["scheduled_at"], "2026-07-05T13:00:00+09:00")
+
+    def test_queue_ui_reshuffle_endpoint_invokes_output_refill_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            with reel_ledger.connect(db):
+                pass
+            handler = reel_scheduler.make_queue_ui_handler(
+                db_path=db,
+                channel_filter="aibrief_jp",
+                limit=20,
+                settings_key="instagram_reels",
+                platform="instagram",
+                report_out=root / "reel_report.html",
+                outputs_root=root / "outputs",
+                out_dir=root / "manifests",
+            )
+            server = reel_scheduler.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                fake_result = {
+                    "clips_dirs": 2,
+                    "planned": {"aibrief_jp": 3},
+                    "reflowed": {"aibrief_jp": 5},
+                    "alternated": 5,
+                    "start_at": "2026-06-24T09:45:00+09:00",
+                }
+                with patch.object(
+                    reel_scheduler,
+                    "scan_and_reshuffle_outputs",
+                    return_value=fake_result,
+                ) as reshuffle, patch.object(reel_scheduler, "report_command", return_value=0):
+                    conn = http.client.HTTPConnection(host, port, timeout=5)
+                    conn.request("POST", "/reshuffle", body="")
+                    response = conn.getresponse()
+                    response.read()
+                    conn.close()
+
+                self.assertEqual(response.status, 303)
+                location = response.getheader("Location") or ""
+                self.assertIn("planned+3+new+rows", location)
+                reshuffle.assert_called_once()
+                kwargs = reshuffle.call_args.kwargs
+                self.assertEqual(kwargs["channel_filter"], "aibrief_jp")
+                self.assertEqual(kwargs["outputs_root"], root / "outputs")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_media_stream_treats_broken_pipe_as_client_disconnect(self) -> None:
         class BrokenWriter:
@@ -1553,7 +1790,6 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 settings_key="instagram_reels",
                 platform="instagram",
                 report_out=report_out,
-                report_sync_action_url="http://127.0.0.1:9999/sync-insights",
             )
             server = reel_scheduler.ThreadingHTTPServer(("127.0.0.1", 0), handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1574,7 +1810,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 sync.assert_called_once()
                 self.assertTrue(report_out.exists())
                 html = report_out.read_text(encoding="utf-8")
-                self.assertIn('action="http://127.0.0.1:9999/sync-insights"', html)
+                self.assertIn(
+                    f'action="{reel_scheduler.DEFAULT_REPORT_SYNC_ACTION_URL}"',
+                    html,
+                )
                 self.assertTrue(report_out.with_suffix(".insights.json").exists())
                 self.assertTrue(report_out.with_suffix(".insights.md").exists())
             finally:

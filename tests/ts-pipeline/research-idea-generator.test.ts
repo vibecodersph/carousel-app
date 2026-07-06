@@ -37,6 +37,7 @@ import { assessHookRisk, generateHookVariants, optimizeHookText } from "../../re
 import { judgeHookWorthiness } from "../../research_idea_generator/hookJudge.ts";
 import { filterSeenSourceItems, type ResearchMemory } from "../../research_idea_generator/memory.ts";
 import { collectRedditSourceQueue, readUnreadRedditSources } from "../../research_idea_generator/redditQueue.ts";
+import { generateTheBatchIssuePackage } from "../../research_idea_generator/theBatchIssueBriefs.ts";
 import type { CarouselBriefOutput, InsightCard, ResearchCluster, ScoredResearchCluster, TaxonomyConfig } from "../../research_idea_generator/types.ts";
 
 function item(overrides: Partial<SourceItem> & { source: string; externalId: string; title: string }): SourceItem {
@@ -742,6 +743,110 @@ test("research CLI accepts The Batch source aliases and live flags", () => {
   assert.equal(parsed.options.theBatchLive, true);
   assert.equal(parsed.options.theBatchIssueUrl, "https://www.deeplearning.ai/the-batch/tag/jun-26-2026");
   assert.equal(parsed.options.theBatchQueue, "out/research_idea_generator/the_batch_unread_sources.json");
+});
+
+test("The Batch issue package keeps letter content and emits carousel briefs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "the-batch-issue-package-"));
+  const inputPath = join(dir, "source_items.json");
+  const candidatesPath = join(dir, "cover_candidates.json");
+  const carouselPath = join(dir, "carousel_briefs.json");
+  const reportPath = join(dir, "report.md");
+  const runsDir = join(dir, "runs");
+
+  const fugu = item({
+    source: "the_batch",
+    externalId: "fugu-blends-models-task-by-task",
+    title: "Fugu Blends Models Task by Task: Sakana debuted dedicated orchestrator models, Fugu and Fugu-Ultra",
+    url: "https://www.deeplearning.ai/the-batch/fugu-blends-models-task-by-task",
+    body: "Models that orchestrate the activities of other models and agents achieved state-of-the-art performance.",
+    metrics: { score: 90, upvotes: 90 },
+    media: {
+      hasVideo: false,
+      hasImage: true,
+      imageUrl: "https://charonhub.deeplearning.ai/content/images/2026/07/FUGU.webp",
+      provider: "the_batch_feature_image",
+    },
+    raw: {
+      issueTagUrl: "https://www.deeplearning.ai/the-batch/tag/jul-03-2026",
+      tags: ["Machine Learning Research", "AI Agents", "Jul 03, 2026"],
+      fullStory: {
+        summary: "Sakana debuted dedicated orchestrator models.",
+        articleText: "Fugu can spawn Claude, Gemini, and GPT agents task by task.",
+      },
+    },
+  });
+  const letter = item({
+    source: "the_batch",
+    externalId: "how-we-decide-what-courses-to-teach",
+    title: "How We Decide What Courses to Teach: The AI world is full of hype and sales pitches",
+    url: "https://www.deeplearning.ai/the-batch/how-we-decide-what-courses-to-teach",
+    body: "The AI world has become noisy with hype and sales pitches.",
+    metrics: { score: 55, upvotes: 55 },
+    media: {
+      hasVideo: false,
+      hasImage: true,
+      imageUrl: "https://charonhub.deeplearning.ai/content/images/2026/07/2026.07.03-LETTER-b-1.webp",
+      provider: "the_batch_feature_image",
+    },
+    raw: {
+      issueTagUrl: "https://www.deeplearning.ai/the-batch/tag/jul-03-2026",
+      tags: ["Letters", "Jul 03, 2026", "DeepLearning.AI News"],
+      fullStory: {
+        summary: "DeepLearning.AI focuses on important tools and techniques over hype.",
+        articleText: "The AI world has become incredibly noisy. Courses should focus on ideas people can apply across vendors.",
+      },
+    },
+  });
+  const issueWrapper = item({
+    source: "the_batch",
+    externalId: "issue-360",
+    title: "OpenAI's GPT-5.6 Family, New Ways to Train Robots, Models Invoking Models",
+    url: "https://www.deeplearning.ai/the-batch/issue-360",
+    body: "Newsletter wrapper.",
+    metrics: { score: 100, upvotes: 100 },
+    raw: {
+      tags: ["The Batch Newsletter", "issue-360", "Jul 03, 2026"],
+    },
+  });
+  await writeFile(inputPath, JSON.stringify([fugu, letter, issueWrapper]), "utf8");
+
+  const result = await generateTheBatchIssuePackage({
+    input: inputPath,
+    coverCandidatesOut: candidatesPath,
+    carouselOut: carouselPath,
+    report: reportPath,
+    runsDir,
+    provider: "local",
+    now: new Date("2026-07-04T00:00:00.000Z"),
+  });
+
+  assert.equal(result.coverCandidates.candidates.length, 2);
+  assert.equal(result.carouselBriefs.carouselCount, 2);
+  assert.ok(result.coverCandidates.stories.some((story) => story.kind === "letter"));
+  assert.ok(result.carouselBriefs.carousels.some((brief) => brief.sourceKind === "letter"));
+  const fuguBrief = result.carouselBriefs.carousels.find((brief) => brief.evidenceUrls[0] === fugu.url);
+  assert.equal(fuguBrief?.hook, "AIがAIを使い分ける");
+  assert.equal(fuguBrief?.coverTemplate, "split-switch");
+  assert.equal(fuguBrief?.slides[1].headline, "何が起きた？");
+  assert.match(fuguBrief?.slides[1].lines[0] ?? "", /Sakana AI|Sakana/);
+  assert.equal(fuguBrief?.slides[1].image.kind, "source_image");
+  assert.equal(fuguBrief?.slides[1].image.sourceImageUrl, fugu.media?.imageUrl);
+  assert.equal(fuguBrief?.slides[2].image.kind, "generated_prompt");
+  assert.equal(fuguBrief?.slides[2].image.sourceImageUrl, undefined);
+  assert.equal(fuguBrief?.slides[2].image.sourceImageUrls?.[0], fugu.media?.imageUrl);
+  const letterBrief = result.carouselBriefs.carousels.find((brief) => brief.sourceKind === "letter");
+  assert.equal(letterBrief?.hook, "AIのノイズ、どう削る？");
+  assert.equal(letterBrief?.coverTemplate, "stop-signal");
+  assert.equal(letterBrief?.slides.length, 5);
+
+  const written = JSON.parse(await readFile(carouselPath, "utf8")) as CarouselBriefOutput;
+  assert.equal(written.carouselCount, 2);
+  assert.equal(JSON.parse(await readFile(candidatesPath, "utf8")).candidates.length, 2);
+  assert.ok(result.runDir);
+  assert.equal(
+    JSON.parse(await readFile(join(result.runDir ?? "", "carousel_briefs.json"), "utf8")).carouselCount,
+    2,
+  );
 });
 
 test("carousel brief archive scanner queues unpublished run briefs idempotently", async () => {

@@ -16,6 +16,8 @@ export interface ResearchGeneratorOptions {
   out?: string;
   report?: string;
   carouselOut?: string;
+  coverCandidatesOut?: string;
+  sourceItemsOut?: string;
   runsDir?: string;
   briefQueue?: string;
   noArchive?: boolean;
@@ -189,6 +191,9 @@ export interface CarouselBrief {
   confidence: ConfidenceLevel;
   score: number;
   suggestedFormat: "instagram_carousel";
+  coverTemplate?: string;
+  coverStrategy?: Record<string, unknown>;
+  sourceKind?: string;
   slideCount: number;
   slides: CarouselBriefSlide[];
   instagramDescription: string;

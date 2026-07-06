@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import build_idea_carousel
 
@@ -156,6 +156,54 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["item_2"]["source_image_url"], "")
         self.assertEqual(carousel["item_2"]["source_image_urls"], [source_url])
 
+    def test_explicit_body_source_image_does_not_repeat_on_generated_slides(self) -> None:
+        source_url = "https://example.com/source.webp"
+        brief = {
+            "id": "brief-raw-once",
+            "workingTitle": "Robots learning rewards",
+            "hook": "The robot reward model changed",
+            "slides": [
+                {
+                    "slideNumber": 1,
+                    "type": "cover",
+                    "headline": "The robot reward model changed",
+                    "image": {
+                        "kind": "generated_prompt",
+                        "sourceImageUrls": [source_url],
+                        "promptBase": "Cover visual",
+                    },
+                },
+                {
+                    "slideNumber": 2,
+                    "type": "hook_detail",
+                    "headline": "The source photo anchors the story.",
+                    "image": {
+                        "kind": "source_image",
+                        "sourceImageUrl": source_url,
+                        "sourceImageUrls": [source_url],
+                    },
+                },
+                {
+                    "slideNumber": 3,
+                    "type": "hook_detail",
+                    "headline": "The next visual should be generated.",
+                    "image": {
+                        "kind": "generated_prompt",
+                        "sourceImageUrls": [source_url],
+                        "promptBase": "Generated supporting visual",
+                    },
+                },
+            ],
+        }
+
+        carousel = build_idea_carousel.normalize_carousel_for_render(brief)
+
+        self.assertEqual(carousel["item_1"]["source_image_url"], source_url)
+        self.assertEqual(carousel["item_1"]["image_kind"], "source_image")
+        self.assertEqual(carousel["item_2"]["source_image_url"], "")
+        self.assertEqual(carousel["item_2"]["image_kind"], "generated_prompt")
+        self.assertEqual(carousel["item_2"]["source_image_urls"], [source_url])
+
     def test_localize_research_brief_copy_preserves_assets_and_qas_japanese(self) -> None:
         brief = {
             "id": "brief-ja",
@@ -251,6 +299,26 @@ class IdeaCarouselRendererTests(unittest.TestCase):
 
         self.assertFalse(qa["passed"])
         self.assertTrue(any("does not contain Japanese text" in error for error in qa["errors"]))
+
+    def test_apply_localized_research_copy_strips_bracket_markup(self) -> None:
+        updated = build_idea_carousel.apply_localized_research_copy(
+            {
+                "workingTitle": "Apple AFM 3",
+                "hook": "Apple AI",
+                "slides": [{"headline": "Apple AI", "lines": ["MoE"]}],
+            },
+            {
+                "workingTitle": "[2026年のApple新AI]",
+                "hook": "[2026年のApple新AI]",
+                "slides": [{"headline": "[AFM 3の要点]", "lines": ["[MoEを採用]"]}],
+            },
+        )
+        qa = build_idea_carousel.qa_localized_research_brief(updated, channel_language="Japanese")
+
+        self.assertEqual(updated["hook"], "2026年のApple新AI")
+        self.assertEqual(updated["slides"][0]["headline"], "AFM 3の要点")
+        self.assertEqual(updated["slides"][0]["lines"], ["MoEを採用"])
+        self.assertTrue(qa["passed"])
 
     def test_japanese_localization_qa_caps_cover_hook_at_25_chars(self) -> None:
         qa = build_idea_carousel.qa_localized_research_brief(
@@ -415,11 +483,128 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertNotIn("https://opengraph.githubassets.com/1/example/repo", body_html)
         self.assertNotIn("A deeper working title", html_text)
         self.assertNotIn("This is slide two", html_text)
-        self.assertNotIn('<header class="brand-bar">', html_text)
-        self.assertNotIn("vibecodersph", html_text.lower())
+        self.assertIn('class="brand-bar is-logo-only"', html_text)
+        self.assertIn('class="brand-logo"', html_text)
+        self.assertNotIn('class="brand-name"', html_text)
+        self.assertNotIn('class="brand-handle"', html_text)
+        self.assertNotIn("@vibecodersph", html_text.lower())
         self.assertNotIn('<div class="option-row"', html_text)
         self.assertNotIn('<p class="subline"', html_text)
         self.assertNotIn("Swipe for the comparison", html_text)
+
+    def test_research_brief_can_pin_kinetic_cover_template(self) -> None:
+        carousel = build_idea_carousel.normalize_carousel_for_render(
+            {
+                "id": "brief-cover-template",
+                "workingTitle": "GPT access gate",
+                "hook": "GPT-5.6、まだ届かない",
+                "hookStyle": "contrarian",
+                "coverTemplate": "stop-signal",
+                "coverStrategy": {
+                    "label": "restricted gate",
+                    "style": "warning gate",
+                    "why": "Access-gap hook fits a stop-signal cover.",
+                },
+                "slides": [
+                    {
+                        "slideNumber": 1,
+                        "type": "cover",
+                        "headline": "GPT-5.6、まだ届かない",
+                        "lines": [],
+                        "altText": "Cover",
+                    },
+                    {
+                        "slideNumber": 2,
+                        "type": "hook_detail",
+                        "headline": "何が起きた？",
+                        "lines": ["限定プレビューです。"],
+                        "altText": "Slide",
+                    },
+                ],
+                "evidenceUrls": ["https://www.deeplearning.ai/the-batch/gpt-5-6-lands-in-limbo"],
+            }
+        )
+
+        self.assertEqual(carousel["cover_page"]["cover_template"], "stop-signal")
+        self.assertEqual(carousel["cover_page"]["hook_style"], "contrarian")
+        self.assertEqual(carousel["cover_page"]["cover_strategy"]["label"], "restricted gate")
+        self.assertEqual(build_idea_carousel.select_kinetic_cover_template(carousel), "stop-signal")
+
+    def test_research_brief_can_pin_aibrief_study_cover_template(self) -> None:
+        carousel = build_idea_carousel.normalize_carousel_for_render(
+            {
+                "id": "brief-study-template",
+                "workingTitle": "Fugu model router",
+                "hook": "モデル選びもAIの仕事に",
+                "hookStyle": "shift",
+                "coverTemplate": "fugu_router",
+                "slides": [
+                    {
+                        "slideNumber": 1,
+                        "type": "cover",
+                        "headline": "モデル選びもAIの仕事に",
+                        "lines": [],
+                        "altText": "Cover",
+                    },
+                    {
+                        "slideNumber": 2,
+                        "type": "hook_detail",
+                        "headline": "何が起きた？",
+                        "lines": ["Fuguがタスクごとにモデルを選びます。"],
+                        "altText": "Slide",
+                    },
+                ],
+                "evidenceUrls": ["https://www.deeplearning.ai/the-batch/fugu-blends-models-task-by-task"],
+            }
+        )
+
+        self.assertEqual(carousel["cover_page"]["cover_template"], "fugu_router")
+        self.assertEqual(build_idea_carousel.select_aibrief_study_template(carousel), "fugu_router")
+
+    def test_aibrief_study_maps_generic_kinetic_template_names(self) -> None:
+        self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("stop-signal"), "gpt_gate")
+        self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("metric-snap"), "gpt_typerain")
+        self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("pattern-break"), "fugu_call")
+        self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("split-switch"), "ms_split")
+        self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("loom-reveal"), "issue_wave")
+
+    def test_aibrief_study_auto_uses_explicit_generic_cover_template(self) -> None:
+        carousel = {
+            "source_brief_title": "米国大学で急増するAI学位プログラム",
+            "cover_page": {
+                "headline": "米国で急増する「AI学位」の実態",
+                "cover_template": "loom-reveal",
+            },
+        }
+
+        self.assertEqual(build_idea_carousel.select_aibrief_study_template(carousel), "issue_wave")
+
+    def test_aibrief_study_cover_html_injects_current_issue_copy(self) -> None:
+        carousel = {
+            "source_brief_title": "米国大学で急増するAI学位プログラム",
+            "cover_page": {
+                "headline": "米国で急増する「AI学位」の実態",
+                "cover_template": "loom-reveal",
+                "cover_strategy": {
+                    "label": "教育トレンド",
+                    "kicker": "急拡大するAI教育",
+                    "swipe": "実態を見る",
+                    "why": "学位プログラムの増加を短いニュースフックで見せる。",
+                },
+            },
+        }
+
+        html_text, template_id = build_idea_carousel.aibrief_study_cover_html(carousel)
+
+        self.assertEqual(template_id, "issue_wave")
+        self.assertIn("米国で", html_text)
+        self.assertIn("AI学位", html_text)
+        self.assertIn("教育トレンド", html_text)
+        self.assertIn("急拡大するAI教育", html_text)
+        self.assertIn("実態を見る", html_text)
+        self.assertNotIn("THE BATCH 360", html_text)
+        self.assertNotIn("GPT-5.6", html_text)
+        self.assertNotIn("RoboReward", html_text)
 
     def test_literal_research_slide_omits_non_json_chrome(self) -> None:
         with TemporaryDirectory() as tmp, patch.object(build_idea_carousel, "render_html_slide"):
@@ -478,6 +663,33 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertIn("has-generated-image", body_html)
         self.assertNotIn("has-source-image", body_html)
         self.assertIn(str(generated), html_text)
+
+    def test_literal_research_slide_marks_source_asset_from_fallback_url(self) -> None:
+        with TemporaryDirectory() as tmp, patch.object(build_idea_carousel, "render_html_slide"):
+            out_path = Path(tmp) / "slide_02.png"
+            source_asset = Path(tmp) / "source.webp"
+            build_idea_carousel.render_item_slide(
+                {
+                    "literal_slide": True,
+                    "headline": "Source asset should lead this slide",
+                    "body": "",
+                    "item_name": "",
+                    "sources": [],
+                    "show_source": False,
+                    "source_image_urls": ["https://example.com/source.webp"],
+                },
+                out_path,
+                active=2,
+                count=3,
+                image_path=source_asset,
+                image_is_source=True,
+            )
+            html_text = out_path.with_suffix(".html").read_text(encoding="utf-8")
+
+        body_html = html_text.split("<body>", 1)[1]
+        self.assertIn("has-source-image", body_html)
+        self.assertNotIn("has-generated-image", body_html)
+        self.assertIn(str(source_asset), html_text)
 
     def test_concise_body_uses_first_sentence_without_ellipsis(self) -> None:
         page = {
@@ -964,6 +1176,61 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         render_fly.assert_called_once()
         render_default.assert_not_called()
 
+    def test_render_carousel_can_use_aibrief_study_cover_templates(self) -> None:
+        carousel = {
+            "id": "gpt-gate",
+            "page_order": ["cover_page", "item_1", "cta"],
+            "cover_page": {
+                "headline": "GPT-5.6がまだ届かない理由",
+                "subheadline": "限定公開の裏側を読む。",
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "item_name": "限定公開",
+                "body": "Rollout gates can be product decisions, not only model readiness.",
+                "alt_text": "Item alt text",
+                "sources": [{"url": "https://example.com/gpt"}],
+            },
+            "cta": {"headline": "Save this", "body": "Follow for more.", "alt_text": "CTA alt text"},
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_aibrief_study_cover"
+        ) as render_study, patch.object(
+            build_idea_carousel, "render_animated_title_slide"
+        ) as render_default, patch.object(
+            build_idea_carousel, "render_kinetic_fly_cover"
+        ) as render_fly, patch.object(
+            build_idea_carousel, "render_item_slide"
+        ), patch.object(
+            build_idea_carousel, "render_cta_slide"
+        ):
+            out_dir = Path(tmp)
+            render_study.return_value = (out_dir / "slide_01.mp4", "gpt_gate")
+            manifest_path = build_idea_carousel.render_carousel(
+                carousel,
+                out_dir=out_dir,
+                generate_images=False,
+                channel_id="aibrief_jp",
+                cover_style="aibrief-study",
+                cover_template="auto",
+                enable_music=False,
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        cover = manifest["slides"][0]
+        self.assertEqual(manifest["cover_style"], "aibrief-study")
+        self.assertEqual(manifest["cover_template"], "gpt_gate")
+        self.assertEqual(cover["cover_style"], "aibrief-study")
+        self.assertEqual(cover["cover_template"], "gpt_gate")
+        self.assertTrue(cover["path"].endswith("slide_01.mp4"))
+        self.assertTrue(cover["poster"].endswith("slide_01_poster.png"))
+        self.assertEqual(cover["image_path"], "")
+        render_study.assert_called_once()
+        self.assertEqual(render_study.call_args.kwargs["cover_template"], "auto")
+        render_default.assert_not_called()
+        render_fly.assert_not_called()
+
     def test_render_carousel_records_auto_cover_template(self) -> None:
         carousel = {
             "id": "token-stack",
@@ -1004,7 +1271,72 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(manifest["slides"][0]["cover_template"], "metric-snap")
         self.assertEqual(render_fly.call_args.kwargs["cover_template"], "metric-snap")
 
-    def test_render_carousel_uses_assigned_source_image_before_generating(self) -> None:
+    def test_kinetic_fly_cover_loops_video_when_music_is_added(self) -> None:
+        carousel = {
+            "id": "kinetic-music",
+            "page_order": ["cover_page", "item_1"],
+            "suppress_cta": True,
+            "cover_page": {
+                "headline": "AIがAIを使い分ける",
+                "hook_only_cover": True,
+                "alt_text": "Cover alt text",
+            },
+            "item_1": {
+                "headline": "Fugu routes tasks to different models.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+            },
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "signal.mp3"
+            audio.write_bytes(b"audio")
+            library = root / "library.json"
+            library.write_text(
+                json.dumps(
+                    {
+                        "tracks": [
+                            {
+                                "id": "signal-glow",
+                                "title": "Signal Glow",
+                                "path": str(audio),
+                                "duration_seconds": 26,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                build_idea_carousel, "render_kinetic_fly_cover"
+            ) as render_fly, patch.object(
+                build_idea_carousel, "render_item_slide"
+            ), patch.object(
+                build_idea_carousel, "add_music_to_video"
+            ) as add_music:
+                manifest_path = build_idea_carousel.render_carousel(
+                    carousel,
+                    out_dir=root,
+                    generate_images=False,
+                    channel_id="aibrief_jp",
+                    cover_style="kinetic-fly",
+                    cover_template="auto",
+                    music_library=library,
+                    music_clip_id="signal-glow",
+                    music_duration_seconds=18,
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(manifest["slides"][0]["path"].endswith("slide_01_music.mp4"))
+        self.assertNotIn("duration_seconds", render_fly.call_args.kwargs)
+        self.assertEqual(add_music.call_args.kwargs["duration_seconds"], 18)
+        self.assertTrue(add_music.call_args.kwargs["loop_video"])
+
+    def test_render_carousel_generates_for_generated_prompt_even_with_source_provenance(self) -> None:
         carousel = {
             "id": "source-then-generated",
             "page_order": ["cover_page", "item_1", "item_2"],
@@ -1027,7 +1359,9 @@ class IdeaCarouselRendererTests(unittest.TestCase):
                 "sources": [],
                 "show_source": False,
                 "literal_slide": True,
+                "image_kind": "generated_prompt",
                 "image_prompt": "Generated economics visual",
+                "source_image_urls": ["https://example.com/fallback.webp"],
             },
         }
 
@@ -1041,9 +1375,9 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             build_idea_carousel, "maybe_generate_image"
         ) as maybe_generate:
             source_path = Path(tmp) / "source.webp"
-            generated = Path(tmp) / "generated.png"
+            generated_path = Path(tmp) / "generated.png"
             cache_source.return_value = source_path
-            maybe_generate.return_value = generated
+            maybe_generate.return_value = generated_path
             manifest_path = build_idea_carousel.render_carousel(
                 carousel,
                 out_dir=Path(tmp),
@@ -1056,12 +1390,68 @@ class IdeaCarouselRendererTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(render_item.call_args_list[0].kwargs["image_path"], source_path)
-        self.assertEqual(render_item.call_args_list[1].kwargs["image_path"], generated)
-        cache_source.assert_called_once_with(Path(tmp), "https://example.com/source.webp")
+        self.assertEqual(render_item.call_args_list[1].kwargs["image_path"], generated_path)
+        self.assertEqual(
+            cache_source.call_args_list,
+            [
+                call(Path(tmp), "https://example.com/source.webp"),
+            ],
+        )
         maybe_generate.assert_called_once()
         self.assertEqual(manifest["slides"][1]["source_image_url"], "https://example.com/source.webp")
         self.assertEqual(manifest["slides"][1]["image_path"], str(source_path))
-        self.assertEqual(manifest["slides"][2]["image_path"], str(generated))
+        self.assertEqual(manifest["slides"][2]["source_image_url"], "")
+        self.assertEqual(manifest["slides"][2]["source_image_urls"], ["https://example.com/fallback.webp"])
+        self.assertEqual(manifest["slides"][2]["image_path"], str(generated_path))
+
+    def test_generated_prompt_slide_uses_generation_without_trying_source_cache(self) -> None:
+        carousel = {
+            "id": "generated-with-fallback",
+            "page_order": ["cover_page", "item_1"],
+            "suppress_cta": True,
+            "cover_page": {
+                "headline": "AI teams need better visuals",
+                "hook_only_cover": True,
+            },
+            "item_1": {
+                "headline": "Generated art should be tried first.",
+                "body": "",
+                "sources": [],
+                "show_source": False,
+                "literal_slide": True,
+                "image_kind": "generated_prompt",
+                "image_prompt": "Generated body visual",
+                "source_image_url": "",
+                "source_image_urls": ["https://example.com/fallback.webp"],
+            },
+        }
+
+        with TemporaryDirectory() as tmp, patch.object(
+            build_idea_carousel, "render_kinetic_fly_cover"
+        ), patch.object(
+            build_idea_carousel, "render_item_slide"
+        ) as render_item, patch.object(
+            build_idea_carousel, "maybe_cache_source_image"
+        ) as cache_source, patch.object(
+            build_idea_carousel, "maybe_generate_image"
+        ) as maybe_generate:
+            generated_path = Path(tmp) / "generated.png"
+            maybe_generate.return_value = generated_path
+            manifest_path = build_idea_carousel.render_carousel(
+                carousel,
+                out_dir=Path(tmp),
+                generate_images=True,
+                channel_id="vibecodersph",
+                cover_style="kinetic-fly",
+                cover_template="auto",
+                enable_music=False,
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        cache_source.assert_not_called()
+        maybe_generate.assert_called_once()
+        self.assertEqual(render_item.call_args.kwargs["image_path"], generated_path)
+        self.assertEqual(manifest["slides"][1]["image_path"], str(generated_path))
 
 
 if __name__ == "__main__":

@@ -313,8 +313,11 @@ has stale paths, the exporter reads the YouTube id from the manifest/source URL,
 finds that output folder, and matches the exact channel/language reel by media
 hash or localized hook.
 
-When `queue-ui` is running, open `http://127.0.0.1:8765/report` or click the
-report's **Update Instagram Insights** button. The button calls the same
+When `queue-ui` is running, open `http://127.0.0.1:8765/` for queue review or
+`http://127.0.0.1:8765/report` for the metrics report. The queue page has a
+**Reshuffle Queue** button that scans the configured reel-app outputs root,
+plans new rows, reflows the unpublished queue from now, and alternates source
+videos. The report's **Update Instagram Insights** button calls the same
 server-side `sync-insights` path, keeps the Instagram token out of the browser,
 and regenerates both the HTML report and JSON export. Zero hosted infra; runs
 from the same local process.

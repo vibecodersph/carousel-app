@@ -287,6 +287,7 @@ for research-backed ideas: each brief contains the selected hook, lean
 
 ```sh
 npm run ideas:research -- run --provider local --cards 5
+npm run source:the-batch-issue
 
 uv run python build_idea_carousel.py \
   --input out/research_idea_generator/carousel_briefs.json \
@@ -302,6 +303,27 @@ scoring ideas first, so index `0` is the default story to test. The renderer
 accepts this brief shape directly and renders only the selected brief's
 `slides[]`: the cover uses the hook, and each following slide uses only its JSON
 headline plus any provided `lines[]`.
+
+For DeepLearning.AI The Batch, the weekly source job also runs the issue-specific
+brief generator. It keeps the regular news stories plus the Andrew Ng letter
+content, writes `issue_cover_candidates.json` for hook/template review, and
+writes queue-compatible issue briefs:
+
+```sh
+node research_idea_generator/cli.ts the-batch-issue \
+  --the-batch-live \
+  --provider gemini \
+  --cards 5 \
+  --cover-candidates-out out/research_idea_generator/the_batch/issue_cover_candidates.json \
+  --carousel-out out/research_idea_generator/the_batch/issue_carousel_briefs.json \
+  --runs-dir out/research_idea_generator/runs/the_batch_issue
+```
+
+Gemini improves Japanese hooks and cover-template decisions when
+`GEMINI_API_KEY` or `GOOGLE_API_KEY` is available; otherwise the command falls
+back to deterministic local hooks. The generated briefs intentionally keep the
+same `slides[].lines` body path as the older workflow so rendered body slides
+retain the existing style.
 
 Every archived research run also writes its own immutable `carousel_briefs.json`
 under `out/research_idea_generator/runs/**/`. Source-specific jobs can keep
@@ -454,9 +476,13 @@ uv run python reel_scheduler.py report --out out/reel_report.html
 
 `queue-outputs` scans each `<VIDEO_ID>/clips/` folder under a reel-app outputs
 root, schedules new rows into the ledger, and can reshuffle the unpublished
-queue after appending. `queue-ui` serves a local review page with unschedule
-actions for unpublished items, and `scripts/run_reel_scheduler_due.sh` now
-refreshes the HTML report after each due-run. The report writes LLM-ready
+queue after appending. `queue-ui` serves a local review page at
+`http://127.0.0.1:8765/` with unschedule actions and a **Reshuffle Queue**
+button that runs the same output scan, append, and reshuffle flow without
+copying the long `queue-outputs --mode reshuffle` command. It uses the default
+reel-app outputs root (`/Users/aiagent/GitHub/reel-app/outputs`) unless
+`--outputs-root` is provided. `scripts/run_reel_scheduler_due.sh` now refreshes
+the HTML report after each due-run. The report writes LLM-ready
 `reel_report.insights.json` and readable `reel_report.insights.md` sidecars.
 The Markdown table uses the actual reel subtitle transcript from
 `/Users/aiagent/GitHub/reel-app/outputs/<youtube_id>/clips/.../subtitles.<lang>.ass`

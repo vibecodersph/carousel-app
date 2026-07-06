@@ -12,6 +12,7 @@ import argparse
 import copy
 import hashlib
 import html
+import importlib.util
 import json
 import os
 import re
@@ -64,9 +65,12 @@ DEFAULT_IDEA_ITEM_IMAGE_SIZE = "2048x1152"
 DEFAULT_COVER_STYLE = "default"
 STATIC_COVER_STYLE = "static"
 KINETIC_FLY_COVER_STYLE = "kinetic-fly"
+AIBRIEF_STUDY_COVER_STYLE = "aibrief-study"
 DEFAULT_COVER_TEMPLATE = "auto"
-KINETIC_FLY_CYCLE_SECONDS = 5.2
-KINETIC_FLY_FPS = 30
+KINETIC_FLY_CYCLE_SECONDS = 2.8
+KINETIC_FLY_FPS = 12
+AIBRIEF_STUDY_COVER_SECONDS = 6.0
+AIBRIEF_STUDY_COVER_FPS = 12
 RESEARCH_BRIEF_RENDER_SOURCE = "research_idea_generator"
 FIXED_RESEARCH_CTA_COPY = {
     "kicker": "コメント歓迎",
@@ -273,6 +277,10 @@ def brief_image_meta(slide: dict[str, Any]) -> dict[str, Any]:
     return image if isinstance(image, dict) else {}
 
 
+def dict_value(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def first_string(values: object) -> str:
     if not isinstance(values, list):
         return ""
@@ -449,6 +457,15 @@ def qa_localized_research_brief(
     }
 
 
+def sanitize_localized_research_text(value: object, *, multiline: bool = False) -> str:
+    text = multiline_string_value(value) if multiline else string_value(value)
+    if not text:
+        return ""
+    text = re.sub(r"\[([^\]\n]{1,100})\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\[([^\]\n]{1,100})\]", r"\1", text)
+    return text.strip()
+
+
 def apply_localized_research_copy(
     brief: dict[str, Any],
     localized: dict[str, Any],
@@ -456,9 +473,9 @@ def apply_localized_research_copy(
     updated = copy.deepcopy(brief)
     for key in ("workingTitle", "hook", "instagramDescription"):
         value = (
-            multiline_string_value(localized.get(key))
+            sanitize_localized_research_text(localized.get(key), multiline=True)
             if key == "instagramDescription"
-            else string_value(localized.get(key))
+            else sanitize_localized_research_text(localized.get(key))
         )
         if value:
             updated[key] = value
@@ -471,13 +488,17 @@ def apply_localized_research_copy(
             localized_slide = localized_slides[index]
             if not isinstance(localized_slide, dict):
                 continue
-            headline = string_value(localized_slide.get("headline"))
+            headline = sanitize_localized_research_text(localized_slide.get("headline"))
             if headline:
                 slide["headline"] = headline
             lines = localized_slide.get("lines")
             if isinstance(lines, list):
-                slide["lines"] = [string_value(line) for line in lines if string_value(line)]
-            alt_text = string_value(localized_slide.get("altText"))
+                slide["lines"] = [
+                    sanitized
+                    for line in lines
+                    if (sanitized := sanitize_localized_research_text(line))
+                ]
+            alt_text = sanitize_localized_research_text(localized_slide.get("altText"))
             if alt_text:
                 slide["altText"] = alt_text
     return updated
@@ -720,6 +741,12 @@ def research_brief_to_render_carousel(
     cover_image = brief_image_meta(cover_slide)
     cover_image_kind = string_value(cover_image.get("kind"))
     source_image_queue = brief_source_image_queue(cover_slide, story_slides)
+    cover_strategy = dict_value(brief.get("coverStrategy"))
+    cover_template = (
+        string_value(brief.get("coverTemplate"))
+        or string_value(cover_strategy.get("coverTemplate"))
+        or string_value(cover_strategy.get("cover_template"))
+    )
     allocated_source_image_urls: set[str] = set()
     carousel: dict[str, Any] = {
         "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
@@ -730,6 +757,7 @@ def research_brief_to_render_carousel(
         "source_brief_score": brief.get("score"),
         "source_brief_confidence": brief.get("confidence"),
         "source_brief_hook_style": brief.get("hookStyle"),
+        "source_kind": string_value(brief.get("sourceKind")),
         "source_brief_evidence_urls": [record["url"] for record in source_records],
         "generated_at": string_value((source_payload or {}).get("generatedAt")),
         "instagram_caption": multiline_string_value(brief.get("instagramDescription")),
@@ -742,6 +770,9 @@ def research_brief_to_render_carousel(
             "kinetic_subline": "",
             "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
             "hook_only_cover": True,
+            "cover_template": cover_template,
+            "cover_strategy": cover_strategy,
+            "hook_style": string_value(brief.get("hookStyle")),
             "image_kind": cover_image_kind,
             "source_image_url": "",
             "source_image_urls": brief_image_urls(cover_image),
@@ -752,25 +783,34 @@ def research_brief_to_render_carousel(
     }
 
     page_order = ["cover_page"]
+    story_has_explicit_source_image = any(
+        string_value(brief_image_meta(story_slide).get("kind")) == "source_image"
+        for story_slide in story_slides
+    )
     for item_index, slide in enumerate(story_slides, start=1):
         key = f"item_{item_index}"
         body = brief_body_for_slide(slide)
         slide_image = brief_image_meta(slide)
         slide_image_kind = string_value(slide_image.get("kind"))
         slide_source_image_urls = brief_image_urls(slide_image)
-        slide_source_image_url = next(
-            (url for url in slide_source_image_urls if url not in allocated_source_image_urls),
-            "",
+        slide_source_image_url = ""
+        should_use_source_image = slide_image_kind == "source_image" or (
+            not story_has_explicit_source_image and not allocated_source_image_urls
         )
-        if not slide_source_image_url:
+        if should_use_source_image:
             slide_source_image_url = next(
-                (url for url in source_image_queue if url not in allocated_source_image_urls),
+                (url for url in slide_source_image_urls if url not in allocated_source_image_urls),
                 "",
             )
-        if slide_source_image_url:
-            allocated_source_image_urls.add(slide_source_image_url)
-        if slide_source_image_url and slide_source_image_url not in slide_source_image_urls:
-            slide_source_image_urls = [slide_source_image_url, *slide_source_image_urls]
+            if not slide_source_image_url:
+                slide_source_image_url = next(
+                    (url for url in source_image_queue if url not in allocated_source_image_urls),
+                    "",
+                )
+            if slide_source_image_url:
+                allocated_source_image_urls.add(slide_source_image_url)
+            if slide_source_image_url and slide_source_image_url not in slide_source_image_urls:
+                slide_source_image_urls = [slide_source_image_url, *slide_source_image_urls]
         page_order.append(key)
         carousel[key] = {
             "item_name": "",
@@ -977,6 +1017,8 @@ def normalize_cover_style(value: str | None) -> str:
         return DEFAULT_COVER_STYLE
     if style in {"fly", "fly-cover", "kinetic", "kinetic-fly"}:
         return KINETIC_FLY_COVER_STYLE
+    if style in {"aibrief-study", "ai-brief-study", "study", "cover-study", "cover-studies", "scroll-stopper"}:
+        return AIBRIEF_STUDY_COVER_STYLE
     raise SystemExit(f"unknown cover style: {value}")
 
 
@@ -1371,6 +1413,12 @@ body {{ background: var(--bg); }}
   align-items: center;
   gap: 22px;
 }}
+.brand-bar.is-logo-only {{
+  top: 74px;
+  left: auto;
+  right: 86px;
+  width: auto;
+}}
 .brand-logo,
 .brand-fallback {{
   width: 112px;
@@ -1383,6 +1431,12 @@ body {{ background: var(--bg); }}
   object-fit: cover;
   overflow: hidden;
   animation: logoSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}}
+.brand-bar.is-logo-only .brand-logo,
+.brand-bar.is-logo-only .brand-fallback {{
+  width: 118px;
+  height: 118px;
+  box-shadow: 12px 12px 0 rgba(var(--fg-rgb), 0.08);
 }}
 .brand-fallback {{
   color: var(--primary);
@@ -1449,54 +1503,62 @@ body {{ background: var(--bg); }}
 .cover-template-stop-signal .route-map {{
   opacity: 0.92;
 }}
+.cover-template-stop-signal .slide::before {{
+  background:
+    linear-gradient(90deg, rgba(var(--primary-rgb), 0.18) 0 2px, transparent 2px 94px),
+    linear-gradient(0deg, rgba(var(--fg-rgb), 0.1) 0 1px, transparent 1px 94px);
+}}
 .cut-bars span {{
   position: absolute;
   left: -120px;
   right: -120px;
-  height: 14px;
-  background: rgba(var(--primary-rgb), 0.66);
+  height: 28px;
+  background: rgba(var(--primary-rgb), 0.78);
   transform-origin: 50% 50%;
+  box-shadow: 0 10px 0 rgba(var(--fg-rgb), 0.12);
   animation: cutBarSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }}
-.cut-bars span:nth-child(1) {{ top: 336px; transform: rotate(-17deg); }}
-.cut-bars span:nth-child(2) {{ top: 706px; transform: rotate(9deg); animation-delay: .12s; }}
-.cut-bars span:nth-child(3) {{ top: 1010px; transform: rotate(-9deg); animation-delay: .24s; }}
+.cut-bars span:nth-child(1) {{ top: 286px; transform: rotate(-17deg); }}
+.cut-bars span:nth-child(2) {{ top: 646px; transform: rotate(9deg); animation-delay: .12s; }}
+.cut-bars span:nth-child(3) {{ top: 958px; transform: rotate(-9deg); animation-delay: .24s; }}
 .pattern-grid {{
-  left: 604px;
+  left: 94px;
   top: 154px;
-  width: 386px;
-  height: 760px;
+  width: 884px;
+  height: 860px;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 18px;
-  opacity: 0.74;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 20px;
+  opacity: 0.7;
 }}
 .pattern-grid span {{
-  border: 2px solid rgba(var(--fg-rgb), 0.22);
+  border: 3px solid rgba(var(--fg-rgb), 0.2);
   background: rgba(var(--bg-rgb), 0.68);
-  box-shadow: 9px 9px 0 rgba(var(--primary-rgb), 0.1);
+  box-shadow: 12px 12px 0 rgba(var(--primary-rgb), 0.12);
   animation: quietTile {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
 }}
 .pattern-grid span:nth-child(13) {{
   border-color: var(--primary);
-  background: rgba(var(--primary-rgb), 0.18);
+  background: rgba(var(--primary-rgb), 0.28);
   animation: oddTile {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }}
 .metric-stack {{
-  left: 630px;
-  top: 178px;
-  width: 330px;
-  height: 760px;
+  left: 94px;
+  right: 94px;
+  top: 194px;
+  width: auto;
+  height: 900px;
   display: flex;
   align-items: flex-end;
-  gap: 24px;
-  opacity: 0.7;
+  gap: 34px;
+  opacity: 0.76;
 }}
 .metric-stack span {{
   flex: 1;
   min-height: 128px;
-  border: 3px solid rgba(var(--fg-rgb), 0.2);
-  background: linear-gradient(180deg, rgba(var(--primary-rgb), 0.28), rgba(var(--fg-rgb), 0.06));
+  border: 4px solid rgba(var(--fg-rgb), 0.2);
+  background: linear-gradient(180deg, rgba(var(--primary-rgb), 0.36), rgba(var(--fg-rgb), 0.08));
+  box-shadow: 18px 18px 0 rgba(var(--fg-rgb), 0.08);
   transform-origin: 50% 100%;
   animation: metricSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }}
@@ -1506,10 +1568,10 @@ body {{ background: var(--bg); }}
 .metric-stack span:nth-child(4) {{ height: 46%; animation-delay: .32s; }}
 .metric-dots span {{
   position: absolute;
-  width: 22px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  background: rgba(var(--primary-rgb), 0.38);
+  background: rgba(var(--primary-rgb), 0.52);
   animation: metricDot {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
 }}
 .metric-dots span:nth-child(1) {{ right: 92px; top: 266px; }}
@@ -1517,58 +1579,61 @@ body {{ background: var(--bg); }}
 .metric-dots span:nth-child(3) {{ right: 148px; top: 548px; animation-delay: .2s; }}
 .metric-dots span:nth-child(4) {{ right: 286px; top: 724px; animation-delay: .3s; }}
 .split-panels {{
-  inset: 94px 76px 106px;
+  inset: 72px 58px 80px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 26px;
-  opacity: 0.62;
+  gap: 0;
+  opacity: 0.72;
 }}
 .split-panels span {{
   display: block;
-  border: 3px solid rgba(var(--fg-rgb), 0.18);
+  border: 4px solid rgba(var(--fg-rgb), 0.18);
   background:
-    radial-gradient(circle at 50% 30%, rgba(var(--primary-rgb), 0.18), transparent 240px),
+    radial-gradient(circle at 50% 30%, rgba(var(--primary-rgb), 0.24), transparent 260px),
     rgba(var(--bg-rgb), 0.58);
   transform-origin: 50% 50%;
   animation: splitPanelSwitch {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }}
 .split-panels span:nth-child(2) {{
-  border-color: rgba(var(--primary-rgb), 0.42);
+  border-color: rgba(var(--primary-rgb), 0.58);
+  background:
+    linear-gradient(180deg, rgba(var(--primary-rgb), 0.16), rgba(var(--bg-rgb), 0.62)),
+    rgba(var(--bg-rgb), 0.58);
   animation-delay: .18s;
 }}
 .split-line {{
   position: absolute;
   left: 50%;
-  top: 122px;
-  bottom: 146px;
-  width: 8px;
-  background: rgba(var(--primary-rgb), 0.46);
+  top: 72px;
+  bottom: 80px;
+  width: 14px;
+  background: rgba(var(--primary-rgb), 0.64);
   transform: translateX(-50%);
   animation: splitLineSnap {KINETIC_FLY_CYCLE_SECONDS:.2f}s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }}
 .loom-rings span {{
   position: absolute;
-  right: -130px;
-  top: 130px;
-  width: 540px;
-  height: 540px;
-  border: 3px solid rgba(var(--primary-rgb), 0.24);
+  right: -220px;
+  top: 40px;
+  width: 760px;
+  height: 760px;
+  border: 5px solid rgba(var(--primary-rgb), 0.28);
   border-radius: 50%;
   animation: loomRing {KINETIC_FLY_CYCLE_SECONDS:.2f}s ease-in-out infinite;
 }}
 .loom-rings span:nth-child(2) {{
-  right: -34px;
-  top: 226px;
-  width: 350px;
-  height: 350px;
+  right: -70px;
+  top: 190px;
+  width: 470px;
+  height: 470px;
   animation-delay: .16s;
 }}
 .loom-rings span:nth-child(3) {{
-  right: 66px;
-  top: 326px;
-  width: 150px;
-  height: 150px;
-  background: rgba(var(--primary-rgb), 0.12);
+  right: 76px;
+  top: 336px;
+  width: 180px;
+  height: 180px;
+  background: rgba(var(--primary-rgb), 0.18);
   animation-delay: .32s;
 }}
 .cover-template-pattern-break .route-map,
@@ -1580,6 +1645,32 @@ body {{ background: var(--bg); }}
 .cover-template-pattern-break .hook-title,
 .cover-template-metric-snap .hook-title,
 .cover-template-split-switch .hook-title,
+.cover-template-loom-reveal .hook-title {{
+  max-width: 760px;
+}}
+.cover-template-pattern-break .hook-title {{
+  max-width: 900px;
+  text-align: center;
+}}
+.cover-template-metric-snap .head.is-hook-only {{
+  justify-content: flex-end;
+  padding-bottom: 204px;
+}}
+.cover-template-metric-snap .hook-title {{
+  max-width: 860px;
+}}
+.cover-template-split-switch .head.is-hook-only {{
+  align-items: flex-start;
+  padding-left: 76px;
+  padding-right: 76px;
+}}
+.cover-template-split-switch .hook-title {{
+  max-width: 720px;
+}}
+.cover-template-loom-reveal .head.is-hook-only {{
+  justify-content: flex-start;
+  padding-top: 430px;
+}}
 .cover-template-loom-reveal .hook-title {{
   max-width: 760px;
 }}
@@ -1811,13 +1902,32 @@ def kinetic_fly_progress_script() -> str:
 <script>
 (() => {{
   const cycleMs = {KINETIC_FLY_CYCLE_SECONDS * 1000:.0f};
+  const parseTimeMs = (value) => {{
+    const first = String(value || "0s").split(",")[0].trim();
+    if (!first) return 0;
+    if (first.endsWith("ms")) return Number.parseFloat(first) || 0;
+    if (first.endsWith("s")) return (Number.parseFloat(first) || 0) * 1000;
+    return Number.parseFloat(first) || 0;
+  }};
+  const freezeSheet = document.createElement("style");
+  freezeSheet.textContent = `
+    *, *::before, *::after {{
+      animation-play-state: paused !important;
+      transition-property: none !important;
+    }}
+  `;
+  document.head.appendChild(freezeSheet);
   window.__setKineticFlyProgress = (progress) => {{
     const clamped = Math.max(0, Math.min(1, Number(progress) || 0));
     const currentMs = clamped * cycleMs;
-    document.querySelectorAll("[data-kinetic]").forEach((element) => {{
-      const delayMs = Number(element.dataset.delayMs || 0);
-      element.style.animationDelay = `${{(delayMs - currentMs) / 1000}}s`;
-      element.style.animationPlayState = "paused";
+    document.querySelectorAll("*").forEach((element) => {{
+      if (!element.dataset.baseDelayMs) {{
+        const computed = window.getComputedStyle(element);
+        element.dataset.baseDelayMs = String(parseTimeMs(computed.animationDelay));
+      }}
+      const delayMs = Number(element.dataset.delayMs || element.dataset.baseDelayMs || 0);
+      element.style.setProperty("animation-delay", `${{(delayMs - currentMs) / 1000}}s`, "important");
+      element.style.setProperty("animation-play-state", "paused", "important");
     }});
   }};
   window.__kineticFlyCoverReady = true;
@@ -1894,15 +2004,18 @@ def kinetic_fly_cover_html(
     headline_text = " ".join(string_value(word.get("text")) for line in lines for word in line)
     items = kinetic_fly_items(carousel)
     hook_only_cover = bool(cover.get("hook_only_cover"))
-    if hook_only_cover:
-        brand_markup = ""
+    logo_src = asset_uri(getattr(channel, "logo_path", None))
+    if logo_src:
+        logo_markup = f'<img class="brand-logo" src="{html.escape(logo_src, quote=True)}" alt="{html.escape(channel.brand_name)}" data-kinetic data-delay-ms="0">'
     else:
-        logo_src = asset_uri(getattr(channel, "logo_path", None))
-        if logo_src:
-            logo_markup = f'<img class="brand-logo" src="{html.escape(logo_src, quote=True)}" alt="{html.escape(channel.brand_name)}" data-kinetic data-delay-ms="0">'
-        else:
-            fallback = html.escape((string_value(channel.account_name) or "AI")[:2].upper())
-            logo_markup = f'<span class="brand-fallback" data-kinetic data-delay-ms="0">{fallback}</span>'
+        fallback = html.escape((string_value(channel.account_name) or "AI")[:2].upper())
+        logo_markup = f'<span class="brand-fallback" data-kinetic data-delay-ms="0">{fallback}</span>'
+    if hook_only_cover:
+        brand_markup = f"""
+  <header class="brand-bar is-logo-only">
+    {logo_markup}
+  </header>"""
+    else:
         brand_markup = f"""
   <header class="brand-bar">
     {logo_markup}
@@ -2017,12 +2130,17 @@ def render_kinetic_fly_cover(
                     "document.fonts.ready.then(() => true) : true)"
                 )
                 page.wait_for_function("() => window.__kineticFlyCoverReady === true")
-                slide = page.locator(".slide")
                 for frame_index in range(frame_count):
                     progress = frame_index / (frame_count - 1)
                     frame_path = frames_dir / f"frame_{frame_index:04d}.png"
+                    if frame_index == 0 or (frame_index + 1) % fps == 0 or frame_index == frame_count - 1:
+                        print(f"[cover] frame {frame_index + 1}/{frame_count}", flush=True)
                     page.evaluate("(progress) => window.__setKineticFlyProgress(progress)", progress)
-                    slide.screenshot(path=str(frame_path))
+                    page.screenshot(
+                        path=str(frame_path),
+                        clip={"x": 0, "y": 0, "width": SLIDE_W, "height": SLIDE_H},
+                        timeout=15000,
+                    )
                 browser.close()
 
             shutil.copyfile(frames_dir / f"frame_{poster_index:04d}.png", poster_path)
@@ -2054,6 +2172,367 @@ def render_kinetic_fly_cover(
             "`uv run python -m playwright install chromium` once."
         ) from exc
     return out_path
+
+
+def load_aibrief_study_module() -> Any:
+    module_path = ROOT / "scripts" / "build_aibrief_jp_issue360_cover_studies.py"
+    spec = importlib.util.spec_from_file_location("aibrief_issue360_cover_studies", module_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"could not load AI Brief cover study renderer: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def normalize_aibrief_study_template(value: str | None) -> str:
+    template = normalize_space(string_value(value)).lower().replace("-", "_")
+    if not template or template in {"auto", "best", "dynamic", "match"}:
+        return DEFAULT_COVER_TEMPLATE
+    aliases = {
+        "gpt": "gpt_gate",
+        "gptgate": "gpt_gate",
+        "gpt_gate": "gpt_gate",
+        "stop_signal": "gpt_gate",
+        "gpt_typerain": "gpt_typerain",
+        "gpt_type_rain": "gpt_typerain",
+        "type_rain": "gpt_typerain",
+        "metric_snap": "gpt_typerain",
+        "fugu": "fugu_call",
+        "fugu_call": "fugu_call",
+        "pattern_break": "fugu_call",
+        "fugu_router": "fugu_router",
+        "router": "fugu_router",
+        "ms": "ms_split",
+        "microsoft": "ms_split",
+        "ms_split": "ms_split",
+        "split_switch": "ms_split",
+        "robo": "robo_enso",
+        "roboreward": "robo_enso",
+        "robo_enso": "robo_enso",
+        "noise": "noise_filter",
+        "noise_filter": "noise_filter",
+        "letter": "noise_filter",
+        "issue": "issue_wave",
+        "overview": "issue_wave",
+        "issue_wave": "issue_wave",
+        "loom_reveal": "issue_wave",
+    }
+    template = aliases.get(template, template)
+    module = load_aibrief_study_module()
+    valid = {candidate["id"] for candidate in module.CANDIDATES}
+    if template not in valid:
+        raise SystemExit(f"unknown AI Brief cover study template: {value}")
+    return template
+
+
+def optional_aibrief_study_template(value: object) -> str:
+    text = string_value(value)
+    if not text:
+        return DEFAULT_COVER_TEMPLATE
+    try:
+        return normalize_aibrief_study_template(text)
+    except SystemExit:
+        return DEFAULT_COVER_TEMPLATE
+
+
+def select_aibrief_study_template(
+    carousel: dict[str, Any],
+    requested_template: str | None = DEFAULT_COVER_TEMPLATE,
+) -> str:
+    requested = normalize_aibrief_study_template(requested_template)
+    if requested != DEFAULT_COVER_TEMPLATE:
+        return requested
+    cover = carousel.get("cover_page")
+    cover = cover if isinstance(cover, dict) else {}
+    for explicit_value in (
+        cover.get("study_template"),
+        cover.get("studyTemplate"),
+        cover.get("cover_template"),
+        cover.get("coverTemplate"),
+    ):
+        explicit = optional_aibrief_study_template(explicit_value)
+        if explicit != DEFAULT_COVER_TEMPLATE:
+            return explicit
+    text = normalize_space(
+        " ".join(
+            [
+                string_value(cover.get("headline")),
+                string_value(carousel.get("source_brief_title")),
+                string_value(carousel.get("source_kind")),
+                string_value(carousel.get("sourceKind")),
+                string_value(carousel.get("source_brief_hook_style")),
+                string_value(carousel.get("instagram_caption")),
+            ]
+        )
+    ).lower()
+    if "gpt-5.6" in text or "まだ届かない" in text or "限定" in text:
+        return "gpt_gate"
+    if "fugu" in text or "使い分け" in text or "sakana" in text:
+        return "fugu_call"
+    if "microsoft" in text or "mai-thinking" in text or "自前" in text:
+        return "ms_split"
+    if "roboreward" in text or "ロボット報酬" in text or "報酬" in text:
+        return "robo_enso"
+    if "ノイズ" in text or "andrew" in text or "学ぶ順番" in text or "letter" in text:
+        return "noise_filter"
+    return "issue_wave"
+
+
+def aibrief_study_compact_text(value: object, *, max_chars: int = 16) -> str:
+    text = normalize_space(value)
+    if not text:
+        return ""
+    if visible_character_count(text) <= max_chars:
+        return text
+    chunks = japanese_phrase_chunks(text, max_chars=max_chars)
+    if chunks:
+        return chunks[0]
+    return text[:max_chars].strip()
+
+
+def aibrief_study_hook_lines(headline: str) -> list[str]:
+    headline = normalize_space(headline)
+    if not headline:
+        return []
+    if contains_japanese(headline):
+        max_chars = 8 if visible_character_count(headline) > 17 else 9
+        chunks = japanese_phrase_chunks(headline, max_chars=max_chars)
+    else:
+        words = headline.split()
+        chunks = []
+        current: list[str] = []
+        for word in words:
+            if current and len(" ".join([*current, word])) > 16:
+                chunks.append(" ".join(current))
+                current = []
+            current.append(word)
+        if current:
+            chunks.append(" ".join(current))
+    if len(chunks) > 3:
+        chunks = [chunks[0], chunks[1], normalize_space("".join(chunks[2:]))]
+    return [chunk for chunk in chunks[:3] if chunk]
+
+
+def aibrief_study_headline_size(lines: list[str]) -> int:
+    if not lines:
+        return 118
+    max_chars = max(visible_character_count(line) for line in lines)
+    size = 118
+    if max_chars > 8:
+        size -= min(30, (max_chars - 8) * 5)
+    if len(lines) > 2:
+        size -= 8
+    return max(78, min(118, size))
+
+
+def aibrief_study_short_badge(value: object, fallback: str = "要点") -> str:
+    text = aibrief_study_compact_text(value, max_chars=6)
+    if not text:
+        return fallback
+    japanese = "".join(re.findall(r"[\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]+", text))
+    return japanese[:6] or fallback
+
+
+def aibrief_study_kanji(value: object, fallback: str = "AI") -> str:
+    text = normalize_space(value)
+    for char in text:
+        if re.match(r"[\u3400-\u9fff]", char):
+            return char
+    return fallback
+
+
+def aibrief_study_kanji_word(value: object, fallback: str = "要点") -> str:
+    text = normalize_space(value)
+    matches = re.findall(r"[\u3400-\u9fff]{1,2}", text)
+    if matches:
+        return matches[0][:2]
+    return fallback
+
+
+def aibrief_study_mega_text(*values: object) -> str:
+    ignored = {"AI", "THE", "BATCH", "OPENAI"}
+    candidates: list[str] = []
+    for value in values:
+        text = normalize_space(value)
+        candidates.extend(re.findall(r"\b[A-Z][A-Za-z0-9.-]{2,}(?:\s?\d+(?:\.\d+)*)?\b", text))
+        candidates.extend(re.findall(r"\b[A-Z]{2,}\s?\d+(?:\.\d+)*\b", text))
+        candidates.extend(re.findall(r"\d+つの[^\s、。！？!?]{1,6}", text))
+    for candidate in sorted(candidates, key=len, reverse=True):
+        clean = normalize_space(candidate)
+        if clean.upper() not in ignored and visible_character_count(clean) <= 12:
+            return clean
+    for value in values:
+        text = aibrief_study_compact_text(value, max_chars=8)
+        if text:
+            return text
+    return "AI"
+
+
+def aibrief_study_chip_candidates(*values: object) -> list[str]:
+    chips: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = normalize_space(value)
+        if not text:
+            continue
+        quoted = re.findall(r"「([^」]{1,14})」", text)
+        for raw_chip in [*quoted, text]:
+            chip = aibrief_study_compact_text(raw_chip, max_chars=12)
+            if not chip or chip in seen:
+                continue
+            seen.add(chip)
+            chips.append(chip)
+    return chips[:4]
+
+
+def aibrief_study_customize_candidate(
+    candidate: dict[str, Any],
+    carousel: dict[str, Any],
+    template_id: str,
+) -> dict[str, Any]:
+    cover = dict_value(carousel.get("cover_page"))
+    strategy = dict_value(cover.get("cover_strategy"))
+    headline = (
+        string_value(cover.get("headline"))
+        or string_value(carousel.get("source_brief_title"))
+        or string_value(candidate.get("hook"))
+    )
+    title = string_value(carousel.get("source_brief_title")) or headline
+    label = (
+        string_value(strategy.get("label"))
+        or string_value(strategy.get("category"))
+        or string_value(carousel.get("source_kind"))
+        or "AIニュース"
+    )
+    kicker = (
+        string_value(strategy.get("kicker"))
+        or string_value(cover.get("kicker"))
+        or label
+        or "THE BATCH"
+    )
+    swipe = string_value(strategy.get("swipe")) or string_value(candidate.get("swipe")) or "スワイプで要点"
+    why = string_value(strategy.get("why")) or string_value(candidate.get("why"))
+    lines = aibrief_study_hook_lines(headline)
+    chips = aibrief_study_chip_candidates(label, kicker, title, headline, *lines)
+    if len(chips) < 3:
+        chips.extend(chip for chip in ("THE BATCH", "AI") if chip not in chips)
+
+    left_word = aibrief_study_short_badge(lines[0] if lines else label, "現場")
+    right_word = aibrief_study_short_badge(lines[-1] if lines else kicker, "次点")
+    candidate.update(
+        {
+            "hook": headline,
+            "kicker": aibrief_study_compact_text(kicker, max_chars=18),
+            "swipe": aibrief_study_compact_text(swipe, max_chars=18),
+            "label": label,
+            "why": why,
+            "hook_lines": lines,
+            "headline_size": aibrief_study_headline_size(lines),
+            "chips": chips,
+            "mega": aibrief_study_mega_text(headline, title, kicker, label),
+            "vertical": aibrief_study_short_badge(label, "速報"),
+            "sash": aibrief_study_short_badge(label, "要点"),
+            "kanji": aibrief_study_kanji(headline),
+            "kanji_word": aibrief_study_kanji_word(title or headline),
+            "left_word": left_word,
+            "right_word": right_word,
+            "ticker": "・".join(chips + ["AI"]) + "・",
+            "document_title": f"AI Brief JP / {headline} / {template_id}",
+        }
+    )
+    return candidate
+
+
+def aibrief_study_cover_html(
+    carousel: dict[str, Any],
+    *,
+    cover_template: str | None = DEFAULT_COVER_TEMPLATE,
+) -> tuple[str, str]:
+    module = load_aibrief_study_module()
+    template_id = select_aibrief_study_template(carousel, cover_template)
+    candidate = copy.deepcopy(next(candidate for candidate in module.CANDIDATES if candidate["id"] == template_id))
+    candidate = aibrief_study_customize_candidate(candidate, carousel, template_id)
+    return module.render_single_cover_html(candidate), template_id
+
+
+def render_aibrief_study_cover(
+    carousel: dict[str, Any],
+    out_path: Path,
+    *,
+    cover_template: str | None = DEFAULT_COVER_TEMPLATE,
+    duration_seconds: float = AIBRIEF_STUDY_COVER_SECONDS,
+    fps: int = AIBRIEF_STUDY_COVER_FPS,
+) -> tuple[Path, str]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise SystemExit("playwright is required to render AI Brief cover study templates") from exc
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("ffmpeg is required to render AI Brief cover study MP4s")
+
+    duration_seconds = max(0.1, float(duration_seconds))
+    fps = max(1, int(fps))
+    frame_count = max(2, int(round(duration_seconds * fps)))
+    poster_index = min(frame_count - 1, max(0, int(round(min(2.4, duration_seconds) * fps))))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    poster_path = cover_poster_path(out_path)
+    html_path = out_path.with_suffix(".html")
+    html_text, template_id = aibrief_study_cover_html(carousel, cover_template=cover_template)
+    html_path.write_text(html_text, encoding="utf-8")
+
+    print(f"[cover] rendering AI Brief study cover ({template_id}) -> {out_path}")
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"{out_path.stem}_study_frames_") as tmp:
+            frames_dir = Path(tmp)
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page(viewport={"width": SLIDE_W, "height": SLIDE_H}, device_scale_factor=1)
+                page.goto(html_path.resolve().as_uri())
+                page.wait_for_load_state("networkidle")
+                page.evaluate(
+                    "() => (document.fonts && document.fonts.ready ? "
+                    "document.fonts.ready.then(() => true) : true)"
+                )
+                page.wait_for_function("() => window.__coverCaptureReady === true")
+                cover = page.locator(".cover")
+                for frame_index in range(frame_count):
+                    frame_path = frames_dir / f"frame_{frame_index:04d}.png"
+                    if frame_index == 0 or (frame_index + 1) % fps == 0 or frame_index == frame_count - 1:
+                        print(f"[cover] frame {frame_index + 1}/{frame_count}", flush=True)
+                    page.evaluate("(seconds) => window.__setCoverCaptureTime(seconds)", frame_index / fps)
+                    cover.screenshot(path=str(frame_path), timeout=15000)
+                browser.close()
+
+            shutil.copyfile(frames_dir / f"frame_{poster_index:04d}.png", poster_path)
+            run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-framerate",
+                    str(fps),
+                    "-start_number",
+                    "0",
+                    "-i",
+                    str(frames_dir / "frame_%04d.png"),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    str(out_path),
+                ]
+            )
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(
+            "could not render the AI Brief cover study template. If this is a fresh setup, run "
+            "`uv run python -m playwright install chromium` once."
+        ) from exc
+    return out_path, template_id
 
 
 def bracket_markup(text: str) -> str:
@@ -2386,6 +2865,7 @@ def render_item_slide(
     active: int,
     count: int,
     image_path: Path | None,
+    image_is_source: bool = False,
 ) -> None:
     channel = load_channel()
     source_image_url = string_value(page.get("source_image_url"))
@@ -2397,7 +2877,7 @@ def render_item_slide(
     )
     visual_class = "item-visual"
     if visual_uri:
-        image_source_class = "has-source-image" if source_image_url else "has-generated-image"
+        image_source_class = "has-source-image" if image_is_source or (source_image_url and not image_path) else "has-generated-image"
         visual_class = f"item-visual has-image {image_source_class}"
     item_name = string_value(page.get("item_name"))
     item_rule_markup = f'<div class="item-rule"><span>{html.escape(item_name)}</span></div>' if item_name else ""
@@ -2495,17 +2975,27 @@ def render_carousel(
     cover_path = out_dir / ("slide_01.png" if static_cover else "slide_01.mp4")
     cover_poster = cover_path if static_cover else cover_poster_path(cover_path)
     cover_template_id = ""
+    loop_cover_for_music = False
     if cover_style == KINETIC_FLY_COVER_STYLE and not static_cover:
         cover_image = None
         image_composition = ""
         cover_template_id = select_kinetic_cover_template(carousel, cover_template)
+        loop_cover_for_music = bool(music_track)
         render_kinetic_fly_cover(
             carousel,
             cover_path,
             count=total,
             channel=channel,
             cover_template=cover_template_id,
-            **({"duration_seconds": music_duration} if music_track else {}),
+        )
+    elif cover_style == AIBRIEF_STUDY_COVER_STYLE and not static_cover:
+        cover_image = None
+        image_composition = ""
+        loop_cover_for_music = bool(music_track)
+        cover_path, cover_template_id = render_aibrief_study_cover(
+            carousel,
+            cover_path,
+            cover_template=cover_template,
         )
     else:
         context, _cover_copy, cover_image = title_context(
@@ -2557,6 +3047,7 @@ def render_carousel(
             music_track,
             cover_media_path,
             duration_seconds=music_duration,
+            loop_video=loop_cover_for_music,
             run_command=run,
         )
         cover_audio = music_manifest(music_track, duration_seconds=music_duration)
@@ -2585,14 +3076,46 @@ def render_carousel(
             string_value(page.get("item_name")),
         )
         reusable_image = reusable_assets.get("items", {}).get(string_value(page.get("item_name")).lower())
+        image_is_source = False
+        effective_source_image_url = string_value(page.get("source_image_url"))
         if reusable_image:
             image_path = reusable_image
             print(f"[asset] reusing {page.get('item_name')} image -> {image_path}")
         else:
-            source_image_url = string_value(page.get("source_image_url"))
-            if source_image_url:
-                image_path = maybe_cache_source_image(out_dir, source_image_url)
-                print(f"[asset] using source image for {key} -> {source_image_url}")
+            image_path = None
+            source_image_url = effective_source_image_url
+            source_image_urls = page.get("source_image_urls") if isinstance(page.get("source_image_urls"), list) else []
+            prefer_generated = string_value(page.get("image_kind")) == "generated_prompt"
+            source_fallback_url = (
+                source_image_url
+                or (
+                    next((string_value(url) for url in source_image_urls if string_value(url)), "")
+                    if not prefer_generated
+                    else ""
+                )
+            )
+            if source_fallback_url:
+                image_path = maybe_cache_source_image(out_dir, source_fallback_url)
+                if image_path:
+                    image_is_source = True
+                    effective_source_image_url = source_fallback_url
+                    print(f"[asset] using source image for {key} -> {source_fallback_url}")
+                elif prefer_generated:
+                    image_path = maybe_generate_image(
+                        out_dir,
+                        topic=string_value(page.get("headline")) or string_value(page.get("item_name")) or key,
+                        prompt=prompt,
+                        generate_images=generate_images,
+                        size=openai_item_image_size(),
+                    )
+            elif prefer_generated:
+                image_path = maybe_generate_image(
+                    out_dir,
+                    topic=string_value(page.get("headline")) or string_value(page.get("item_name")) or key,
+                    prompt=prompt,
+                    generate_images=generate_images,
+                    size=openai_item_image_size(),
+                )
             else:
                 image_path = maybe_generate_image(
                     out_dir,
@@ -2608,6 +3131,7 @@ def render_carousel(
             active=offset,
             count=total,
             image_path=image_path,
+            image_is_source=image_is_source,
         )
         slides.append(
             {
@@ -2616,7 +3140,7 @@ def render_carousel(
                 "path": str(slide_path.resolve()),
                 "item_name": string_value(page.get("item_name")),
                 "image_path": str(image_path or ""),
-                "source_image_url": string_value(page.get("source_image_url")),
+                "source_image_url": effective_source_image_url,
                 "source_image_urls": page.get("source_image_urls") if isinstance(page.get("source_image_urls"), list) else [],
                 "source_url": first_source_url(page),
                 "alt_text": string_value(page.get("alt_text")),
@@ -2692,12 +3216,16 @@ def main() -> int:
     parser.add_argument(
         "--cover-style",
         default=os.environ.get("IDEA_COVER_STYLE", DEFAULT_COVER_STYLE),
-        help="Cover renderer: default/usual, static/png, or kinetic-fly/fly",
+        help="Cover renderer: default/usual, static/png, kinetic-fly/fly, or aibrief-study/study",
     )
     parser.add_argument(
         "--cover-template",
         default=os.environ.get("IDEA_COVER_TEMPLATE", DEFAULT_COVER_TEMPLATE),
-        help="Kinetic cover template: auto, stop-signal, pattern-break, metric-snap, split-switch, or loom-reveal",
+        help=(
+            "Cover template. Kinetic: auto, stop-signal, pattern-break, metric-snap, split-switch, "
+            "or loom-reveal. AI Brief study: auto, gpt_gate, gpt_typerain, fugu_call, "
+            "fugu_router, ms_split, robo_enso, noise_filter, or issue_wave."
+        ),
     )
     parser.add_argument(
         "--music-library",

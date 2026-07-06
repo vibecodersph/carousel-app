@@ -36,6 +36,8 @@ DEFAULT_MEDIA_FILENAME = "reel.mp4"
 DEFAULT_TIMEZONE = "Asia/Tokyo"
 DEFAULT_INTERVAL_HOURS = 24.0
 DEFAULT_PUBLISH_TIME = "09:00"
+DEFAULT_QUEUE_UI_HOST = "127.0.0.1"
+DEFAULT_QUEUE_UI_PORT = 8765
 SCHEDULE_VERSION = 1
 
 # reel-app multi-channel layout: one clip folder ships a file per channel, where
@@ -1896,8 +1898,10 @@ def refill_queue_from_now(
     channel_filter: str | None,
     settings_key: str,
     jitter_minutes: int | None = None,
+    now: datetime | None = None,
 ) -> tuple[dict[str, int], int, str]:
-    start_at = datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+    current = now or datetime.now(timezone_for(DEFAULT_TIMEZONE))
+    start_at = current.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
     reflowed = reflow_queue_rows(
         db_path=db_path,
         channel_filter=channel_filter,
@@ -1914,6 +1918,163 @@ def refill_queue_from_now(
         apply=True,
     )
     return reflowed, alternated, start_at
+
+
+def queue_append_start_text(
+    *,
+    db_path: Path,
+    channel_filter: str | None,
+    now: datetime | None = None,
+) -> str:
+    """Start appends after the future queue, never after old published history."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone_for(DEFAULT_TIMEZONE))
+    boundary = current.astimezone(timezone.utc)
+    statuses = [
+        reel_ledger.STATUS_SCHEDULED,
+        reel_ledger.STATUS_PREVIEWED,
+        reel_ledger.STATUS_PUBLISHING,
+    ]
+    placeholders = ",".join("?" for _ in statuses)
+    query = (
+        "SELECT scheduled_at FROM reels WHERE status IN (" + placeholders + ") "
+        "AND scheduled_at IS NOT NULL"
+        + (" AND channel_id=?" if channel_filter else "")
+    )
+    params: list[Any] = list(statuses)
+    if channel_filter:
+        params.append(channel_filter)
+    with reel_ledger.connect(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    future_moments: list[datetime] = []
+    for row in rows:
+        parsed = parse_row_datetime(row["scheduled_at"], DEFAULT_TIMEZONE)
+        if parsed is not None and parsed.astimezone(timezone.utc) >= boundary:
+            future_moments.append(parsed)
+    start = max(future_moments, key=lambda moment: moment.astimezone(timezone.utc)) if future_moments else current
+    return start.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+
+
+def scan_and_plan_outputs(
+    *,
+    db_path: Path,
+    outputs_root: Path,
+    out_dir: Path,
+    channel_filter: str | None,
+    platform: str,
+    settings_key: str,
+    limit_per_channel: int | None,
+    jitter_minutes: int | None,
+    start_at_text: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    clips_dirs = discover_output_clip_dirs(outputs_root)
+    if not clips_dirs:
+        return {"clips_dirs": 0, "planned": {}, "append_start": start_at_text or ""}
+    for clips_dir in clips_dirs:
+        scan_command(argparse.Namespace(clips_dir=clips_dir, db=db_path, platform=platform))
+
+    append_start = start_at_text or queue_append_start_text(
+        db_path=db_path,
+        channel_filter=channel_filter,
+        now=now,
+    )
+    planned = plan_ledger_rows(
+        db_path=db_path,
+        clips_dir=outputs_root,
+        out_dir=out_dir,
+        channel_filter=channel_filter,
+        start_at_text=append_start,
+        limit_per_channel=limit_per_channel,
+        jitter_minutes=jitter_minutes,
+        scan_first=False,
+        settings_key=settings_key,
+    )
+    return {
+        "clips_dirs": len(clips_dirs),
+        "planned": planned,
+        "append_start": append_start,
+    }
+
+
+def scan_and_reshuffle_outputs(
+    *,
+    db_path: Path,
+    outputs_root: Path,
+    out_dir: Path,
+    channel_filter: str | None,
+    platform: str,
+    settings_key: str,
+    limit_per_channel: int | None,
+    jitter_minutes: int | None,
+    start_at_text: str | None = None,
+    after_text: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Run the queue-outputs refill pipeline used by both CLI and queue UI."""
+    planned_result = scan_and_plan_outputs(
+        db_path=db_path,
+        outputs_root=outputs_root,
+        out_dir=out_dir,
+        channel_filter=channel_filter,
+        platform=platform,
+        settings_key=settings_key,
+        limit_per_channel=limit_per_channel,
+        jitter_minutes=jitter_minutes,
+        start_at_text=start_at_text,
+        now=now,
+    )
+    if planned_result["clips_dirs"] == 0:
+        return {
+            "clips_dirs": 0,
+            "planned": {},
+            "append_start": planned_result["append_start"],
+            "reflowed": {},
+            "alternated": 0,
+            "start_at": start_at_text or "",
+        }
+
+    if start_at_text or after_text:
+        current = now or datetime.now(timezone_for(DEFAULT_TIMEZONE))
+        reflow_start = (
+            start_at_text
+            or current.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
+        )
+        alternate_after = after_text or reflow_start
+        reflowed = reflow_queue_rows(
+            db_path=db_path,
+            channel_filter=channel_filter,
+            start_at_text=reflow_start,
+            jitter_minutes=jitter_minutes,
+            settings_key=settings_key,
+            apply=True,
+            include_start_at_slot=False,
+        )
+        alternated = alternate_source_queue_rows(
+            db_path=db_path,
+            after_text=alternate_after,
+            channel_filter=channel_filter,
+            apply=True,
+        )
+        reshuffle_start = reflow_start
+    else:
+        reflowed, alternated, reshuffle_start = refill_queue_from_now(
+            db_path=db_path,
+            channel_filter=channel_filter,
+            settings_key=settings_key,
+            jitter_minutes=jitter_minutes,
+            now=now,
+        )
+
+    return {
+        "clips_dirs": planned_result["clips_dirs"],
+        "planned": planned_result["planned"],
+        "append_start": planned_result["append_start"],
+        "reflowed": reflowed,
+        "alternated": alternated,
+        "start_at": reshuffle_start,
+    }
 
 
 def queue_row_query(row: Any) -> str:
@@ -1986,10 +2147,10 @@ def render_queue_ui_html(
     message_html = f"<div class=\"notice ok\">{html.escape(message)}</div>" if message else ""
     error_html = f"<div class=\"notice error\">{html.escape(error)}</div>" if error else ""
     count_html = "".join(count_rows) or "<div class=\"count-row\">No ledger rows</div>"
-    refill_form = (
-        "<form method=\"post\" action=\"/refill\" "
-        "onsubmit=\"return confirm('Refill empty slots and reshuffle the unpublished queue from now?');\">"
-        "<button class=\"refill\" type=\"submit\">Refill Queue</button>"
+    reshuffle_form = (
+        "<form method=\"post\" action=\"/reshuffle\" "
+        "onsubmit=\"return confirm('Scan reel-app outputs, fill open slots, and reshuffle the unpublished queue from now?');\">"
+        "<button class=\"reshuffle\" type=\"submit\">Reshuffle Queue</button>"
         "</form>"
     )
     return f"""<!doctype html>
@@ -2120,8 +2281,8 @@ def render_queue_ui_html(
       min-width: 76px;
     }}
     button:hover {{ background: var(--danger-hover); }}
-    button.refill {{ background: var(--accent); }}
-    button.refill:hover {{ background: #125543; }}
+    button.reshuffle {{ background: var(--accent); }}
+    button.reshuffle:hover {{ background: #125543; }}
     @media (max-width: 760px) {{
       .bar {{ align-items: flex-start; flex-direction: column; }}
       .db {{ text-align: left; }}
@@ -2142,7 +2303,7 @@ def render_queue_ui_html(
       <div class="bar">
         <h1>Reel Queue</h1>
         <div class="header-actions">
-          {refill_form}
+          {reshuffle_form}
           <div class="db">{html.escape(str(db_path))}</div>
         </div>
       </div>
@@ -2189,7 +2350,10 @@ def make_queue_ui_handler(
     settings_key: str,
     platform: str,
     report_out: Path,
-    report_sync_action_url: str = "",
+    outputs_root: Path = DEFAULT_REEL_OUTPUTS,
+    out_dir: Path = DEFAULT_OUT / "ledger",
+    limit_per_channel: int | None = None,
+    jitter_minutes: int | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class QueueUIHandler(BaseHTTPRequestHandler):
         server_version = "ReelQueueUI/1.0"
@@ -2262,7 +2426,7 @@ def make_queue_ui_handler(
                     insight_rows=insight_rows,
                     db_path=db_path,
                     platform=platform,
-                    sync_action_url=report_sync_action_url or DEFAULT_REPORT_SYNC_ACTION_URL,
+                    sync_action_url=DEFAULT_REPORT_SYNC_ACTION_URL,
                     insights_json_href=report_href(json_out, report_out),
                     insights_markdown_href=report_href(md_out, report_out),
                 ),
@@ -2347,12 +2511,21 @@ def make_queue_ui_handler(
                 else:
                     self.redirect_home(error=message)
                 return
-            if parsed.path == "/refill":
-                reflowed, alternated, start_at = refill_queue_from_now(
-                    db_path=db_path,
-                    channel_filter=channel_filter,
-                    settings_key=settings_key,
-                )
+            if parsed.path == "/reshuffle":
+                try:
+                    result = scan_and_reshuffle_outputs(
+                        db_path=db_path,
+                        outputs_root=outputs_root,
+                        out_dir=out_dir,
+                        channel_filter=channel_filter,
+                        platform=platform,
+                        settings_key=settings_key,
+                        limit_per_channel=limit_per_channel,
+                        jitter_minutes=jitter_minutes,
+                    )
+                except SystemExit as exc:
+                    self.redirect_home(error=str(exc))
+                    return
                 report_command(
                     argparse.Namespace(
                         db=db_path,
@@ -2362,11 +2535,13 @@ def make_queue_ui_handler(
                         out=report_out,
                     )
                 )
-                moved = sum(reflowed.values())
+                planned = sum(int(value) for value in result["planned"].values())
+                reflowed_count = sum(int(value) for value in result["reflowed"].values())
                 self.redirect_home(
                     message=(
-                        f"Refilled from {start_at}: moved {moved} queued rows, "
-                        f"re-alternated {alternated} rows"
+                        f"Scanned {result['clips_dirs']} output folders, planned {planned} new rows, "
+                        f"reshuffled from {result['start_at']}: processed {reflowed_count} queued rows, "
+                        f"re-alternated {result['alternated']} rows"
                     )
                 )
                 return
@@ -3083,7 +3258,9 @@ INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
     "shares",
     "total_interactions",
 )
-DEFAULT_REPORT_SYNC_ACTION_URL = "http://127.0.0.1:8765/sync-insights"
+DEFAULT_REPORT_SYNC_ACTION_URL = (
+    f"http://{DEFAULT_QUEUE_UI_HOST}:{DEFAULT_QUEUE_UI_PORT}/sync-insights"
+)
 REPORT_TIMEZONE_LABELS = {
     "Asia/Tokyo": "JST",
     "Asia/Manila": "PHT",
@@ -4081,10 +4258,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     queue_ui.add_argument("--channel", help="Limit to one channel id")
     queue_ui.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
-    queue_ui.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
-    queue_ui.add_argument("--port", type=int, default=8765, help="Port to listen on")
+    queue_ui.add_argument("--host", default=DEFAULT_QUEUE_UI_HOST, help="Host interface to bind")
+    queue_ui.add_argument("--port", type=int, default=DEFAULT_QUEUE_UI_PORT, help="Port to listen on")
     queue_ui.add_argument("--limit", type=int, default=200, help="Max queued rows to show")
     queue_ui.add_argument("--report-out", type=Path, default=ROOT / "out" / "reel_report.html")
+    queue_ui.add_argument(
+        "--outputs-root",
+        type=Path,
+        default=DEFAULT_REEL_OUTPUTS,
+        help=f"Folder containing <youtube_id>/clips dirs for the reshuffle button (default: {DEFAULT_REEL_OUTPUTS})",
+    )
+    queue_ui.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT / "ledger",
+        help="Folder for generated per-reel manifests when the button plans new rows",
+    )
+    queue_ui.add_argument("--limit-per-channel", type=int, help="Maximum new rows to schedule per channel from the button")
+    queue_ui.add_argument("--jitter-minutes", type=int, help="Override channel jitter for button reshuffles")
 
     cleanup = subparsers.add_parser(
         "cleanup-missing", help="Dry-run/delete ledger rows whose media file no longer exists"
@@ -4296,68 +4487,55 @@ def plan_ledger_command(args: argparse.Namespace) -> int:
 
 
 def queue_outputs_command(args: argparse.Namespace) -> int:
+    if args.limit_per_channel is not None and args.limit_per_channel <= 0:
+        raise SystemExit("--limit-per-channel must be greater than zero")
     if args.jitter_minutes is not None and args.jitter_minutes < 0:
         raise SystemExit("--jitter-minutes must be zero or greater")
     platform = resolve_platform(args)
     db_path = resolve_db(args)
     settings_key = settings_key_for(platform)
-    clips_dirs = discover_output_clip_dirs(args.outputs_root)
-    if not clips_dirs:
+    if args.mode == "reshuffle":
+        result = scan_and_reshuffle_outputs(
+            db_path=db_path,
+            outputs_root=args.outputs_root,
+            out_dir=args.out_dir,
+            channel_filter=args.channel,
+            platform=platform,
+            settings_key=settings_key,
+            limit_per_channel=args.limit_per_channel,
+            jitter_minutes=args.jitter_minutes,
+            start_at_text=args.start_at,
+            after_text=args.after,
+        )
+        planned = result["planned"]
+    else:
+        result = scan_and_plan_outputs(
+            db_path=db_path,
+            outputs_root=args.outputs_root,
+            out_dir=args.out_dir,
+            channel_filter=args.channel,
+            platform=platform,
+            settings_key=settings_key,
+            limit_per_channel=args.limit_per_channel,
+            jitter_minutes=args.jitter_minutes,
+            start_at_text=args.start_at,
+        )
+        planned = result["planned"]
+
+    if result["clips_dirs"] == 0:
         print(f"[reel-scheduler] no output clips folders found in {args.outputs_root}")
         return 0
-    print(f"[reel-scheduler] scanning {len(clips_dirs)} output folder(s)")
-    for clips_dir in clips_dirs:
-        scan_command(argparse.Namespace(clips_dir=clips_dir, db=db_path, platform=platform))
-
-    append_start = args.start_at or latest_scheduled_text(db_path, args.channel)
-    planned = plan_ledger_rows(
-        db_path=db_path,
-        clips_dir=args.outputs_root,
-        out_dir=args.out_dir,
-        channel_filter=args.channel,
-        start_at_text=append_start,
-        limit_per_channel=args.limit_per_channel,
-        jitter_minutes=args.jitter_minutes,
-        scan_first=False,
-        settings_key=settings_key,
-    )
+    print(f"[reel-scheduler] scanned {result['clips_dirs']} output folder(s)")
     if planned:
         for channel_id in sorted(planned):
             print(f"[reel-scheduler] planned {planned[channel_id]} new {channel_id} {platform} reel(s)")
     else:
         print("[reel-scheduler] no new ledger rows to schedule")
-
     if args.mode == "reshuffle":
-        if args.start_at or args.after:
-            reflow_start = args.start_at or datetime.now(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
-            alternate_after = args.after or reflow_start
-            print(f"[reel-scheduler] reshuffling queued rows from {reflow_start}")
-            reflow_queue_rows(
-                db_path=db_path,
-                channel_filter=args.channel,
-                start_at_text=reflow_start,
-                jitter_minutes=args.jitter_minutes,
-                settings_key=settings_key,
-                apply=True,
-                include_start_at_slot=False,
-            )
-            alternate_source_queue_rows(
-                db_path=db_path,
-                after_text=alternate_after,
-                channel_filter=args.channel,
-                apply=True,
-            )
-        else:
-            reflowed, alternated, start_at = refill_queue_from_now(
-                db_path=db_path,
-                channel_filter=args.channel,
-                settings_key=settings_key,
-                jitter_minutes=args.jitter_minutes,
-            )
-            print(
-                f"[reel-scheduler] refilled queue from {start_at}: "
-                f"channels={len(reflowed)} alternated={alternated}"
-            )
+        print(
+            f"[reel-scheduler] reshuffled queue from {result['start_at']}: "
+            f"channels={len(result['reflowed'])} alternated={result['alternated']}"
+        )
 
     if not args.no_report:
         report_command(
@@ -4597,10 +4775,12 @@ def status_command(args: argparse.Namespace) -> int:
 def queue_ui_command(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be greater than zero")
+    if args.limit_per_channel is not None and args.limit_per_channel <= 0:
+        raise SystemExit("--limit-per-channel must be greater than zero")
+    if args.jitter_minutes is not None and args.jitter_minutes < 0:
+        raise SystemExit("--jitter-minutes must be zero or greater")
     platform = resolve_platform(args)
     db_path = resolve_db(args)
-    public_host = "127.0.0.1" if args.host in {"", "0.0.0.0"} else args.host
-    report_sync_action_url = f"http://{public_host}:{args.port}/sync-insights"
     handler = make_queue_ui_handler(
         db_path=db_path,
         channel_filter=args.channel,
@@ -4608,12 +4788,17 @@ def queue_ui_command(args: argparse.Namespace) -> int:
         settings_key=settings_key_for(platform),
         platform=platform,
         report_out=args.report_out,
-        report_sync_action_url=report_sync_action_url,
+        outputs_root=args.outputs_root,
+        out_dir=args.out_dir,
+        limit_per_channel=args.limit_per_channel,
+        jitter_minutes=args.jitter_minutes,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
-    url = f"http://{args.host}:{args.port}/"
+    public_host = DEFAULT_QUEUE_UI_HOST if args.host in {"", "0.0.0.0"} else args.host
+    url = f"http://{public_host}:{args.port}/"
     print(f"[reel-scheduler] queue UI: {url}", flush=True)
     print(f"[reel-scheduler] ledger: {db_path}", flush=True)
+    print(f"[reel-scheduler] outputs: {args.outputs_root}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
