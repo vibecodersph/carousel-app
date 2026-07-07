@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.carousel.research-carousel-publisher</string>
+  <string>com.carousel.ai-news-research-source</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>/Users/aiagent/GitHub/carousel-app/scripts/run_research_carousel_publisher_due.sh</string>
+    <string>/Users/aiagent/GitHub/carousel-app/scripts/run_ai_news_research_source.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -18,46 +18,46 @@
   <array>
     <dict>
       <key>Hour</key>
-      <integer>9</integer>
-      <key>Minute</key>
       <integer>0</integer>
+      <key>Minute</key>
+      <integer>15</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>4</integer>
+      <key>Minute</key>
+      <integer>15</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>15</integer>
     </dict>
     <dict>
       <key>Hour</key>
       <integer>12</integer>
       <key>Minute</key>
-      <integer>0</integer>
-    </dict>
-    <dict>
-      <key>Hour</key>
       <integer>15</integer>
-      <key>Minute</key>
-      <integer>0</integer>
     </dict>
     <dict>
       <key>Hour</key>
-      <integer>18</integer>
+      <integer>16</integer>
       <key>Minute</key>
-      <integer>0</integer>
+      <integer>15</integer>
     </dict>
     <dict>
       <key>Hour</key>
-      <integer>21</integer>
+      <integer>20</integer>
       <key>Minute</key>
-      <integer>0</integer>
-    </dict>
-    <dict>
-      <key>Hour</key>
-      <integer>23</integer>
-      <key>Minute</key>
-      <integer>0</integer>
+      <integer>15</integer>
     </dict>
   </array>
 
   <key>StandardOutPath</key>
-  <string>/Users/aiagent/GitHub/carousel-app/out/logs/research_carousel_publisher.launchd.log</string>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/ai_news_research_source.launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/aiagent/GitHub/carousel-app/out/logs/research_carousel_publisher.launchd.err.log</string>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/ai_news_research_source.launchd.err.log</string>
 </dict>
 </plist>

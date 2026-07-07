@@ -747,6 +747,12 @@ def research_brief_to_render_carousel(
         or string_value(cover_strategy.get("coverTemplate"))
         or string_value(cover_strategy.get("cover_template"))
     )
+    study_template = (
+        string_value(brief.get("studyTemplate"))
+        or string_value(brief.get("study_template"))
+        or string_value(cover_strategy.get("studyTemplate"))
+        or string_value(cover_strategy.get("study_template"))
+    )
     allocated_source_image_urls: set[str] = set()
     carousel: dict[str, Any] = {
         "id": f"research-{string_value(brief.get('id')) or hashlib.sha1(hook.encode('utf-8')).hexdigest()[:10]}",
@@ -771,6 +777,7 @@ def research_brief_to_render_carousel(
             "kinetic_fly_lines": brief_kinetic_fly_lines(hook),
             "hook_only_cover": True,
             "cover_template": cover_template,
+            "study_template": study_template,
             "cover_strategy": cover_strategy,
             "hook_style": string_value(brief.get("hookStyle")),
             "image_kind": cover_image_kind,

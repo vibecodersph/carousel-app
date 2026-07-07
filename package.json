@@ -9,6 +9,7 @@
     "source:reddit-research": "node research_idea_generator/redditCollectorCli.ts collect",
     "source:the-batch-research": "node research_idea_generator/cli.ts run --sources the_batch --the-batch-live --days 10 --provider local --cards 5",
     "source:the-batch-issue": "node research_idea_generator/cli.ts the-batch-issue --the-batch-live --days 10 --provider gemini --cards 5",
+    "source:ai-news-issue": "node research_idea_generator/cli.ts ai-news-issue --ai-news-live --days 10 --provider gemini --cards 5",
     "test:ts-pipeline": "node --test tests/ts-pipeline/*.test.ts"
   },
   "engines": {

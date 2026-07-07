@@ -26,6 +26,11 @@ import {
   theBatchTagPageToSourceItems,
 } from "../../research_idea_generator/sources/theBatch.ts";
 import {
+  aiNewsIssueMarkdownToSourceItems,
+  aiNewsRssXmlToIssues,
+  latestAiNewsIssueFromRssXml,
+} from "../../research_idea_generator/sources/aiNews.ts";
+import {
   carouselBriefQueueId,
   scanCarouselBriefRunArchives,
   unpublishedCarouselBriefs,
@@ -38,6 +43,7 @@ import { judgeHookWorthiness } from "../../research_idea_generator/hookJudge.ts"
 import { filterSeenSourceItems, type ResearchMemory } from "../../research_idea_generator/memory.ts";
 import { collectRedditSourceQueue, readUnreadRedditSources } from "../../research_idea_generator/redditQueue.ts";
 import { generateTheBatchIssuePackage } from "../../research_idea_generator/theBatchIssueBriefs.ts";
+import { generateAiNewsIssuePackage } from "../../research_idea_generator/aiNewsIssueBriefs.ts";
 import type { CarouselBriefOutput, InsightCard, ResearchCluster, ScoredResearchCluster, TaxonomyConfig } from "../../research_idea_generator/types.ts";
 
 function item(overrides: Partial<SourceItem> & { source: string; externalId: string; title: string }): SourceItem {
@@ -199,6 +205,59 @@ const THE_BATCH_GLM_STORY_FIXTURE = `<!doctype html><html><body>
 })}</script>
 </body></html>`;
 
+const AI_NEWS_RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>not much happened today</title>
+      <link>https://news.smol.ai/issues/26-07-02-not-much/</link>
+      <guid>https://news.smol.ai/issues/26-07-02-not-much/</guid>
+      <description>Agentic coding systems, model access, and open-model economics moved in one day.</description>
+      <pubDate>Thu, 02 Jul 2026 05:44:39 GMT</pubDate>
+      <category>anthropic</category>
+      <category>agentic-coding-systems</category>
+    </item>
+  </channel>
+</rss>`;
+
+const AI_NEWS_MARKDOWN_FIXTURE = `---
+title: not much happened today
+description: Agentic coding systems, model access, and open-model economics moved in one day.
+date: 2026-07-02T05:44:39.000Z
+companies: ["anthropic", "langchain"]
+models: ["glm-5.2", "sonnet-5"]
+topics: ["agentic-coding-systems", "developer-workflow"]
+---
+
+a quiet day.
+
+> AI News for 7/01/2026-7/02/2026.
+
+# AI Twitter Recap
+
+Agentic Coding Systems, Harnesses, and Developer Workflow Infrastructure
+
+- Full-stack evals are replacing toy coding demos: [Code Arena](https://x.com/codearena/status/1) launched Fullstack Code Arena, extending evaluation from frontend mockups to software that includes databases, API keys, deployments, and structured tool use. That shifts attention from "can the model write a component?" to "can the agent ship a realistic app end-to-end?"
+- The engineering stack around coding agents is thickening fast: [LangChain](https://x.com/langchainai/status/2) pushed unified tracing for heterogeneous coding tools in LangSmith, plus OpenWiki for generated repo docs and AGENTS.md updates.
+
+# AI Reddit Recap
+
+## /r/LocalLlama + /r/localLLM Recap
+
+### 1. llama.cpp Long-Context and Qwen 3.6 Optimization
+
+  - **[llama.cpp patch wires DeepSeek V4 Flash into the model graph](https://www.reddit.com/r/LocalLLaMA/comments/example)** (Activity: 374): A llama.cpp patch wires DeepSeek V4 Flash's DSA/lightning indexer into the model graph and adds a CUDA kernel, enabling [DeepSeek-V4-Flash GGUF](https://huggingface.co/deepseek-ai/deepseek-v4-flash) to run locally with up to 1M context on an RTX 5090 instead of requiring about 256 GiB compute buffer VRAM. Reported prefill rises from 56 t/s to about 263 t/s.
+    - A commenter requested concrete latency metrics before trusting the local long-context result.
+
+### 2. Gemma 4 Open Model Experiments and Benchmarks
+
+  - Andi from Hugging Face shared a speech-to-speech demo that chains NVIDIA Parakeet ASR, Gemma 4 31B served by Cerebras, and custom [faster-qwen3-tts](https://github.com/huggingface/faster-qwen3-tts), with web, vision, and search capabilities.
+
+# AI Discords
+
+- Discord access was quiet today, so the issue focused on Twitter and Reddit signals with stronger public links.
+`;
+
 async function withMockGeminiHookJudge<T>(
   judgments: Array<{ index: number; score: number; worthCarousel: boolean; reason: string; bestAngle?: string }>,
   run: () => Promise<T>,
@@ -210,6 +269,29 @@ async function withMockGeminiHookJudge<T>(
     candidates: [{
       content: {
         parts: [{ text: JSON.stringify(judgments) }],
+      },
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalKey;
+  }
+}
+
+async function withMockGeminiIssueCandidates<T>(
+  candidates: Array<Record<string, unknown>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-key";
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    candidates: [{
+      content: {
+        parts: [{ text: JSON.stringify({ candidates }) }],
       },
     }],
   }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
@@ -847,6 +929,288 @@ test("The Batch issue package keeps letter content and emits carousel briefs", a
     JSON.parse(await readFile(join(result.runDir ?? "", "carousel_briefs.json"), "utf8")).carouselCount,
     2,
   );
+});
+
+test("AINews RSS and Markdown fixture split issue recaps into SourceItems", () => {
+  const issues = aiNewsRssXmlToIssues(AI_NEWS_RSS_FIXTURE);
+  assert.equal(issues.length, 1);
+  const latest = latestAiNewsIssueFromRssXml(AI_NEWS_RSS_FIXTURE);
+  assert.equal(latest?.url, "https://news.smol.ai/issues/26-07-02-not-much");
+  assert.deepEqual(latest?.categories, ["anthropic", "agentic-coding-systems"]);
+
+  const items = aiNewsIssueMarkdownToSourceItems(AI_NEWS_MARKDOWN_FIXTURE, {
+    issueUrl: latest?.url,
+    rssIssue: latest,
+  });
+  assert.equal(items.length, 5);
+  assert.equal(items[0].source, "ai_news");
+  assert.equal(items[0].author, "smol.ai");
+  assert.equal(items[0].createdAt, "2026-07-02T05:44:39.000Z");
+  assert.equal(items[0].title, "Full-stack evals are replacing toy coding demos");
+  assert.match(items[0].body, /Code Arena/);
+  assert.match(items[0].body, /structured tool use/);
+  assert.equal((items[0].raw as { issueTitle?: string }).issueTitle, "not much happened today");
+  assert.equal((items[0].raw as { storyKind?: string }).storyKind, "twitter_recap");
+  assert.equal(
+    ((items[0].raw as { sourceLinks?: Array<{ url?: string }> }).sourceLinks ?? [])[0]?.url,
+    "https://x.com/codearena/status/1",
+  );
+
+  const redditItem = items.find((entry) => /llama\.cpp/.test(entry.title));
+  assert.ok(redditItem);
+  assert.equal(redditItem?.title, "llama.cpp patch wires DeepSeek V4 Flash into the model graph");
+  assert.doesNotMatch(redditItem?.body ?? "", /\*\*/);
+  assert.equal((redditItem?.raw as { storyKind?: string }).storyKind, "reddit_recap");
+  assert.match(redditItem?.body ?? "", /1M context/);
+  assert.match(redditItem?.body ?? "", /263 t\/s/);
+  assert.match(redditItem?.body ?? "", /concrete latency metrics/);
+});
+
+test("AINews issue package emits LLM-scored title hooks and carousel briefs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-news-issue-package-"));
+  const inputPath = join(dir, "source_items.json");
+  const candidatesPath = join(dir, "cover_candidates.json");
+  const carouselPath = join(dir, "carousel_briefs.json");
+  const reportPath = join(dir, "report.md");
+  const runsDir = join(dir, "runs");
+  const items = aiNewsIssueMarkdownToSourceItems(AI_NEWS_MARKDOWN_FIXTURE, {
+    issueUrl: "https://news.smol.ai/issues/26-07-02-not-much/",
+  }).slice(0, 2);
+  await writeFile(inputPath, JSON.stringify({ items }), "utf8");
+
+  const result = await withMockGeminiIssueCandidates([
+    {
+      sourceItemId: items[0].id,
+      titleJa: "フルスタック評価の変化",
+      summaryJa: "Code ArenaはDB、APIキー、デプロイまで含む評価に広げました。",
+      keyPointJa: "部品生成ではなく、アプリを最後まで出荷できるかを見る流れです。",
+      builderAngleJa: "自分のAI開発でも、実行環境と検証込みで評価したい話です。",
+      caveatJa: "評価条件が現場の制約に合うかは別途確認が必要です。",
+      hook: "AI評価、部品だけで足りる？",
+      hookStyle: "curiosity",
+      coverTemplate: "metric-snap",
+      label: "Fullstack eval gap",
+      style: "metric snap + app shipping contrast",
+      kicker: "AINEWS",
+      swipe: "評価の中身を見る",
+      why: "One clear question with a concrete payoff: understand why evals moved from component demos to app shipping.",
+      stakes: "look smarter",
+      gap: "Why is this wrong?",
+      checklist: {
+        underOneSecond: 5,
+        dominantFocalPoint: 5,
+        valueContrast: 5,
+        humanCue: 4,
+        curiosityGap: 5,
+        phoneReadable: 5,
+        eyeGuide: 4,
+        unexpected: 4,
+        payoff: 5,
+        delivers: 5,
+      },
+      hookScore: 4.7,
+      rank: 1,
+    },
+    {
+      sourceItemId: items[1].id,
+      titleJa: "LangSmithとOpenWiki",
+      summaryJa: "LangChainは複数ツールのトレースとリポジトリ文書化を進めました。",
+      keyPointJa: "コード生成より、観測と共有がボトルネックになっています。",
+      builderAngleJa: "導入時は生成精度だけでなく、チームで追えるログを設計したいところです。",
+      caveatJa: "発表直後の機能は実運用での負荷と権限設計を確認したいです。",
+      hook: "AI評価、部品だけで足りる？",
+      hookStyle: "contrarian",
+      coverTemplate: "stop-signal",
+      label: "Observability warning",
+      style: "warning gate + trace lines",
+      kicker: "AINEWS",
+      swipe: "詰まり所を見る",
+      why: "Turns a tooling update into a human workflow risk.",
+      stakes: "avoid embarrassment",
+      gap: "What mistake am I making?",
+      checklist: {
+        underOneSecond: 5,
+        dominantFocalPoint: 4,
+        valueContrast: 4,
+        humanCue: 5,
+        curiosityGap: 5,
+        phoneReadable: 5,
+        eyeGuide: 4,
+        unexpected: 4,
+        payoff: 5,
+        delivers: 5,
+      },
+      hookScore: 4.6,
+      rank: 2,
+    },
+  ], () => generateAiNewsIssuePackage({
+    input: inputPath,
+    coverCandidatesOut: candidatesPath,
+    carouselOut: carouselPath,
+    report: reportPath,
+    runsDir,
+    provider: "gemini",
+    cards: 2,
+    now: new Date("2026-07-02T09:00:00.000Z"),
+  }));
+
+  assert.equal(result.sourceItems.length, 2);
+  assert.equal(result.coverCandidates.candidates.length, 2);
+  assert.equal(result.carouselBriefs.carouselCount, 2);
+  assert.equal(result.coverCandidates.candidates[0].hook, "AI評価、部品だけで足りる？");
+  assert.equal(new Set(result.coverCandidates.candidates.map((candidate) => candidate.hook)).size, 2);
+  assert.equal((result.coverCandidates.candidates[0].checklist as { payoff?: number }).payoff, 5);
+  assert.equal(result.coverCandidates.candidates[0].stakes, "look smarter");
+  assert.equal(result.carouselBriefs.carousels[0].hook, "AI評価、部品だけで足りる？");
+  assert.equal(result.carouselBriefs.carousels[0].coverTemplate, "metric-snap");
+  assert.equal(result.carouselBriefs.carousels[0].studyTemplate, "gpt_typerain");
+  assert.equal(result.carouselBriefs.carousels[0].slides[0].headline, result.carouselBriefs.carousels[0].hook);
+  assert.equal(result.carouselBriefs.carousels[0].slides[0].image.kind, "generated_prompt");
+  assert.match(result.carouselBriefs.carousels[0].slides[1].lines[0], /Code Arena/);
+  assert.equal((result.carouselBriefs.carousels[0].coverStrategy as { stakes?: string }).stakes, "look smarter");
+  assert.equal((result.carouselBriefs.carousels[0].coverStrategy as { studyTemplate?: string }).studyTemplate, "gpt_typerain");
+  assert.equal((result.carouselBriefs.carousels[0].coverStrategy as { checklist?: { phoneReadable?: number } }).checklist?.phoneReadable, 5);
+
+  const written = JSON.parse(await readFile(carouselPath, "utf8")) as CarouselBriefOutput;
+  assert.equal(written.carouselCount, 2);
+  assert.equal(JSON.parse(await readFile(candidatesPath, "utf8")).candidates.length, 2);
+  assert.ok(result.runDir);
+  assert.equal(
+    JSON.parse(await readFile(join(result.runDir ?? "", "carousel_briefs.json"), "utf8")).carouselCount,
+    2,
+  );
+});
+
+test("AINews issue package normalizes malformed LLM hook copy", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-news-hook-normalize-"));
+  const inputPath = join(dir, "source_items.json");
+  const carouselPath = join(dir, "carousel_briefs.json");
+  const items = aiNewsIssueMarkdownToSourceItems(AI_NEWS_MARKDOWN_FIXTURE, {
+    issueUrl: "https://news.smol.ai/issues/26-07-02-not-much/",
+  }).slice(0, 1);
+  await writeFile(inputPath, JSON.stringify({ items }), "utf8");
+
+  const result = await withMockGeminiIssueCandidates([
+    {
+      sourceItemId: items[0].id,
+      titleJa: "DeepSeekの推論コスト削減",
+      summaryJa: "推論最適化でトークンコストを下げた話です。",
+      keyPointJa: "コスト差はモデル単体ではなくサービング設計にも左右されます。",
+      builderAngleJa: "本番ではモデル選定と推論基盤をセットで見る必要があります。",
+      caveatJa: "具体的な削減率は一次情報で条件を確認します。",
+      hook: "DeepSeek의コストを5分1に",
+      hookStyle: "curiosity",
+      coverTemplate: "metric-snap",
+      label: "Inference cost",
+      style: "metric snap + cost contrast",
+      kicker: "AINEWS",
+      swipe: "削減の中身を見る",
+      why: "Cost hook with a clear method gap.",
+      stakes: "save money",
+      gap: "How did they do that?",
+      checklist: {
+        underOneSecond: 5,
+        dominantFocalPoint: 5,
+        valueContrast: 5,
+        humanCue: 4,
+        curiosityGap: 5,
+        phoneReadable: 5,
+        eyeGuide: 5,
+        unexpected: 4,
+        payoff: 5,
+        delivers: 5,
+      },
+      hookScore: 4.8,
+      rank: 1,
+    },
+  ], () => generateAiNewsIssuePackage({
+    input: inputPath,
+    carouselOut: carouselPath,
+    provider: "gemini",
+    cards: 1,
+    noArchive: true,
+    now: new Date("2026-07-02T09:00:00.000Z"),
+  }));
+
+  assert.equal(result.carouselBriefs.carousels[0].hook, "DeepSeekコストを5分の1に");
+  assert.equal(result.carouselBriefs.carousels[0].slides[0].headline, "DeepSeekコストを5分の1に");
+});
+
+test("AINews issue package skips weak paste-only evidence from carousel drafts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-news-weak-evidence-"));
+  const inputPath = join(dir, "source_items.json");
+  const items = aiNewsIssueMarkdownToSourceItems(AI_NEWS_MARKDOWN_FIXTURE, {
+    issueUrl: "https://news.smol.ai/issues/26-07-02-not-much/",
+  }).slice(0, 1);
+  const weakItem = {
+    ...items[0],
+    url: "https://pastebin.com/raw/E55YG5NS",
+    raw: {
+      ...(items[0].raw as Record<string, unknown>),
+      fullStory: {
+        ...((items[0].raw as Record<string, unknown>).fullStory as Record<string, unknown>),
+        sourceLinks: [{ text: "paste", url: "https://pastebin.com/raw/E55YG5NS" }],
+      },
+    },
+  };
+  await writeFile(inputPath, JSON.stringify({ items: [weakItem] }), "utf8");
+
+  const result = await generateAiNewsIssuePackage({
+    input: inputPath,
+    provider: "local",
+    cards: 1,
+    noArchive: true,
+    now: new Date("2026-07-02T09:00:00.000Z"),
+  });
+
+  assert.equal(result.sourceItems.length, 1);
+  assert.equal(result.carouselBriefs.carouselCount, 0);
+  assert.equal(result.coverCandidates.candidates.length, 0);
+});
+
+test("AINews Gemini issue package requires LLM credentials", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-news-missing-gemini-"));
+  const inputPath = join(dir, "source_items.json");
+  const items = aiNewsIssueMarkdownToSourceItems(AI_NEWS_MARKDOWN_FIXTURE, {
+    issueUrl: "https://news.smol.ai/issues/26-07-02-not-much/",
+  }).slice(0, 1);
+  await writeFile(inputPath, JSON.stringify({ items }), "utf8");
+  const originalGeminiKey = process.env.GEMINI_API_KEY;
+  const originalGoogleKey = process.env.GOOGLE_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GOOGLE_API_KEY;
+  try {
+    await assert.rejects(
+      () => generateAiNewsIssuePackage({
+        input: inputPath,
+        provider: "gemini",
+        noArchive: true,
+        coverCandidatesOut: join(dir, "cover_candidates.json"),
+        carouselOut: join(dir, "carousel_briefs.json"),
+      }),
+      /AINews hook generation requires GEMINI_API_KEY or GOOGLE_API_KEY/,
+    );
+  } finally {
+    if (originalGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalGeminiKey;
+    if (originalGoogleKey === undefined) delete process.env.GOOGLE_API_KEY;
+    else process.env.GOOGLE_API_KEY = originalGoogleKey;
+  }
+});
+
+test("research CLI accepts AINews source aliases and issue flags", () => {
+  const parsed = parseArgs([
+    "ai-news-issue",
+    "--sources",
+    "ainews,smol,ai_news",
+    "--ai-news-live",
+    "--ai-news-issue-url",
+    "https://news.smol.ai/issues/26-07-02-not-much/",
+  ]);
+  assert.equal(parsed.command, "ai-news-issue");
+  assert.deepEqual(parsed.options.sources, ["ai_news", "ai_news", "ai_news"]);
+  assert.equal(parsed.options.aiNewsLive, true);
+  assert.equal(parsed.options.aiNewsIssueUrl, "https://news.smol.ai/issues/26-07-02-not-much/");
 });
 
 test("carousel brief archive scanner queues unpublished run briefs idempotently", async () => {

@@ -11,6 +11,7 @@ import { runResearchIdeaGenerator } from "./pipeline.ts";
 import { renderInsightReport } from "./report.ts";
 import { loadTaxonomy } from "./taxonomy.ts";
 import { generateTheBatchIssuePackage } from "./theBatchIssueBriefs.ts";
+import { generateAiNewsIssuePackage } from "./aiNewsIssueBriefs.ts";
 import type { InsightCardOutput, ResearchGeneratorOptions, ResearchProvider, ResearchSourceName } from "./types.ts";
 
 function parseSources(value: string): ResearchSourceName[] {
@@ -18,6 +19,7 @@ function parseSources(value: string): ResearchSourceName[] {
     const normalized = source.trim().toLowerCase();
     if (normalized === "hn" || normalized === "hackernews") return "hacker_news";
     if (normalized === "batch" || normalized === "thebatch" || normalized === "the_batch") return "the_batch";
+    if (normalized === "ainews" || normalized === "ai-news" || normalized === "ai_news" || normalized === "smol" || normalized === "smolai" || normalized === "smol_ai") return "ai_news";
     if (normalized === "reddit" || normalized === "github" || normalized === "hacker_news") return normalized;
     throw new Error(`Unknown research source: ${source}`);
   });
@@ -54,6 +56,8 @@ export function parseArgs(argv: string[]): { command: string; options: ResearchG
     else if (arg === "--the-batch-queue") options.theBatchQueue = rest[++i];
     else if (arg === "--the-batch-live") options.theBatchLive = true;
     else if (arg === "--the-batch-issue-url") options.theBatchIssueUrl = rest[++i];
+    else if (arg === "--ai-news-live") options.aiNewsLive = true;
+    else if (arg === "--ai-news-issue-url") options.aiNewsIssueUrl = rest[++i];
     else if (arg === "--taxonomy") options.taxonomyPath = rest[++i];
     else if (arg === "--max-items-per-source") options.maxItemsPerSource = Number(rest[++i]);
     else throw new Error(`Unknown argument: ${arg}`);
@@ -184,6 +188,20 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       carouselCount: result.carouselBriefs.carouselCount,
       out: options.coverCandidatesOut ?? options.out ?? "out/research_idea_generator/the_batch/issue_cover_candidates.json",
       carouselOut: options.carouselOut ?? "out/research_idea_generator/the_batch/issue_carousel_briefs.json",
+      report: options.report,
+      runDir: result.runDir,
+    }, null, 2));
+    return 0;
+  }
+  if (command === "ai-news-issue") {
+    const result = await generateAiNewsIssuePackage(options);
+    console.log(JSON.stringify({
+      generatedAt: result.generatedAt,
+      sourceCount: result.sourceItems.length,
+      candidateCount: result.coverCandidates.candidates.length,
+      carouselCount: result.carouselBriefs.carouselCount,
+      out: options.coverCandidatesOut ?? options.out ?? "out/research_idea_generator/ai_news/issue_cover_candidates.json",
+      carouselOut: options.carouselOut ?? "out/research_idea_generator/ai_news/issue_carousel_briefs.json",
       report: options.report,
       runDir: result.runDir,
     }, null, 2));

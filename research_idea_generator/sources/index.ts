@@ -4,6 +4,7 @@ import { normalizeWhitespace } from "../../sourcing/utils.ts";
 import { fetchGitHubSourceItems } from "./github.ts";
 import { fetchHackerNewsSourceItems } from "./hackerNews.ts";
 import { fetchTheBatchSourceItems } from "./theBatch.ts";
+import { fetchAiNewsSourceItems } from "./aiNews.ts";
 import type { ResearchQueries, ResearchSourceName } from "../types.ts";
 
 export interface LiveCollectionOptions {
@@ -16,6 +17,8 @@ export interface LiveCollectionOptions {
   redditLive?: boolean;
   theBatchLive?: boolean;
   theBatchIssueUrl?: string;
+  aiNewsLive?: boolean;
+  aiNewsIssueUrl?: string;
 }
 
 function isRecent(item: SourceItem, days: number, now = new Date()): boolean {
@@ -100,6 +103,14 @@ export async function collectLiveSourceItems(options: LiveCollectionOptions): Pr
   if (options.sources.includes("the_batch")) {
     batches.push(await fetchTheBatchSourceItems({
       issueTagUrl: options.theBatchIssueUrl,
+      days: options.days,
+      now: options.now,
+      maxItems,
+    }));
+  }
+  if (options.sources.includes("ai_news")) {
+    batches.push(await fetchAiNewsSourceItems({
+      issueUrl: options.aiNewsIssueUrl,
       days: options.days,
       now: options.now,
       maxItems,

@@ -561,6 +561,40 @@ class IdeaCarouselRendererTests(unittest.TestCase):
         self.assertEqual(carousel["cover_page"]["cover_template"], "fugu_router")
         self.assertEqual(build_idea_carousel.select_aibrief_study_template(carousel), "fugu_router")
 
+    def test_research_brief_can_pin_study_template_separately(self) -> None:
+        carousel = build_idea_carousel.normalize_carousel_for_render(
+            {
+                "id": "brief-study-template-split",
+                "workingTitle": "Fable routing rumor",
+                "hook": "Fableの性能低下、実はルーティング？",
+                "hookStyle": "curiosity",
+                "coverTemplate": "metric-snap",
+                "studyTemplate": "noise_filter",
+                "slides": [
+                    {
+                        "slideNumber": 1,
+                        "type": "cover",
+                        "headline": "Fableの性能低下、実はルーティング？",
+                        "lines": [],
+                        "altText": "Cover",
+                    },
+                    {
+                        "slideNumber": 2,
+                        "type": "hook_detail",
+                        "headline": "何が起きた？",
+                        "lines": ["SNS上の性能低下説とルーティング挙動を切り分けます。"],
+                        "altText": "Slide",
+                    },
+                ],
+                "evidenceUrls": ["https://news.smol.ai/issues/26-07-02-not-much/"],
+            }
+        )
+
+        self.assertEqual(carousel["cover_page"]["cover_template"], "metric-snap")
+        self.assertEqual(carousel["cover_page"]["study_template"], "noise_filter")
+        self.assertEqual(build_idea_carousel.select_kinetic_cover_template(carousel), "metric-snap")
+        self.assertEqual(build_idea_carousel.select_aibrief_study_template(carousel), "noise_filter")
+
     def test_aibrief_study_maps_generic_kinetic_template_names(self) -> None:
         self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("stop-signal"), "gpt_gate")
         self.assertEqual(build_idea_carousel.normalize_aibrief_study_template("metric-snap"), "gpt_typerain")

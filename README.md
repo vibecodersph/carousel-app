@@ -27,6 +27,7 @@ CTA.
 | X Article | `build_x_article_carousel.py` | `out/x_article_carousel/` | Long-form X notes/articles behind a status URL |
 | Weekly roundup | `build_weekly_carousel.py` | `out/weekly_carousel/` | A ranked set of top AI stories from the scout queue or an input JSON |
 | Research idea story | `research_idea_generator/cli.ts` + `build_idea_carousel.py` | `out/research_idea_generator/` | Research-backed AI-builder story briefs rendered into carousels |
+| AINews issue carousels | `research_idea_generator/cli.ts ai-news-issue` | `out/research_idea_generator/ai_news/` | smol.ai AINews daily issue stories converted into LLM-scored carousel briefs |
 | Cover art | `generate_cover.py` | `out/cover_<slug>.png` | Standalone channel-branded cover images |
 | Scroll-stopper cover variants | `scroll_stopper_cover.py` | `out/scroll_stopper_cover/<slug>/` | 3-6 editable HTML/CSS first-slide cover options with attention scores |
 | Video slide | `build_video_slide.py` | `out/video_slide_02.mp4` | A local video, remote video, or X video inside the branded carousel frame |
@@ -89,6 +90,23 @@ GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
 XAI_TWEET_MODEL=grok-4.3
 XAI_ARTICLE_MODEL=grok-4.3
 ```
+
+AINews by smol.ai can be sourced through the issue-package workflow:
+
+```sh
+npm run source:ai-news-issue
+
+node research_idea_generator/cli.ts ai-news-issue \
+  --ai-news-live \
+  --provider gemini \
+  --cards 5 \
+  --ai-news-issue-url https://news.smol.ai/issues/26-07-02-not-much/
+```
+
+The adapter discovers current issues from `https://news.smol.ai/rss.xml`, fetches
+the public raw Markdown issue when available, and falls back to rendered HTML.
+It splits one daily issue into separate story candidates so each carousel keeps
+one dominant subject, one stakes layer, and one curiosity gap.
 
 ## Channels
 
@@ -338,8 +356,9 @@ The scanner writes `out/research_idea_generator/carousel_brief_queue.json`, keye
 by the carousel brief id plus evidence URLs. It preserves publish lifecycle
 state (`new`, `rendered`, `scheduled`, `published`, `skipped`, `failed`) in the
 queue file instead of mutating archived run folders. Newly discovered briefs are
-assigned `aibrief_jp` publish slots at `09:00`, `12:00`, `18:00`, and `21:00`
-Asia/Tokyo, so every queued item carries a concrete `scheduledAt` value.
+assigned `aibrief_jp` publish slots at `09:00`, `12:00`, `15:00`, `18:00`,
+`21:00`, and `23:00` Asia/Tokyo, so every queued item carries a concrete
+`scheduledAt` value.
 
 The publisher wrapper scans archived runs, then publishes the next due queue
 item with a rendered manifest:

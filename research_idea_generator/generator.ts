@@ -16,6 +16,7 @@ function sourceLabel(source: string): string {
   if (source === "github") return "GitHub";
   if (source === "reddit") return "Reddit";
   if (source === "the_batch") return "The Batch (DeepLearning.AI)";
+  if (source === "ai_news") return "AINews (smol.ai)";
   return source;
 }
 
@@ -40,7 +41,7 @@ function rawFullStoryRecord(item: ScoredResearchCluster["items"][number]): Recor
 }
 
 function evidenceExcerpt(item: ScoredResearchCluster["items"][number]): string {
-  if (item.source === "the_batch") {
+  if (item.source === "the_batch" || item.source === "ai_news") {
     const fullStory = rawFullStoryRecord(item);
     const articleText = typeof fullStory?.articleText === "string" ? fullStory.articleText : "";
     const summary = typeof fullStory?.summary === "string" ? fullStory.summary : "";

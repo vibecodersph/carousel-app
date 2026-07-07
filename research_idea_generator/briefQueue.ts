@@ -23,6 +23,8 @@ export interface QueuedCarouselBrief {
   workingTitle: string;
   hook: string;
   hookStyle: string;
+  coverTemplate?: string;
+  studyTemplate?: string;
   score: number;
   confidence: string;
   evidenceUrls: string[];
@@ -77,8 +79,10 @@ export interface PublishSlot {
 export const DEFAULT_CAROUSEL_BRIEF_PUBLISH_SLOTS: PublishSlot[] = [
   { hour: 9, minute: 0 },
   { hour: 12, minute: 0 },
+  { hour: 15, minute: 0 },
   { hour: 18, minute: 0 },
   { hour: 21, minute: 0 },
+  { hour: 23, minute: 0 },
 ];
 const ALL_STATUSES: CarouselBriefQueueStatus[] = [
   "new",
@@ -191,6 +195,8 @@ function queueItemFromBrief(options: {
     workingTitle: options.brief.workingTitle,
     hook: options.brief.hook,
     hookStyle: options.brief.hookStyle,
+    coverTemplate: options.brief.coverTemplate,
+    studyTemplate: options.brief.studyTemplate,
     score: options.brief.score,
     confidence: options.brief.confidence,
     evidenceUrls: options.brief.evidenceUrls ?? [],
@@ -214,6 +220,8 @@ function mergeQueueItem(existing: QueuedCarouselBrief, next: QueuedCarouselBrief
     workingTitle: next.workingTitle,
     hook: next.hook,
     hookStyle: next.hookStyle,
+    coverTemplate: next.coverTemplate,
+    studyTemplate: next.studyTemplate,
     score: next.score,
     confidence: next.confidence,
     evidenceUrls: next.evidenceUrls,

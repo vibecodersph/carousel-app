@@ -32,6 +32,9 @@ const HOOK_JUDGED_SOURCES = new Set<string>(["the_batch"]);
 const BATCH_CLUSTER_STOPWORDS = new Set([
   "article",
   "batch",
+  "ainews",
+  "news",
+  "recap",
   "deep",
   "learning",
   "summary",
@@ -80,13 +83,13 @@ function batchStoryKeywords(item: SourceItem): string[] {
 
 function shouldClusterBatchStoriesSeparately(sources: ResearchSourceName[], items: SourceItem[]): boolean {
   return sources.length === 1
-    && sources[0] === "the_batch"
-    && items.some((item) => item.source === "the_batch");
+    && (sources[0] === "the_batch" || sources[0] === "ai_news")
+    && items.some((item) => item.source === sources[0]);
 }
 
 function batchStoryClusters(items: SourceItem[]): ResearchCluster[] {
   return items.map((item) => ({
-    id: sha256(`the_batch_story:${item.id}`).slice(0, 16),
+    id: sha256(`${item.source}_story:${item.id}`).slice(0, 16),
     label: item.title,
     items: [item],
     keywords: batchStoryKeywords(item),
@@ -246,6 +249,8 @@ export async function runResearchIdeaGenerator(options: ResearchGeneratorOptions
       redditLive: options.redditLive,
       theBatchLive: options.theBatchLive,
       theBatchIssueUrl: options.theBatchIssueUrl,
+      aiNewsLive: options.aiNewsLive,
+      aiNewsIssueUrl: options.aiNewsIssueUrl,
     });
   const memoryPath = options.memory ?? defaultMemoryPath();
   const memory = options.noMemory ? undefined : await loadResearchMemory(memoryPath);

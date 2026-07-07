@@ -1,6 +1,6 @@
 import type { SourceItem } from "../sourcing/types.ts";
 
-export type ResearchSourceName = "reddit" | "github" | "hacker_news" | "the_batch";
+export type ResearchSourceName = "reddit" | "github" | "hacker_news" | "the_batch" | "ai_news";
 export type ResearchProvider = "local" | "gemini";
 export type HookStyle = "curiosity" | "contrarian" | "list";
 export type HookRiskLevel = "low" | "medium" | "high";
@@ -28,6 +28,8 @@ export interface ResearchGeneratorOptions {
   theBatchQueue?: string;
   theBatchLive?: boolean;
   theBatchIssueUrl?: string;
+  aiNewsLive?: boolean;
+  aiNewsIssueUrl?: string;
   taxonomyPath?: string;
   now?: Date;
   maxItemsPerSource?: number;
@@ -192,6 +194,7 @@ export interface CarouselBrief {
   score: number;
   suggestedFormat: "instagram_carousel";
   coverTemplate?: string;
+  studyTemplate?: string;
   coverStrategy?: Record<string, unknown>;
   sourceKind?: string;
   slideCount: number;
