@@ -9,6 +9,7 @@ jobs whose scheduled time has arrived and persists their status after each run.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import html
 import json
@@ -39,6 +40,23 @@ DEFAULT_PUBLISH_TIME = "09:00"
 DEFAULT_QUEUE_UI_HOST = "127.0.0.1"
 DEFAULT_QUEUE_UI_PORT = 8765
 SCHEDULE_VERSION = 1
+DEFAULT_TRIAL_GRADUATION_STRATEGY = "MANUAL"
+TRIAL_GRADUATION_STRATEGIES = {"MANUAL", "SS_PERFORMANCE"}
+
+
+@dataclass(frozen=True)
+class PostingSlot:
+    clock: time
+    trial_reel: bool
+    jitter_minutes: int
+
+
+@dataclass(frozen=True)
+class ScheduledSlot:
+    scheduled_at: datetime
+    trial_reel: bool
+    trial_graduation_strategy: str = ""
+
 
 # reel-app multi-channel layout: one clip folder ships a file per channel, where
 # the channel and caption language are encoded in the name reel.<lang>.<channel>.mp4
@@ -46,8 +64,8 @@ CHANNEL_MEDIA_RE = re.compile(r"^reel\.([A-Za-z]{2,5})\.([A-Za-z0-9_-]+)\.mp4$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
-# Platform registry: the same ledger + scheduler drives both Instagram reels
-# and TikTok. A platform selects which channel.json publishing block holds its
+# Platform registry: the same ledger + scheduler drives Instagram, TikTok, and
+# explicit Facebook lanes. A platform selects which channel.json publishing block holds its
 # posting slots, which publisher script ``run-due`` shells out to, the report
 # filename that carries the published id back, and a separate ledger db so one
 # clip can be tracked independently on each platform.
@@ -63,6 +81,12 @@ PLATFORMS: dict[str, dict[str, Any]] = {
         "publisher": "tiktok_publish.py",
         "report_name": "tiktok_publish.json",
         "db_path": ROOT / "state" / "tiktok.db",
+    },
+    "facebook": {
+        "settings_key": "facebook_reels",
+        "publisher": "facebook_publish.py",
+        "report_name": "facebook_publish.json",
+        "db_path": ROOT / "state" / "facebook.db",
     },
 }
 DEFAULT_PLATFORM = "instagram"
@@ -102,6 +126,9 @@ LEGACY_STATUS_MAP = {
 
 GENERIC_HASHTAGS = ["#AI", "#GenerativeAI", "#AIDevelopment"]
 JAPANESE_HASHTAGS = ["#AIニュース", "#生成AI", "#AI開発", "#エンジニア"]
+PROFILE_HASHTAGS = {
+    "ph-impeachment-news": ["#VPSara", "#SaraDuterte", "#Impeachment", "#Philippines", "#News", "#VibeCodersPH"],
+}
 TOPIC_HASHTAGS = (
     (("claude code",), "#ClaudeCode"),
     (("anthropic", "claude"), "#Anthropic"),
@@ -257,6 +284,45 @@ def slot_clocks(settings: dict[str, Any]) -> list[time]:
     return sorted(clocks)
 
 
+def trial_slot_clocks(settings: dict[str, Any]) -> list[time]:
+    raw_slots = settings.get("trial_slots")
+    values = raw_slots if isinstance(raw_slots, list) else []
+    clocks: list[time] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            clocks.append(parse_clock(text))
+    return sorted(clocks)
+
+
+def trial_graduation_strategy(settings: dict[str, Any]) -> str:
+    strategy = str(
+        settings.get("trial_graduation_strategy")
+        or DEFAULT_TRIAL_GRADUATION_STRATEGY
+    ).strip().upper()
+    if strategy not in TRIAL_GRADUATION_STRATEGIES:
+        raise SystemExit(
+            "Invalid trial_graduation_strategy "
+            f"{strategy!r}; choose from {sorted(TRIAL_GRADUATION_STRATEGIES)}"
+        )
+    return strategy
+
+
+def posting_slots(settings: dict[str, Any], *, jitter_override: int | None = None) -> list[PostingSlot]:
+    configured_jitter = int(settings.get("jitter_minutes") or 0)
+    regular_jitter = configured_jitter if jitter_override is None else jitter_override
+    trial_jitter = int(settings.get("trial_jitter_minutes") or 0)
+    slots = [
+        PostingSlot(clock=clock, trial_reel=False, jitter_minutes=regular_jitter)
+        for clock in slot_clocks(settings)
+    ]
+    slots.extend(
+        PostingSlot(clock=clock, trial_reel=True, jitter_minutes=trial_jitter)
+        for clock in trial_slot_clocks(settings)
+    )
+    return sorted(slots, key=lambda slot: (slot.clock.hour, slot.clock.minute, slot.trial_reel))
+
+
 def skip_weekdays(settings: dict[str, Any]) -> set[int]:
     raw = settings.get("skip_days")
     values = raw if isinstance(raw, list) else []
@@ -287,26 +353,32 @@ def slot_key(moment: datetime, clock: time) -> str:
     return f"{moment.date().isoformat()}T{clock.strftime('%H:%M')}"
 
 
-def slot_occupancy_key(moment: datetime, clocks: list[time], jitter_minutes: int) -> str:
-    tolerance = max(0, jitter_minutes)
-    for clock in clocks:
-        base = datetime.combine(moment.date(), clock, tzinfo=moment.tzinfo)
+def posting_slot_key(moment: datetime, slot: PostingSlot) -> str:
+    kind = "trial" if slot.trial_reel else "regular"
+    return f"{slot_key(moment, slot.clock)}#{kind}"
+
+
+def slot_occupancy_key(moment: datetime, slots: list[PostingSlot], *, trial_reel: bool) -> str:
+    for slot in slots:
+        if slot.trial_reel != trial_reel:
+            continue
+        tolerance = max(0, slot.jitter_minutes)
+        base = datetime.combine(moment.date(), slot.clock, tzinfo=moment.tzinfo)
         diff = abs((moment - base).total_seconds()) / 60
         if diff <= tolerance:
-            return slot_key(base, clock)
-    return moment.replace(second=0, microsecond=0).isoformat()
+            return posting_slot_key(base, slot)
+    kind = "trial" if trial_reel else "regular"
+    return f"{moment.replace(second=0, microsecond=0).isoformat()}#{kind}"
 
 
 def occupied_slot_keys(
     rows: list[Any],
     *,
     timezone_name: str,
-    clocks: list[time],
-    jitter_minutes: int,
+    slots: list[PostingSlot],
 ) -> set[str]:
     tz = timezone_for(timezone_name)
     occupied: set[str] = set()
-    tolerance = max(0, jitter_minutes)
     for row in rows:
         raw = row["scheduled_at"] if isinstance(row, dict) or hasattr(row, "keys") else None
         if not raw:
@@ -318,8 +390,46 @@ def occupied_slot_keys(
         if scheduled.tzinfo is None:
             scheduled = scheduled.replace(tzinfo=tz)
         local = scheduled.astimezone(tz)
-        occupied.add(slot_occupancy_key(local, clocks, tolerance))
+        occupied.add(slot_occupancy_key(local, slots, trial_reel=row_trial_enabled(row)))
     return occupied
+
+
+def scheduled_at_matches_clock(
+    scheduled_at: datetime,
+    *,
+    clock: time,
+    timezone_name: str,
+    tolerance_minutes: int,
+) -> bool:
+    tz = timezone_for(timezone_name)
+    local = scheduled_at.astimezone(tz)
+    base = datetime.combine(local.date(), clock, tzinfo=tz)
+    diff = abs((local - base).total_seconds()) / 60
+    return diff <= max(0, tolerance_minutes)
+
+
+def trial_publish_for_slot(
+    channel: Channel,
+    scheduled_at: datetime,
+    *,
+    settings_key: str = "instagram_reels",
+) -> tuple[bool, str]:
+    settings = reel_settings(channel, settings_key)
+    clocks = trial_slot_clocks(settings)
+    if not clocks:
+        return False, ""
+    timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+    jitter_minutes = int(settings.get("trial_jitter_minutes") or 0)
+    enabled = any(
+        scheduled_at_matches_clock(
+            scheduled_at,
+            clock=clock,
+            timezone_name=timezone_name,
+            tolerance_minutes=jitter_minutes,
+        )
+        for clock in clocks
+    )
+    return (enabled, trial_graduation_strategy(settings) if enabled else "")
 
 
 def row_value(row: Any, key: str) -> Any:
@@ -353,6 +463,65 @@ def reflow_blocking_rows(rows: list[Any], *, start_at: datetime, timezone_name: 
     return blockers
 
 
+def next_open_slot_assignments(
+    *,
+    channel: Channel,
+    start_at: datetime,
+    existing_rows: list[Any],
+    count: int,
+    jitter_override: int | None = None,
+    content_hashes: list[str] | None = None,
+    settings_key: str = "instagram_reels",
+    include_start_at: bool = False,
+) -> list[ScheduledSlot]:
+    if count <= 0:
+        return []
+    settings = reel_settings(channel, settings_key)
+    timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+    tz = timezone_for(timezone_name)
+    local_start = start_at.astimezone(tz)
+    slots = posting_slots(settings, jitter_override=jitter_override)
+    skipped = skip_weekdays(settings)
+    occupied = occupied_slot_keys(
+        existing_rows,
+        timezone_name=timezone_name,
+        slots=slots,
+    )
+    hashes = content_hashes or [str(i) for i in range(count)]
+    assignments: list[ScheduledSlot] = []
+    if include_start_at and local_start.weekday() not in skipped:
+        manual = local_start.replace(microsecond=0)
+        key = slot_occupancy_key(manual, slots, trial_reel=False)
+        if key not in occupied:
+            assignments.append(ScheduledSlot(scheduled_at=manual, trial_reel=False))
+            occupied.add(key)
+    day = local_start.date()
+    strategy = trial_graduation_strategy(settings)
+    while len(assignments) < count:
+        if day.weekday() not in skipped:
+            for slot in slots:
+                base = datetime.combine(day, slot.clock, tzinfo=tz)
+                if base < local_start:
+                    continue
+                key = posting_slot_key(base, slot)
+                if key in occupied:
+                    continue
+                offset = deterministic_jitter(hashes[len(assignments)], slot.jitter_minutes)
+                planned = base + timedelta(minutes=offset)
+                assignments.append(
+                    ScheduledSlot(
+                        scheduled_at=planned.replace(microsecond=0),
+                        trial_reel=slot.trial_reel,
+                        trial_graduation_strategy=strategy if slot.trial_reel else "",
+                    )
+                )
+                occupied.add(key)
+                if len(assignments) >= count:
+                    break
+        day += timedelta(days=1)
+    return assignments
+
+
 def next_open_slots(
     *,
     channel: Channel,
@@ -364,48 +533,19 @@ def next_open_slots(
     settings_key: str = "instagram_reels",
     include_start_at: bool = False,
 ) -> list[datetime]:
-    if count <= 0:
-        return []
-    settings = reel_settings(channel, settings_key)
-    timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
-    tz = timezone_for(timezone_name)
-    local_start = start_at.astimezone(tz)
-    clocks = slot_clocks(settings)
-    skipped = skip_weekdays(settings)
-    configured_jitter = int(settings.get("jitter_minutes") or 0)
-    jitter_minutes = configured_jitter if jitter_override is None else jitter_override
-    occupied = occupied_slot_keys(
-        existing_rows,
-        timezone_name=timezone_name,
-        clocks=clocks,
-        jitter_minutes=jitter_minutes,
-    )
-    hashes = content_hashes or [str(i) for i in range(count)]
-    slots: list[datetime] = []
-    if include_start_at and local_start.weekday() not in skipped:
-        manual = local_start.replace(microsecond=0)
-        key = slot_occupancy_key(manual, clocks, jitter_minutes)
-        if key not in occupied:
-            slots.append(manual)
-            occupied.add(key)
-    day = local_start.date()
-    while len(slots) < count:
-        if day.weekday() not in skipped:
-            for clock in clocks:
-                base = datetime.combine(day, clock, tzinfo=tz)
-                if base < local_start:
-                    continue
-                key = slot_key(base, clock)
-                if key in occupied:
-                    continue
-                offset = deterministic_jitter(hashes[len(slots)], jitter_minutes)
-                planned = base + timedelta(minutes=offset)
-                slots.append(planned.replace(microsecond=0))
-                occupied.add(key)
-                if len(slots) >= count:
-                    break
-        day += timedelta(days=1)
-    return slots
+    return [
+        assignment.scheduled_at
+        for assignment in next_open_slot_assignments(
+            channel=channel,
+            start_at=start_at,
+            existing_rows=existing_rows,
+            count=count,
+            jitter_override=jitter_override,
+            content_hashes=content_hashes,
+            settings_key=settings_key,
+            include_start_at=include_start_at,
+        )
+    ]
 
 
 def safe_job_id(value: str) -> str:
@@ -549,8 +689,27 @@ def configured_hashtags(channel: Channel, settings: dict[str, Any]) -> list[str]
     return list(GENERIC_HASHTAGS)
 
 
-def caption_hashtags(channel: Channel, notes: dict[str, Any], settings: dict[str, Any]) -> list[str]:
-    hashtags = configured_hashtags(channel, settings)
+def selection_profile_for_clip(clip_dir: Path) -> str:
+    source_root = clip_dir.parent.parent if clip_dir.parent.name == "clips" else clip_dir.parent
+    candidates_path = source_root / "candidates.json"
+    if not candidates_path.is_file():
+        return ""
+    try:
+        data = json.loads(candidates_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return re.sub(r"\s+", " ", str(data.get("selection_profile") or "")).strip()
+
+
+def profile_hashtags(clip_dir: Path) -> list[str]:
+    return list(PROFILE_HASHTAGS.get(selection_profile_for_clip(clip_dir), []))
+
+
+def caption_hashtags(channel: Channel, clip_dir: Path, notes: dict[str, Any], settings: dict[str, Any]) -> list[str]:
+    profile_tags = profile_hashtags(clip_dir)
+    hashtags = profile_tags if profile_tags else configured_hashtags(channel, settings)
     searchable = " ".join(
         note_text(notes, key).lower()
         for key in ("one_liner", "one_liner_translated", "reason", "source_chapter", "transcript")
@@ -579,7 +738,7 @@ def build_caption(
 ) -> tuple[str, list[str]]:
     settings = reel_settings(channel, settings_key)
     title = title_override or clip_title(channel, clip_dir, notes)
-    hashtags = caption_hashtags(channel, notes, settings)
+    hashtags = caption_hashtags(channel, clip_dir, notes, settings)
     if channel.language_name.lower().startswith("japanese"):
         context = setting_text(
             settings,
@@ -626,6 +785,9 @@ def make_manifest(
     hashtags: list[str],
     title_override: str | None = None,
     content_hash: str | None = None,
+    settings_key: str = "instagram_reels",
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "",
 ) -> dict[str, Any]:
     title = title_override or clip_title(channel, clip_dir, notes)
     source_url = source_metadata_value(source_metadata, "webpage_url", "original_url", "url")
@@ -658,6 +820,11 @@ def make_manifest(
         manifest["reel_ledger"] = {
             "content_hash": content_hash,
             "channel_id": channel.id,
+        }
+    if trial_reel:
+        manifest["instagram_trial_reel"] = {
+            "enabled": True,
+            "graduation_strategy": trial_graduation_strategy or DEFAULT_TRIAL_GRADUATION_STRATEGY,
         }
     return manifest
 
@@ -877,13 +1044,15 @@ def publisher_command(
                 "--out", str(job["publish_report_path"]),
             ]
         )
+    elif platform == "facebook":
+        command.extend(["--out", str(job["publish_report_path"])])
     else:
         command.extend(
             ["--single-video-media-type", "REELS", "--out", str(job["publish_report_path"])]
         )
     if dry_run:
         command.append("--dry-run")
-    if upload_r2:
+    if upload_r2 and platform in {"instagram", "tiktok"}:
         command.extend(
             [
                 "--upload-r2",
@@ -892,11 +1061,12 @@ def publisher_command(
             ]
         )
     # tiktok_publish.py has no --media-base-url; it only pulls from R2 it uploaded.
-    if media_base_url and platform != "tiktok":
+    # facebook_publish.py uploads the local MP4 bytes directly.
+    if media_base_url and platform == "instagram":
         command.extend(["--media-base-url", media_base_url])
-    if r2_bucket:
+    if r2_bucket and platform in {"instagram", "tiktok"}:
         command.extend(["--r2-bucket", r2_bucket])
-    if r2_public_base_url:
+    if r2_public_base_url and platform in {"instagram", "tiktok"}:
         command.extend(["--r2-public-base-url", r2_public_base_url])
     return command
 
@@ -1048,6 +1218,8 @@ def write_ledger_manifest(
     scheduled_at: datetime,
     out_dir: Path,
     settings_key: str = "instagram_reels",
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "",
 ) -> tuple[Path, str, str]:
     clip_dir = Path(str(row["clip_dir"]))
     media_path = Path(str(row["media_path"]))
@@ -1084,6 +1256,9 @@ def write_ledger_manifest(
             hashtags=hashtags,
             title_override=title,
             content_hash=str(row["content_hash"]),
+            settings_key=settings_key,
+            trial_reel=trial_reel,
+            trial_graduation_strategy=trial_graduation_strategy,
         ),
     )
     return manifest_path, caption, title
@@ -1165,13 +1340,26 @@ def pop_alternating_row(
     raise RuntimeError(f"No queued rows left for channel {channel_id}")
 
 
-def update_manifest_scheduled_at(manifest_path: Path, scheduled_at: datetime) -> None:
+def update_manifest_scheduled_at(
+    manifest_path: Path,
+    scheduled_at: datetime,
+    *,
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "",
+) -> None:
     if not manifest_path.is_file():
         return
     data = read_json(manifest_path)
     if not isinstance(data, dict):
         return
     data["scheduled_at"] = scheduled_at.replace(microsecond=0).isoformat()
+    if trial_reel:
+        data["instagram_trial_reel"] = {
+            "enabled": True,
+            "graduation_strategy": trial_graduation_strategy or DEFAULT_TRIAL_GRADUATION_STRATEGY,
+        }
+    else:
+        data.pop("instagram_trial_reel", None)
     write_json(manifest_path, data)
 
 
@@ -1182,6 +1370,7 @@ def mark_manifest_unscheduled(manifest_path: Path) -> None:
     if not isinstance(data, dict):
         return
     data.pop("scheduled_at", None)
+    data.pop("instagram_trial_reel", None)
     data["schedule_status"] = reel_ledger.STATUS_SKIPPED
     write_json(manifest_path, data)
 
@@ -1874,7 +2063,8 @@ def unschedule_queued_reel(
         if str(row["status"]) not in queued_statuses:
             return False, f"Cannot remove a reel with status '{row['status']}'"
         cursor = conn.execute(
-            "UPDATE reels SET status=?, scheduled_at=NULL, last_error=?, updated_at=? "
+            "UPDATE reels SET status=?, scheduled_at=NULL, trial_reel=0, "
+            "trial_graduation_strategy=NULL, last_error=?, updated_at=? "
             "WHERE content_hash=? AND channel_id=? AND status IN (?, ?)",
             (
                 reel_ledger.STATUS_SKIPPED,
@@ -1916,6 +2106,7 @@ def refill_queue_from_now(
         after_text=start_at,
         channel_filter=channel_filter,
         apply=True,
+        settings_key=settings_key,
     )
     return reflowed, alternated, start_at
 
@@ -2010,6 +2201,7 @@ def scan_and_reshuffle_outputs(
     jitter_minutes: int | None,
     start_at_text: str | None = None,
     after_text: str | None = None,
+    only_if_planned: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Run the queue-outputs refill pipeline used by both CLI and queue UI."""
@@ -2035,6 +2227,16 @@ def scan_and_reshuffle_outputs(
             "start_at": start_at_text or "",
         }
 
+    if only_if_planned and not planned_result["planned"]:
+        return {
+            "clips_dirs": planned_result["clips_dirs"],
+            "planned": planned_result["planned"],
+            "append_start": planned_result["append_start"],
+            "reflowed": {},
+            "alternated": 0,
+            "start_at": start_at_text or planned_result["append_start"],
+        }
+
     if start_at_text or after_text:
         current = now or datetime.now(timezone_for(DEFAULT_TIMEZONE))
         reflow_start = (
@@ -2056,6 +2258,7 @@ def scan_and_reshuffle_outputs(
             after_text=alternate_after,
             channel_filter=channel_filter,
             apply=True,
+            settings_key=settings_key,
         )
         reshuffle_start = reflow_start
     else:
@@ -2652,7 +2855,7 @@ def plan_ledger_rows(
             if limit_per_channel is not None:
                 channel_rows = channel_rows[:limit_per_channel]
             existing = reel_ledger.rows_with_schedule(conn, channel_id)
-            slots = next_open_slots(
+            assignments = next_open_slot_assignments(
                 channel=channel,
                 start_at=start_at,
                 existing_rows=existing,
@@ -2661,13 +2864,16 @@ def plan_ledger_rows(
                 content_hashes=[str(row["content_hash"]) for row in channel_rows],
                 settings_key=settings_key,
             )
-            for row, scheduled_at in zip(channel_rows, slots):
+            for row, assignment in zip(channel_rows, assignments):
+                scheduled_at = assignment.scheduled_at
                 manifest_path, caption, title = write_ledger_manifest(
                     row=row,
                     channel=channel,
                     scheduled_at=scheduled_at,
                     out_dir=out_dir,
                     settings_key=settings_key,
+                    trial_reel=assignment.trial_reel,
+                    trial_graduation_strategy=assignment.trial_graduation_strategy,
                 )
                 reel_ledger.set_status(
                     conn,
@@ -2678,6 +2884,8 @@ def plan_ledger_rows(
                     manifest_path=str(manifest_path),
                     caption=caption,
                     title=title,
+                    trial_reel=1 if assignment.trial_reel else 0,
+                    trial_graduation_strategy=assignment.trial_graduation_strategy or None,
                     last_error=None,
                 )
                 planned[channel_id] = planned.get(channel_id, 0) + 1
@@ -2739,7 +2947,7 @@ def reflow_queue_rows(
                 start_at=start_at,
                 timezone_name=timezone_name,
             )
-            slots = next_open_slots(
+            assignments = next_open_slot_assignments(
                 channel=channel,
                 start_at=start_at,
                 existing_rows=existing,
@@ -2753,7 +2961,8 @@ def reflow_queue_rows(
                     else include_start_at_slot
                 ),
             )
-            for row, scheduled_at in zip(channel_rows, slots):
+            for row, assignment in zip(channel_rows, assignments):
+                scheduled_at = assignment.scheduled_at
                 old_at = str(row["scheduled_at"] or "")
                 new_at = scheduled_at.isoformat()
                 counts[channel_id] = counts.get(channel_id, 0) + 1
@@ -2769,11 +2978,24 @@ def reflow_queue_rows(
                 if not apply:
                     continue
                 conn.execute(
-                    "UPDATE reels SET scheduled_at=?, updated_at=? "
+                    "UPDATE reels SET scheduled_at=?, trial_reel=?, "
+                    "trial_graduation_strategy=?, updated_at=? "
                     "WHERE content_hash=? AND channel_id=?",
-                    (new_at, utc_now(), row["content_hash"], channel_id),
+                    (
+                        new_at,
+                        1 if assignment.trial_reel else 0,
+                        assignment.trial_graduation_strategy or None,
+                        utc_now(),
+                        row["content_hash"],
+                        channel_id,
+                    ),
                 )
-                update_manifest_scheduled_at(Path(str(row["manifest_path"] or "")), scheduled_at)
+                update_manifest_scheduled_at(
+                    Path(str(row["manifest_path"] or "")),
+                    scheduled_at,
+                    trial_reel=assignment.trial_reel,
+                    trial_graduation_strategy=assignment.trial_graduation_strategy,
+                )
     for channel_id, old_at, new_at, status, title in previews[:20]:
         verb = "move" if old_at != new_at else "keep"
         print(f"[reel-scheduler] {verb} {channel_id:<14} {status:<16} {old_at} -> {new_at}  {title}")
@@ -2796,6 +3018,7 @@ def alternate_source_queue_rows(
     channel_filter: str | None,
     apply: bool,
     preview_out: Path | None = None,
+    settings_key: str = "instagram_reels",
 ) -> int:
     """Shuffle queued content into existing slots so source_video alternates globally."""
     boundary = (
@@ -2925,11 +3148,27 @@ def alternate_source_queue_rows(
                 scheduled_at = parse_row_datetime(new_at, DEFAULT_TIMEZONE)
                 if scheduled_at is None:
                     continue
+                slot_trial_reel = row_trial_enabled(slot)
+                slot_trial_strategy = row_trial_strategy(slot)
                 conn.execute(
-                    "UPDATE reels SET scheduled_at=?, updated_at=? WHERE content_hash=? AND channel_id=?",
-                    (new_at, utc_now(), selected["content_hash"], channel_id),
+                    "UPDATE reels SET scheduled_at=?, trial_reel=?, "
+                    "trial_graduation_strategy=?, updated_at=? "
+                    "WHERE content_hash=? AND channel_id=?",
+                    (
+                        new_at,
+                        1 if slot_trial_reel else 0,
+                        slot_trial_strategy or None,
+                        utc_now(),
+                        selected["content_hash"],
+                        channel_id,
+                    ),
                 )
-                update_manifest_scheduled_at(Path(str(selected["manifest_path"] or "")), scheduled_at)
+                update_manifest_scheduled_at(
+                    Path(str(selected["manifest_path"] or "")),
+                    scheduled_at,
+                    trial_reel=slot_trial_reel,
+                    trial_graduation_strategy=slot_trial_strategy,
+                )
             fingerprint_after = caption_refresh_queue_fingerprint(conn, channel_filter)
     else:
         conn = connect_ledger_readonly(db_path)
@@ -3181,13 +3420,14 @@ def run_due_ledger(
                     )
         else:
             failures += 1
+            publisher_name = str(platform_config(platform)["publisher"])
             with reel_ledger.connect(db_path) as conn:
                 reel_ledger.set_status(
                     conn,
                     content_hash,
                     row_channel_id,
                     reel_ledger.STATUS_FAILED,
-                    last_error=f"instagram_publish.py exited {result.returncode}",
+                    last_error=f"{publisher_name} exited {result.returncode}",
                 )
     print(f"[reel-scheduler] processed={processed} failures={failures}")
     return 1 if failures else 0
@@ -3605,7 +3845,7 @@ def build_reel_insight_export_item(row: Any) -> dict[str, Any]:
         if clip_dir is not None
         else ("", [])
     )
-    return {
+    item = {
         "content_hash": str(row["content_hash"] or ""),
         "channel_id": str(row["channel_id"] or ""),
         "lang": lang,
@@ -3647,6 +3887,10 @@ def build_reel_insight_export_item(row: Any) -> dict[str, Any]:
             "source_transcript_segments": source_segments,
         },
     }
+    if row_trial_enabled(row):
+        item["trial_reel"] = True
+        item["trial_graduation_strategy"] = row_trial_strategy(row)
+    return item
 
 
 def build_insights_export(
@@ -3778,6 +4022,28 @@ def item_source(item: dict[str, Any]) -> dict[str, Any]:
     return source if isinstance(source, dict) else {}
 
 
+def row_trial_enabled(row: Any) -> bool:
+    try:
+        return bool(row["trial_reel"])
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
+def row_trial_strategy(row: Any) -> str:
+    try:
+        return str(row["trial_graduation_strategy"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def row_publish_type(row: Any) -> tuple[str, str]:
+    if not row_trial_enabled(row):
+        return "Regular", "Regular Reel"
+    strategy = row_trial_strategy(row)
+    detail = f"Trial Reel ({strategy})" if strategy else "Trial Reel"
+    return "Trial", detail
+
+
 def item_hook(item: dict[str, Any]) -> str:
     segment = item_segment(item)
     return (
@@ -3901,6 +4167,7 @@ def render_report_html(
             for row in [*upcoming, *published, *insight_rows]
         }
     ) or [""]
+    show_publish_type = any(row_trial_enabled(row) for row in [*upcoming, *published, *insight_rows])
     label_cache: dict[str, str] = {}
 
     def channel_anchor(channel_id: str) -> str:
@@ -3927,31 +4194,47 @@ def render_report_html(
         cells = "".join(f"<td>{per_channel.get(status, 0)}</td>" for status in order)
         return f"<tr>{cells}</tr>"
 
+    def publish_type_badge(row: Any) -> str:
+        label, detail = row_publish_type(row)
+        class_name = "trial" if label == "Trial" else "regular"
+        return (
+            f"<span class=\"post-type {class_name}\" title=\"{esc(detail)}\">"
+            f"{esc(label)}</span>"
+        )
+
+    def publish_type_cell(row: Any) -> str:
+        return f"<td>{publish_type_badge(row)}</td>" if show_publish_type else ""
+
     def upcoming_body_for(channel_id: str) -> str:
         rows = [
             "<tr>"
             f"<td>{esc(row_time(row, 'scheduled_at'))}</td>"
+            f"{publish_type_cell(row)}"
             f"<td>{esc(row['status'])}</td>"
             f"<td>{esc(row['title'] or row['clip_dir'])}</td>"
             "</tr>"
             for row in rows_for_channel(upcoming, channel_id)
         ]
-        return "".join(rows) or '<tr><td colspan="3">No queued reels</td></tr>'
+        colspan = 4 if show_publish_type else 3
+        return "".join(rows) or f'<tr><td colspan="{colspan}">No queued reels</td></tr>'
 
     def published_body_for(channel_id: str) -> str:
         rows = [
             "<tr>"
             f"<td>{esc(row_time(row, 'published_at'))}</td>"
+            f"{publish_type_cell(row)}"
             f"<td><a href=\"{esc(row['permalink'])}\">{esc(row['permalink'] or row['media_id'])}</a></td>"
             "</tr>"
             for row in rows_for_channel(published, channel_id)
         ]
-        return "".join(rows) or '<tr><td colspan="2">No published reels</td></tr>'
+        colspan = 3 if show_publish_type else 2
+        return "".join(rows) or f'<tr><td colspan="{colspan}">No published reels</td></tr>'
 
     def insight_body_for(channel_id: str) -> str:
         rows = [
             "<tr>"
             f"<td>{esc(row_time(row, 'published_at'))}</td>"
+            f"{publish_type_cell(row)}"
             f"<td>{esc(row['title'])}</td>"
             f"<td>{esc(row['views'])}</td>"
             f"<td>{esc(row['reach'])}</td>"
@@ -3964,7 +4247,8 @@ def render_report_html(
             "</tr>"
             for row in rows_for_channel(insight_rows, channel_id)
         ]
-        return "".join(rows) or '<tr><td colspan="10">No published reels</td></tr>'
+        colspan = 11 if show_publish_type else 10
+        return "".join(rows) or f'<tr><td colspan="{colspan}">No published reels</td></tr>'
     platform_label = "Instagram" if platform == "instagram" else platform.title()
     sync_form = (
         "<form method=\"post\" "
@@ -3993,6 +4277,7 @@ def render_report_html(
     message_html = f"<div class=\"notice ok\">{esc(message)}</div>" if message else ""
     error_html = f"<div class=\"notice error\">{esc(error)}</div>" if error else ""
     status_headers = "".join(f"<th>{esc(status)}</th>" for status in order)
+    type_header = "<th>Type</th>" if show_publish_type else ""
     channel_nav = (
         '<nav class="channel-nav" aria-label="Channel views">'
         + "".join(
@@ -4013,21 +4298,29 @@ def render_report_html(
     </table>
     <h3>Upcoming Queue</h3>
     <table>
-      <thead><tr><th>Scheduled</th><th>Status</th><th>Title</th></tr></thead>
+      <thead><tr><th>Scheduled</th>{type_header}<th>Status</th><th>Title</th></tr></thead>
       <tbody>{upcoming_body_for(channel_id)}</tbody>
     </table>
     <h3>Recently Published</h3>
     <table>
-      <thead><tr><th>Published</th><th>Permalink</th></tr></thead>
+      <thead><tr><th>Published</th>{type_header}<th>Permalink</th></tr></thead>
       <tbody>{published_body_for(channel_id)}</tbody>
     </table>
     <h3>Latest Insights</h3>
     <table>
-      <thead><tr><th>Published</th><th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
+      <thead><tr><th>Published</th>{type_header}<th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
       <tbody>{insight_body_for(channel_id)}</tbody>
     </table>
-  </section>"""
+ </section>"""
         for channel_id in channel_ids
+    )
+    publish_type_css = (
+        """
+    .post-type { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 800; line-height: 1.2; white-space: nowrap; }
+    .post-type.trial { color: #0f5132; background: #d1e7dd; border: 1px solid #badbcc; }
+    .post-type.regular { color: #41464b; background: #e2e3e5; border: 1px solid #d3d6d8; }"""
+        if show_publish_type
+        else ""
     )
     generated_at = readable_report_datetime(utc_now(), DEFAULT_TIMEZONE)
     return f"""<!doctype html>
@@ -4057,6 +4350,7 @@ def render_report_html(
     th, td {{ border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }}
     th {{ background: #f0f0f0; }}
     a {{ color: #145cc7; }}
+{publish_type_css}
   </style>
 </head>
 <body>
@@ -4102,7 +4396,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_due.add_argument("--now", help="Override the current time in ISO 8601 (useful for operations/tests)")
     run_due.add_argument("--channel", help="Ledger mode: limit to one channel id")
     run_due.add_argument("--date", help="Ledger mode: process rows scheduled on YYYY-MM-DD")
-    run_due.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    run_due.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     run_due.add_argument("--dry-run", action="store_true", help="Preview through instagram_publish.py")
     run_due.add_argument("--all", action="store_true", help="Include future jobs")
     run_due.add_argument("--retry-failed", action="store_true", help="Retry jobs in publish_failed state")
@@ -4123,7 +4417,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--platform", choices=sorted(PLATFORMS), default=None, help="Ledger to scan into (default: instagram)"
     )
-    scan.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    scan.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
 
     plan_ledger = subparsers.add_parser(
         "plan-ledger", help="Scan multi-channel clips and assign new ledger rows to per-channel slots"
@@ -4134,7 +4428,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_ledger.add_argument("date", nargs="?", help="Optional first eligible date (YYYY-MM-DD) or ISO datetime")
     plan_ledger.add_argument("--channel", help="Limit planning to one channel id")
-    plan_ledger.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    plan_ledger.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     plan_ledger.add_argument(
         "--out-dir",
         type=Path,
@@ -4167,7 +4461,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
     )
     queue_outputs.add_argument("--channel", help="Limit to one channel id")
-    queue_outputs.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    queue_outputs.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     queue_outputs.add_argument(
         "--out-dir",
         type=Path,
@@ -4178,6 +4472,11 @@ def build_parser() -> argparse.ArgumentParser:
     queue_outputs.add_argument("--after", help="Source alternation boundary for reshuffle (default: now)")
     queue_outputs.add_argument("--limit-per-channel", type=int, help="Maximum new rows to schedule per channel")
     queue_outputs.add_argument("--jitter-minutes", type=int, help="Override channel jitter")
+    queue_outputs.add_argument(
+        "--reshuffle-only-if-new",
+        action="store_true",
+        help="With --mode reshuffle, reflow the unpublished queue only when new rows were planned",
+    )
     queue_outputs.add_argument("--report-out", type=Path, default=ROOT / "out" / "reel_report.html")
     queue_outputs.add_argument("--no-report", action="store_true", help="Do not refresh the HTML report")
 
@@ -4190,7 +4489,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
     )
     reflow.add_argument("--channel", help="Limit to one channel id")
-    reflow.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    reflow.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     reflow.add_argument("--start-at", help="First eligible date/time; accepts YYYY-MM-DD or ISO 8601")
     reflow.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this reflow")
     reflow.add_argument("--apply", action="store_true", help="Actually update queued rows")
@@ -4204,7 +4503,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Publishing platform (default: instagram)"
     )
     alternate_sources.add_argument("--channel", help="Limit to one channel id")
-    alternate_sources.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    alternate_sources.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     alternate_sources.add_argument("--out", type=Path, help="Write a .md or .json dry-run/apply preview")
     alternate_sources.add_argument("--apply", action="store_true", help="Actually update queued rows")
 
@@ -4216,7 +4515,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which platform caption settings to use"
     )
     refresh_captions.add_argument("--channel", help="Limit to one channel id")
-    refresh_captions.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    refresh_captions.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     refresh_captions.add_argument("--limit", type=int, help="Maximum queued rows to inspect")
     refresh_captions.add_argument("--out", type=Path, help="Write a .md or .json preview of changed captions")
     refresh_captions.add_argument("--apply", action="store_true", help="Actually update queued rows and manifests")
@@ -4229,7 +4528,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to audit (default: instagram)"
     )
     audit_queue.add_argument("--channel", help="Limit to one channel id")
-    audit_queue.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    audit_queue.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     audit_queue.add_argument("--limit", type=int, help="Maximum queued rows to inspect")
     audit_queue.add_argument("--out", type=Path, default=ROOT / "out" / "queue_growth_audit.md")
 
@@ -4237,7 +4536,7 @@ def build_parser() -> argparse.ArgumentParser:
         "import-schedules", help="Seed the ledger from existing schedule.json files"
     )
     importer.add_argument("--root", type=Path, default=DEFAULT_OUT, help="Folder of <schedule>/schedule.json dirs")
-    importer.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    importer.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
 
     status = subparsers.add_parser(
         "status", help="Summarize ledger counts, upcoming posts, and recent publishes"
@@ -4246,7 +4545,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to read (default: instagram)"
     )
     status.add_argument("--channel", help="Limit to one channel id")
-    status.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    status.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     status.add_argument("--limit", type=int, default=15, help="Max upcoming rows to show")
 
     queue_ui = subparsers.add_parser(
@@ -4257,7 +4556,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to review (default: instagram)"
     )
     queue_ui.add_argument("--channel", help="Limit to one channel id")
-    queue_ui.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    queue_ui.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     queue_ui.add_argument("--host", default=DEFAULT_QUEUE_UI_HOST, help="Host interface to bind")
     queue_ui.add_argument("--port", type=int, default=DEFAULT_QUEUE_UI_PORT, help="Port to listen on")
     queue_ui.add_argument("--limit", type=int, default=200, help="Max queued rows to show")
@@ -4284,7 +4583,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to clean (default: instagram)"
     )
     cleanup.add_argument("--channel", help="Limit to one channel id")
-    cleanup.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    cleanup.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     cleanup.add_argument("--all-statuses", action="store_true", help="Consider every status, not just failed rows")
     cleanup.add_argument("--apply", action="store_true", help="Actually delete missing-media rows")
 
@@ -4293,7 +4592,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="instagram (Graph) or tiktok (video.list)"
     )
     sync.add_argument("--channel", help="Limit to one channel id")
-    sync.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    sync.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     sync.add_argument("--limit", type=int, help="Maximum published rows to sync")
     sync.add_argument("--dry-run", action="store_true", help="Print rows that would be synced")
     sync.add_argument(
@@ -4310,7 +4609,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", choices=sorted(PLATFORMS), default=None, help="Which ledger to render (default: instagram)"
     )
     report.add_argument("--channel", help="Limit to one channel id")
-    report.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db, state/reels.db or state/tiktok.db)")
+    report.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     report.add_argument("--out", type=Path, default=ROOT / "out" / "reel_report.html")
     report.add_argument("--limit", type=int, default=0, help="Rows per report table; 0 means all")
     report.add_argument(
@@ -4506,6 +4805,7 @@ def queue_outputs_command(args: argparse.Namespace) -> int:
             jitter_minutes=args.jitter_minutes,
             start_at_text=args.start_at,
             after_text=args.after,
+            only_if_planned=args.reshuffle_only_if_new,
         )
         planned = result["planned"]
     else:
@@ -4569,6 +4869,7 @@ def reflow_queue_command(args: argparse.Namespace) -> int:
 
 
 def alternate_sources_command(args: argparse.Namespace) -> int:
+    platform = resolve_platform(args)
     db_path = resolve_db(args)
     alternate_source_queue_rows(
         db_path=db_path,
@@ -4576,6 +4877,7 @@ def alternate_sources_command(args: argparse.Namespace) -> int:
         channel_filter=args.channel,
         apply=args.apply,
         preview_out=args.out,
+        settings_key=settings_key_for(platform),
     )
     print(f"[reel-scheduler] ledger: {db_path}")
     return 0
@@ -4852,8 +5154,11 @@ def sync_insights_command(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be greater than zero")
     db_path = resolve_db(args)
-    if resolve_platform(args) == "tiktok":
+    platform = resolve_platform(args)
+    if platform == "tiktok":
         return sync_tiktok_insights(args, db_path)
+    if platform == "facebook":
+        raise SystemExit("Facebook insights sync is not implemented; use report/status for this ledger")
     return sync_instagram_insights(args, db_path)
 
 

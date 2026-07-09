@@ -654,11 +654,14 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     "SELECT * FROM reels WHERE channel_id='vibecodersph'"
                 ).fetchone()
                 self.assertEqual(jp["scheduled_at"], "2026-06-24T09:00:00+09:00")
+                self.assertEqual(jp["trial_reel"], 0)
+                self.assertIsNone(jp["trial_graduation_strategy"])
                 self.assertEqual(ph["scheduled_at"], "2026-06-24T12:00:00+08:00")
                 manifest = json.loads(Path(jp["manifest_path"]).read_text(encoding="utf-8"))
                 self.assertEqual(manifest["topic"], "日本語フック")
                 self.assertIn("日本語フック", manifest["instagram_caption"])
                 self.assertIn("Source: https://example.com/source", manifest["instagram_caption"])
+                self.assertNotIn("instagram_trial_reel", manifest)
 
     def test_plan_ledger_round_robins_new_rows_by_source_video_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -713,17 +716,17 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(planned["aibrief_jp"], 4)
             with reel_ledger.connect(db) as conn:
                 rows = conn.execute(
-                    "SELECT source_video, title FROM reels "
+                    "SELECT source_video, title, trial_reel FROM reels "
                     "WHERE channel_id='aibrief_jp' AND content_hash != 'already-scheduled' "
-                    "ORDER BY scheduled_at"
+                    "ORDER BY scheduled_at, trial_reel"
                 ).fetchall()
                 self.assertEqual(
-                    [(row["source_video"], row["title"]) for row in rows],
+                    [(row["source_video"], row["title"], row["trial_reel"]) for row in rows],
                     [
-                        ("AAA111", "AAA111 title 1"),
-                        ("BBB222", "BBB222 title 1"),
-                        ("AAA111", "AAA111 title 2"),
-                        ("BBB222", "BBB222 title 2"),
+                        ("AAA111", "AAA111 title 1", 0),
+                        ("BBB222", "BBB222 title 1", 0),
+                        ("AAA111", "AAA111 title 2", 0),
+                        ("BBB222", "BBB222 title 2", 0),
                     ],
                 )
                 existing = reel_ledger.get_reel(conn, "already-scheduled", "aibrief_jp")
@@ -794,24 +797,29 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 published = reel_ledger.get_reel(conn, "published", "aibrief_jp")
                 self.assertEqual(published["scheduled_at"], "2026-06-24T13:00:00+09:00")
                 rows = conn.execute(
-                    "SELECT content_hash, scheduled_at FROM reels "
+                    "SELECT content_hash, scheduled_at, trial_reel FROM reels "
                     "WHERE channel_id='aibrief_jp' AND status=? "
-                    "ORDER BY scheduled_at",
+                    "ORDER BY scheduled_at, trial_reel, content_hash",
                     (reel_ledger.STATUS_PREVIEWED,),
                 ).fetchall()
                 self.assertEqual(
-                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [(row["content_hash"], row["scheduled_at"], row["trial_reel"]) for row in rows],
                     [
-                        ("queued-1", "2026-06-25T09:00:00+09:00"),
-                        ("queued-2", "2026-06-25T13:00:00+09:00"),
-                        ("queued-3", "2026-06-25T19:00:00+09:00"),
-                        ("queued-4", "2026-06-25T22:00:00+09:00"),
+                        ("queued-1", "2026-06-25T09:00:00+09:00", 0),
+                        ("queued-2", "2026-06-25T13:00:00+09:00", 0),
+                        ("queued-3", "2026-06-25T18:00:00+09:00", 0),
+                        ("queued-4", "2026-06-25T21:00:00+09:00", 0),
                     ],
                 )
                 manifest = reel_scheduler.read_json(
                     root / "manifests" / "queued-1" / "manifest.json"
                 )
                 self.assertEqual(manifest["scheduled_at"], "2026-06-25T09:00:00+09:00")
+                self.assertNotIn("instagram_trial_reel", manifest)
+                evening_manifest = reel_scheduler.read_json(
+                    root / "manifests" / "queued-3" / "manifest.json"
+                )
+                self.assertNotIn("instagram_trial_reel", evening_manifest)
 
     def test_reflow_queue_preserves_queued_rows_before_start_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -913,17 +921,17 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 published = reel_ledger.get_reel(conn, "published-early", "aibrief_jp")
                 self.assertEqual(published["scheduled_at"], "2026-06-24T09:00:00+09:00")
                 rows = conn.execute(
-                    "SELECT content_hash, scheduled_at FROM reels "
+                    "SELECT content_hash, scheduled_at, trial_reel FROM reels "
                     "WHERE channel_id='aibrief_jp' AND status=? "
-                    "ORDER BY scheduled_at",
+                    "ORDER BY scheduled_at, trial_reel, content_hash",
                     (reel_ledger.STATUS_PREVIEWED,),
                 ).fetchall()
                 self.assertEqual(
-                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [(row["content_hash"], row["scheduled_at"], row["trial_reel"]) for row in rows],
                     [
-                        ("queued-today-1", "2026-06-24T09:45:00+09:00"),
-                        ("queued-today-2", "2026-06-24T13:00:00+09:00"),
-                        ("queued-today-3", "2026-06-24T19:00:00+09:00"),
+                        ("queued-today-1", "2026-06-24T09:45:00+09:00", 0),
+                        ("queued-today-2", "2026-06-24T13:00:00+09:00", 0),
+                        ("queued-today-3", "2026-06-24T18:00:00+09:00", 0),
                     ],
                 )
 
@@ -961,16 +969,16 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             )
             with reel_ledger.connect(db) as conn:
                 rows = conn.execute(
-                    "SELECT content_hash, scheduled_at FROM reels "
+                    "SELECT content_hash, scheduled_at, trial_reel FROM reels "
                     "WHERE channel_id='aibrief_jp' AND status=? "
-                    "ORDER BY scheduled_at",
+                    "ORDER BY scheduled_at, trial_reel, content_hash",
                     (reel_ledger.STATUS_PREVIEWED,),
                 ).fetchall()
                 self.assertEqual(
-                    [(row["content_hash"], row["scheduled_at"]) for row in rows],
+                    [(row["content_hash"], row["scheduled_at"], row["trial_reel"]) for row in rows],
                     [
-                        ("queued-no-ad-hoc-1", "2026-06-25T19:00:00+09:00"),
-                        ("queued-no-ad-hoc-2", "2026-06-25T22:00:00+09:00"),
+                        ("queued-no-ad-hoc-1", "2026-06-25T18:00:00+09:00", 0),
+                        ("queued-no-ad-hoc-2", "2026-06-25T21:00:00+09:00", 0),
                     ],
                 )
 
@@ -1326,6 +1334,58 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row["scheduled_at"], "2026-07-05T13:00:00+09:00")
 
+    def test_scan_and_reshuffle_outputs_can_skip_reflow_when_no_new_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = root / "outputs"
+            clip = outputs / "VID123" / "clips" / "001-clip"
+            clip.mkdir(parents=True)
+            media = clip / "reel.ja.aibrief_jp.mp4"
+            media.write_bytes(b"ja-video")
+            (clip / "notes.json").write_text(
+                json.dumps({"index": 1, "one_liner": "English hook"}), encoding="utf-8"
+            )
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                content_hash = reel_ledger.hash_file(media)
+                reel_ledger.upsert_discovered(
+                    conn,
+                    content_hash=content_hash,
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir=clip,
+                    media_path=media,
+                    source_video="VID123",
+                    title="English hook",
+                )
+                reel_ledger.set_status(
+                    conn,
+                    content_hash,
+                    "aibrief_jp",
+                    reel_ledger.STATUS_SCHEDULED,
+                    scheduled_at="2026-07-10T22:00:00+09:00",
+                    manifest_path=str(root / "manifest.json"),
+                )
+
+            result = reel_scheduler.scan_and_reshuffle_outputs(
+                db_path=db,
+                outputs_root=outputs,
+                out_dir=root / "manifests",
+                channel_filter="aibrief_jp",
+                platform="instagram",
+                settings_key="instagram_reels",
+                limit_per_channel=None,
+                jitter_minutes=0,
+                only_if_planned=True,
+                now=datetime(2026, 7, 5, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo")),
+            )
+
+            self.assertEqual(result["planned"], {})
+            self.assertEqual(result["reflowed"], {})
+            with reel_ledger.connect(db) as conn:
+                row = conn.execute("SELECT * FROM reels WHERE channel_id='aibrief_jp'").fetchone()
+                self.assertEqual(row["scheduled_at"], "2026-07-10T22:00:00+09:00")
+
     def test_queue_ui_reshuffle_endpoint_invokes_output_refill_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1601,7 +1661,6 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     title="JP queued",
                     scheduled_at="2026-06-24T09:00:00+09:00",
                 )
-
             report_path = root / "reel_report.html"
             rc = reel_scheduler.report_command(
                 argparse.Namespace(
@@ -1629,9 +1688,15 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertIn("June 24, 9AM JST", html)
             self.assertIn("June 24, 8AM PHT", html)
             self.assertIn("June 25, 8AM PHT", html)
+            self.assertIn("<th>Scheduled</th><th>Status</th><th>Title</th>", html)
+            self.assertNotIn("<th>Type</th>", html)
+            self.assertNotIn('class="post-type trial"', html)
+            self.assertNotIn('class="post-type regular"', html)
             self.assertNotIn("<th>Published</th><th>Channel</th>", html)
             payload = json.loads(report_path.with_suffix(".insights.json").read_text(encoding="utf-8"))
             item = payload["items"][0]
+            self.assertNotIn("trial_reel", item)
+            self.assertNotIn("trial_graduation_strategy", item)
             self.assertEqual(item["insights"]["metrics"]["views"], 1234)
             self.assertEqual(item["segment"]["transcript"], "This is the exact segment.")
             self.assertEqual(item["segment"]["reel_transcript"], "Reel subtitle transcript.")
@@ -1888,6 +1953,33 @@ class ReelChannelRoutingTests(unittest.TestCase):
             "翻訳",
         )
         self.assertEqual(reel_scheduler.routed_title("ja", {"one_liner": "EN"}, {}), "EN")
+
+    def test_ph_impeachment_profile_adds_sara_caption_hashtags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "impeachments_news" / "VID123"
+            clips = source / "clips"
+            clip = clips / "001-some-clip"
+            clip.mkdir(parents=True)
+            (source / "candidates.json").write_text(
+                json.dumps({"selection_profile": "ph-impeachment-news", "clips": []}), encoding="utf-8"
+            )
+            channel = reel_scheduler.load_channel("vibecodersph")
+            caption, hashtags = reel_scheduler.build_caption(
+                channel,
+                clip,
+                {
+                    "index": 1,
+                    "one_liner": "Court orders subpoena fight for Duterte bank records",
+                    "reason": "Impeachment trial update.",
+                },
+            )
+
+            self.assertIn("#VPSara", hashtags)
+            self.assertIn("#SaraDuterte", hashtags)
+            self.assertIn("#Impeachment", hashtags)
+            self.assertNotIn("#AI", hashtags)
+            self.assertIn("#VPSara #SaraDuterte", caption)
 
     def test_scan_fans_out_channels_into_ledger_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,7 +24,7 @@ from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = ROOT / "state" / "reels.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Status lifecycle. ``new`` is discovered-but-unscheduled; the rest mirror the
 # legacy schedule.json vocabulary so imports map cleanly.
@@ -63,6 +63,8 @@ REEL_COLUMNS = {
     "permalink",
     "last_error",
     "manifest_path",
+    "trial_reel",
+    "trial_graduation_strategy",
     "updated_at",
 }
 
@@ -88,6 +90,8 @@ CREATE TABLE IF NOT EXISTS reels (
   permalink     TEXT,
   last_error    TEXT,
   manifest_path TEXT,
+  trial_reel    INTEGER NOT NULL DEFAULT 0,
+  trial_graduation_strategy TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (content_hash, channel_id)
@@ -154,11 +158,19 @@ def connect(db_path: Path | str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connectio
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    ensure_reel_column(conn, "trial_reel", "INTEGER NOT NULL DEFAULT 0")
+    ensure_reel_column(conn, "trial_graduation_strategy", "TEXT")
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (str(SCHEMA_VERSION),),
     )
+
+
+def ensure_reel_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(reels)").fetchall()}
+    if name not in columns:
+        conn.execute(f"ALTER TABLE reels ADD COLUMN {name} {definition}")
 
 
 def get_reel(conn: sqlite3.Connection, content_hash: str, channel_id: str) -> sqlite3.Row | None:
@@ -510,7 +522,7 @@ def latest_insight_rows(
         SELECT
           r.content_hash, r.channel_id, r.title, r.published_at, r.permalink, r.media_id,
           r.lang, r.clip_dir, r.media_path, r.source_video, r.caption, r.scheduled_at,
-          r.manifest_path,
+          r.manifest_path, r.trial_reel, r.trial_graduation_strategy,
           i.captured_at, i.views, i.reach, i.likes, i.comments, i.saved, i.shares,
           i.total_interactions, i.raw
         FROM reels r

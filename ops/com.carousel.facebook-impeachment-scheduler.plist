@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.carousel.facebook-impeachment-scheduler</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/aiagent/GitHub/carousel-app/scripts/run_facebook_impeachment_scheduler_due.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/aiagent/GitHub/carousel-app</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/facebook_impeachment_scheduler.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/aiagent/GitHub/carousel-app/out/logs/facebook_impeachment_scheduler.launchd.err.log</string>
+</dict>
+</plist>

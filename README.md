@@ -514,9 +514,8 @@ Cadence is controlled by each channel's `publishing.instagram_reels.slots` in
 `channels/<id>/channel.json`. The LaunchAgent in
 `ops/com.carousel.reel-scheduler.plist` should stay on its 900-second check
 interval; that timer controls pickup latency, not posts per day. For
-`aibrief_jp`, use `scripts/apply_aibrief_4day_reflow.sh --dry-run --start-at
-2026-07-04` to preview the four-Reel schedule migration, then rerun with
-`--apply` only when intentionally updating the live ledger.
+`aibrief_jp`, the active Instagram cadence is four regular Reels per day:
+`09:00`, `13:00`, `18:00`, and `21:00` Asia/Tokyo, with the configured jitter.
 
 To rebuild only the readable table from an existing JSON export:
 

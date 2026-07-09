@@ -49,6 +49,31 @@
         "#buildinpublic",
         "#fyp"
       ]
+    },
+    "facebook_reels": {
+      "page_id": "989241267600260",
+      "timezone": "Asia/Manila",
+      "slots": [
+        "07:00",
+        "09:00",
+        "12:00",
+        "15:00",
+        "17:00",
+        "20:00",
+        "22:00"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
+      "caption_context": "A clear read on the latest Philippine impeachment-trial development.",
+      "caption_cta": "Follow for concise impeachment-trial updates.",
+      "hashtags": [
+        "#Philippines",
+        "#Impeachment",
+        "#VPSara",
+        "#SaraDuterte",
+        "#News",
+        "#VibeCodersPH"
+      ]
     }
   },
   "brand": {

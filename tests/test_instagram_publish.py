@@ -86,6 +86,80 @@ class InstagramPublishMediaItemTests(unittest.TestCase):
         self.assertNotIn("--facebook", help_text)
         self.assertNotIn("Facebook Page", help_text)
 
+    def test_trial_reel_params_are_added_for_single_reel(self) -> None:
+        item = instagram_publish.MediaItem(
+            index=1,
+            kind="video",
+            local_path="/tmp/reel.mp4",
+            public_url="https://cdn.example.com/reel.mp4",
+            slide_type="video",
+            source_url="",
+        )
+
+        params = instagram_publish.media_create_params(
+            item,
+            caption="caption",
+            carousel_item=False,
+            single_video_media_type="REELS",
+            trial_reel=True,
+            trial_graduation_strategy="MANUAL",
+        )
+
+        self.assertEqual(params["media_type"], "REELS")
+        self.assertEqual(params["trial_params"], '{"graduation_strategy": "MANUAL"}')
+        self.assertNotIn("trial_params.graduation_strategy", params)
+
+    def test_trial_reel_rejects_non_reel_shapes(self) -> None:
+        items = [image_item(1)]
+
+        with self.assertRaisesRegex(SystemExit, "Trial Reels require exactly one video"):
+            instagram_publish.validate_trial_reel_publish(
+                items,
+                trial_reel=True,
+                single_video_media_type="REELS",
+            )
+
+    def test_manifest_trial_reel_defaults_are_read(self) -> None:
+        enabled, strategy = instagram_publish.manifest_trial_reel(
+            {"instagram_trial_reel": {"enabled": True, "graduation_strategy": "SS_PERFORMANCE"}}
+        )
+
+        self.assertTrue(enabled)
+        self.assertEqual(strategy, "SS_PERFORMANCE")
+
+    def test_trial_reel_report_exposes_api_step(self) -> None:
+        item = instagram_publish.MediaItem(
+            index=1,
+            kind="video",
+            local_path="/tmp/reel.mp4",
+            public_url="https://cdn.example.com/reel.mp4",
+            slide_type="video",
+            source_url="",
+        )
+
+        report = instagram_publish.build_report(
+            manifest_path=instagram_publish.ROOT / "out" / "manifest.json",
+            manifest={"channel_id": "aibrief_jp"},
+            items=[item],
+            caption="caption",
+            dry_run=True,
+            graph_version="v25.0",
+            graph_api_root="https://graph.instagram.com",
+            instagram_user_id="17841400000000000",
+            instagram_user_id_source="test",
+            access_token_source="test",
+            single_video_media_type="REELS",
+            trial_reel=True,
+            trial_graduation_strategy="SS_PERFORMANCE",
+        )
+
+        self.assertTrue(report["trial_reel"])
+        self.assertEqual(report["trial_graduation_strategy"], "SS_PERFORMANCE")
+        self.assertEqual(
+            report["api_steps"][0]["params"]["trial_params"],
+            '{"graduation_strategy": "SS_PERFORMANCE"}',
+        )
+
 
 class InstagramPublishCarouselMusicTests(unittest.TestCase):
     def test_applies_carousel_music_to_first_video_item_before_upload(self) -> None:

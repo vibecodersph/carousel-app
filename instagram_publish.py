@@ -51,7 +51,7 @@ from fetch_tweet_data import load_env_file
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "out" / "x_carousel" / "manifest.json"
 DEFAULT_REPORT_NAME = "instagram_publish.json"
-DEFAULT_GRAPH_API_VERSION = "v23.0"
+DEFAULT_GRAPH_API_VERSION = "v25.0"
 DEFAULT_PUBLISH_RETRIES = 2
 DEFAULT_PUBLISH_RETRY_DELAY_SECONDS = 60
 META_GRAPH_API_ROOT = "https://graph.facebook.com"
@@ -63,6 +63,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 VIDEO_SUFFIXES = {".mp4", ".mov"}
 FINISHED_STATUS_CODES = {"FINISHED", "PUBLISHED"}
 WAIT_STATUS_CODES = {"EXPIRED", "ERROR"}
+TRIAL_GRADUATION_STRATEGIES = {"MANUAL", "SS_PERFORMANCE"}
 
 
 @dataclass
@@ -630,12 +631,56 @@ def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def truthy_manifest_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def manifest_trial_reel(manifest: dict[str, Any]) -> tuple[bool, str]:
+    raw = manifest.get("instagram_trial_reel")
+    if isinstance(raw, dict):
+        enabled = truthy_manifest_value(raw.get("enabled"))
+        strategy = str(raw.get("graduation_strategy") or "").strip().upper()
+        return enabled, strategy
+    if raw is not None:
+        return truthy_manifest_value(raw), ""
+    return False, ""
+
+
+def normalize_trial_graduation_strategy(value: str) -> str:
+    strategy = value.strip().upper() or "MANUAL"
+    if strategy not in TRIAL_GRADUATION_STRATEGIES:
+        raise SystemExit(
+            "Invalid Trial Reel graduation strategy "
+            f"{value!r}; choose from {sorted(TRIAL_GRADUATION_STRATEGIES)}"
+        )
+    return strategy
+
+
+def validate_trial_reel_publish(
+    items: list[MediaItem],
+    *,
+    trial_reel: bool,
+    single_video_media_type: str,
+) -> None:
+    if not trial_reel:
+        return
+    if len(items) != 1 or items[0].kind != "video" or single_video_media_type.upper() != "REELS":
+        raise SystemExit("Trial Reels require exactly one video item published with media_type=REELS")
+
+
 def media_create_params(
     item: MediaItem,
     *,
     caption: str,
     carousel_item: bool,
     single_video_media_type: str,
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "MANUAL",
 ) -> dict[str, str]:
     params: dict[str, str] = {}
     if item.kind == "image":
@@ -643,6 +688,12 @@ def media_create_params(
     elif item.kind == "video":
         params["media_type"] = "VIDEO" if carousel_item else single_video_media_type
         params["video_url"] = item.public_url
+        if trial_reel and not carousel_item and single_video_media_type.upper() == "REELS":
+            strategy = normalize_trial_graduation_strategy(trial_graduation_strategy)
+            # The Graph API expects trial_params as a nested JSON object, e.g.
+            # trial_params={"graduation_strategy":"MANUAL"}. Passing it as a flat
+            # dot-notation field is silently ignored and the Reel publishes normally.
+            params["trial_params"] = json.dumps({"graduation_strategy": strategy})
     else:
         raise SystemExit(f"Unsupported media kind: {item.kind}")
     if carousel_item:
@@ -804,7 +855,14 @@ def fetch_permalink(
     )
 
 
-def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: str) -> list[dict[str, Any]]:
+def api_steps(
+    items: list[MediaItem],
+    caption: str,
+    *,
+    single_video_media_type: str,
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "MANUAL",
+) -> list[dict[str, Any]]:
     if len(items) == 1:
         return [
             {
@@ -814,6 +872,8 @@ def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: 
                     caption=caption,
                     carousel_item=False,
                     single_video_media_type=single_video_media_type,
+                    trial_reel=trial_reel,
+                    trial_graduation_strategy=trial_graduation_strategy,
                 ),
             },
             {"action": "publish_media_container", "creation_id": "<container_id>"},
@@ -828,6 +888,7 @@ def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: 
                     caption=caption,
                     carousel_item=True,
                     single_video_media_type=single_video_media_type,
+                    trial_reel=False,
                 ),
             }
             for item in items
@@ -855,10 +916,17 @@ def publish_to_instagram(
     wait_timeout: int,
     wait_interval: int,
     single_video_media_type: str,
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "MANUAL",
 ) -> dict[str, Any]:
     child_ids: list[str] = []
     item_results: list[dict[str, Any]] = []
     is_carousel = len(items) > 1
+    validate_trial_reel_publish(
+        items,
+        trial_reel=trial_reel,
+        single_video_media_type=single_video_media_type,
+    )
 
     for item in items:
         params = media_create_params(
@@ -866,6 +934,8 @@ def publish_to_instagram(
             caption=caption,
             carousel_item=is_carousel,
             single_video_media_type=single_video_media_type,
+            trial_reel=trial_reel and not is_carousel,
+            trial_graduation_strategy=trial_graduation_strategy,
         )
         print(f"[instagram] creating {'carousel item' if is_carousel else 'media'} container for slide {item.index}")
         container_id = create_container(
@@ -954,6 +1024,8 @@ def publish_to_instagram_with_retries(
     single_video_media_type: str,
     publish_retries: int,
     publish_retry_delay: int,
+    trial_reel: bool = False,
+    trial_graduation_strategy: str = "MANUAL",
 ) -> dict[str, Any]:
     attempts = max(0, publish_retries) + 1
     for attempt in range(1, attempts + 1):
@@ -970,6 +1042,8 @@ def publish_to_instagram_with_retries(
                 wait_timeout=wait_timeout,
                 wait_interval=wait_interval,
                 single_video_media_type=single_video_media_type,
+                trial_reel=trial_reel,
+                trial_graduation_strategy=trial_graduation_strategy,
             )
         except InstagramContainerWaitError as exc:
             if attempt >= attempts:
@@ -994,6 +1068,8 @@ def build_report(
     instagram_user_id_source: str,
     access_token_source: str,
     single_video_media_type: str,
+    trial_reel: bool,
+    trial_graduation_strategy: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
     carousel_music: dict[str, Any] | None = None,
@@ -1009,11 +1085,20 @@ def build_report(
         "access_token_source": access_token_source,
         "graph_api_version": graph_version,
         "graph_api_root": graph_api_root,
+        "single_video_media_type": single_video_media_type,
+        "trial_reel": trial_reel,
+        "trial_graduation_strategy": trial_graduation_strategy if trial_reel else "",
         "caption": caption,
         "media": [asdict(item) for item in items],
         "carousel_music": carousel_music or {},
         "uploads": uploads or [],
-        "api_steps": api_steps(items, caption, single_video_media_type=single_video_media_type),
+        "api_steps": api_steps(
+            items,
+            caption,
+            single_video_media_type=single_video_media_type,
+            trial_reel=trial_reel,
+            trial_graduation_strategy=trial_graduation_strategy,
+        ),
         "result": result or {},
     }
 
@@ -1089,6 +1174,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=env_value("INSTAGRAM_SINGLE_VIDEO_MEDIA_TYPE") or "VIDEO",
         help="media_type for a one-item video publish",
     )
+    parser.add_argument(
+        "--trial-reel",
+        action="store_true",
+        help="Publish a single-video Reel as an Instagram Trial Reel for non-followers",
+    )
+    parser.add_argument(
+        "--trial-graduation-strategy",
+        choices=tuple(sorted(TRIAL_GRADUATION_STRATEGIES)),
+        default="",
+        help="Trial Reel graduation strategy; defaults to manifest, then MANUAL",
+    )
     parser.add_argument("--wait-timeout", type=int, default=600)
     parser.add_argument("--wait-interval", type=int, default=10)
     parser.add_argument(
@@ -1161,6 +1257,11 @@ def main() -> int:
     graph_version = normalize_graph_version(args.graph_api_version)
     graph_root = args.graph_api_root.rstrip("/")
     media_base_url = args.media_base_url.strip()
+    manifest_trial_enabled, manifest_trial_strategy = manifest_trial_reel(manifest)
+    trial_reel = bool(args.trial_reel or manifest_trial_enabled)
+    trial_graduation_strategy = normalize_trial_graduation_strategy(
+        args.trial_graduation_strategy or manifest_trial_strategy or "MANUAL"
+    )
     if args.upload_r2 and not media_base_url:
         media_base_url = args.r2_public_base_url.strip()
     overrides = parse_media_url_overrides(args.media_url)
@@ -1173,6 +1274,11 @@ def main() -> int:
         media_base_url=media_base_url,
         overrides=overrides,
         dry_run=args.dry_run,
+    )
+    validate_trial_reel_publish(
+        media_items,
+        trial_reel=trial_reel,
+        single_video_media_type=args.single_video_media_type,
     )
     carousel_music = apply_carousel_music(
         media_items,
@@ -1214,6 +1320,8 @@ def main() -> int:
             single_video_media_type=args.single_video_media_type,
             publish_retries=args.publish_retries,
             publish_retry_delay=args.publish_retry_delay,
+            trial_reel=trial_reel,
+            trial_graduation_strategy=trial_graduation_strategy,
         )
     report = build_report(
         manifest_path=manifest_path,
@@ -1227,6 +1335,8 @@ def main() -> int:
         instagram_user_id_source=instagram_user_id_source,
         access_token_source=access_token_source,
         single_video_media_type=args.single_video_media_type,
+        trial_reel=trial_reel,
+        trial_graduation_strategy=trial_graduation_strategy,
         uploads=uploads,
         result=result,
         carousel_music=carousel_music,

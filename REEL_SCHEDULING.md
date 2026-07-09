@@ -179,6 +179,8 @@ CREATE TABLE reels (
   permalink     TEXT,
   last_error    TEXT,
   manifest_path TEXT,
+  trial_reel    INTEGER NOT NULL DEFAULT 0,
+  trial_graduation_strategy TEXT,     -- MANUAL or SS_PERFORMANCE when trial_reel=1
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (content_hash, channel_id)   -- this UNIQUE is the dedup guard, for free
@@ -230,7 +232,7 @@ channels have different audiences and timezones. Configure slots in each
 ```json
 // channels/aibrief_jp/channel.json  (JP audience, Tokyo)
 "instagram_reels": {
-  "slots": ["09:00", "13:00", "19:00"],
+  "slots": ["09:00", "13:00", "18:00", "21:00"],
   "timezone": "Asia/Tokyo",
   "skip_days": [],
   "jitter_minutes": 7
@@ -249,10 +251,10 @@ channels have different audiences and timezones. Configure slots in each
 ```
 
 The planner walks forward day by day per channel, dropping the next `new` clip
-into the next open slot, capped at `len(slots)` per day. When multiple source
-video folders have new unscheduled clips, `plan-ledger` round-robins those
-sources (`A1, B1, A2, B2`) while preserving clip order inside each source. Rows
-that are already scheduled, previewed, or published are not reshuffled.
+into the next open slot. When multiple source video folders have new
+unscheduled clips, `plan-ledger` round-robins those sources (`A1, B1, A2, B2`)
+while preserving clip order inside each source. Rows that are already scheduled,
+previewed, or published are not reshuffled.
 `interval_hours` stays supported as a fallback so nothing breaks.
 `jitter_minutes` avoids a robotic exact-`:00` posting footprint. Per-channel
 tokens already exist in `.env` (`META_SYSTEM_USER_ACCESS_TOKEN_VIBECODERSPH`),
