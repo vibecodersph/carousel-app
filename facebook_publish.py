@@ -151,11 +151,54 @@ def collect_items(manifest: dict[str, Any], manifest_path: Path) -> list[tuple[s
     return items
 
 
+def rupload_video(video_id: str, page_token: str, path: Path) -> None:
+    """Binary upload to rupload.facebook.com for the Reels flow."""
+    data = path.read_bytes()
+    req = urllib.request.Request(
+        f"https://rupload.facebook.com/video-upload/{GRAPH_VERSION}/{video_id}",
+        data=data, method="POST",
+        headers={"Authorization": f"OAuth {page_token}",
+                 "offset": "0", "file_size": str(len(data)),
+                 "Content-Type": "application/octet-stream",
+                 "User-Agent": "carousel-app/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=900) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"rupload failed ({exc.code}): {exc.read().decode('utf-8','replace')}") from exc
+    if not body.get("success"):
+        raise SystemExit(f"rupload did not report success: {body}")
+
+
+def publish_reel(page_id: str, page_token: str, video_path: Path, caption: str) -> str:
+    """Three-phase Facebook Reels publish: start -> binary upload -> finish."""
+    start = graph_post(f"{page_id}/video_reels", page_token, {"upload_phase": "start"})
+    video_id = str(start["video_id"])
+    print(f"[facebook] reel container {video_id}; uploading {video_path.name} ...")
+    rupload_video(video_id, page_token, video_path)
+    graph_post(f"{page_id}/video_reels", page_token,
+               {"video_id": video_id, "upload_phase": "finish",
+                "video_state": "PUBLISHED", "description": caption})
+    # poll processing status briefly
+    import time as _time
+    for _ in range(30):
+        st = graph_get(video_id, page_token, {"fields": "status"})
+        phase = (st.get("status") or {}).get("video_status", "?")
+        if phase in ("ready", "upload_complete", "processing"):
+            print(f"[facebook] reel status: {phase}")
+            if phase == "ready":
+                break
+        _time.sleep(5)
+    return video_id
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--caption", default=None)
     parser.add_argument("--caption-file", default=None)
+    parser.add_argument("--reel", action="store_true",
+                        help="publish a single video as a Facebook Reel (/video_reels) instead of a feed video")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--publish", action="store_true",
                         help="actually post (otherwise the script refuses unless --dry-run)")
@@ -193,11 +236,16 @@ def main() -> None:
                               "published_at": utc_now(), "items": []}
     if kinds == {"video"}:
         _, video_path = items[0]
-        print(f"[facebook] uploading video {video_path.name} ...")
-        result = graph_post(f"{page_id}/videos", page_token,
-                            {"description": caption}, "source", video_path)
-        print(f"[facebook] video post id: {result.get('id')}")
-        report["items"].append({"kind": "video", "id": result.get("id")})
+        if args.reel:
+            video_id = publish_reel(page_id, page_token, video_path, caption)
+            print(f"[facebook] REEL id: {video_id}")
+            report["items"].append({"kind": "reel", "id": video_id})
+        else:
+            print(f"[facebook] uploading video {video_path.name} ...")
+            result = graph_post(f"{page_id}/videos", page_token,
+                                {"description": caption}, "source", video_path)
+            print(f"[facebook] video post id: {result.get('id')}")
+            report["items"].append({"kind": "video", "id": result.get("id")})
     else:
         media_ids = []
         for idx, (_, photo_path) in enumerate(items, 1):
