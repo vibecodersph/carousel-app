@@ -16,4 +16,5 @@ assets/tweet_*.png
 assets/tweet_embed.html
 assets/video_sources/
 /out/
+/output/
 /state/
