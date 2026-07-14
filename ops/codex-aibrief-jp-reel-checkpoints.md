@@ -84,10 +84,15 @@ publish, or repost any content. The script may append exact-media insight
 snapshots to state/reels.db and write immutable checkpoint Markdown files only
 under out/aibrief_jp_reel_learning/.
 
+If the command fails because Graph access is blocked by DNS/network sandboxing,
+retry the same exact command once with escalated network permission. Do not
+change arguments, do not use `--no-sync` to mask the failure, and do not
+fabricate checkpoints from later snapshots.
+
 If the command records files, report their paths and whether they are +1h,
 +3h, +24h, or MISSED_CHECKPOINT. If nothing is due, say so briefly. If Graph
-access or the scheduler lock prevents the run, report the exact error and do
-not fabricate a checkpoint from a later snapshot.
+access still fails after the retry or the scheduler lock prevents the run,
+report the exact error and do not fabricate a checkpoint from a later snapshot.
 ```
 
 The Scheduled task needs the same narrow Meta Graph access already used by the

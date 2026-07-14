@@ -1504,6 +1504,29 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertEqual(row["total_comments"], 3)
                 self.assertEqual(row["saved"], 44)
 
+    def test_fetch_insights_retries_transient_graph_dns_failure(self) -> None:
+        with patch(
+            "instagram_publish.graph_request",
+            side_effect=[
+                SystemExit(
+                    "Instagram Graph API request failed: "
+                    "<urlopen error [Errno 8] nodename nor servname provided, or not known>"
+                ),
+                {"data": [{"name": "views", "values": [{"value": 7}]}]},
+            ],
+        ) as request, patch.object(reel_scheduler.time_module, "sleep") as sleep:
+            payload = reel_scheduler.fetch_insights(
+                media_id="178900003",
+                metrics=["views"],
+                access_token="token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+
+        self.assertEqual(payload["data"][0]["name"], "views")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
     def test_optional_metric_failure_preserves_core_snapshot(self) -> None:
         self.assertNotIn("follows", reel_scheduler.INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS)
         self.assertNotIn(

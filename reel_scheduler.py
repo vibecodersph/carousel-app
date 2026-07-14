@@ -19,6 +19,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time as time_module
 from datetime import date, datetime, time, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +40,7 @@ DEFAULT_INTERVAL_HOURS = 24.0
 DEFAULT_PUBLISH_TIME = "09:00"
 DEFAULT_QUEUE_UI_HOST = "127.0.0.1"
 DEFAULT_QUEUE_UI_PORT = 8765
+INSIGHT_DNS_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 SCHEDULE_VERSION = 1
 DEFAULT_TRIAL_GRADUATION_STRATEGY = "MANUAL"
 TRIAL_GRADUATION_STRATEGIES = {"MANUAL", "SS_PERFORMANCE"}
@@ -3464,15 +3466,38 @@ def fetch_insights(
 ) -> dict[str, Any]:
     import instagram_publish
 
-    return instagram_publish.graph_request(
-        f"{media_id}/insights",
-        access_token=access_token,
-        graph_version=graph_version,
-        graph_api_root=graph_api_root,
-        params={"metric": ",".join(metrics)},
-        method="GET",
-        timeout=30,
-    )
+    request = {
+        "access_token": access_token,
+        "graph_version": graph_version,
+        "graph_api_root": graph_api_root,
+        "params": {"metric": ",".join(metrics)},
+        "method": "GET",
+        "timeout": 30,
+    }
+    for attempt, delay in enumerate((0.0, *INSIGHT_DNS_RETRY_DELAYS_SECONDS)):
+        if delay:
+            time_module.sleep(delay)
+        try:
+            return instagram_publish.graph_request(f"{media_id}/insights", **request)
+        except SystemExit as exc:
+            message = str(exc)
+            dns_failure = any(
+                marker in message.lower()
+                for marker in (
+                    "temporary failure in name resolution",
+                    "name or service not known",
+                    "nodename nor servname provided",
+                    "failed to resolve",
+                )
+            )
+            if not dns_failure or attempt == len(INSIGHT_DNS_RETRY_DELAYS_SECONDS):
+                raise
+            print(
+                f"[reel-scheduler] transient Graph DNS failure for {media_id}; "
+                f"retrying ({attempt + 1}/{len(INSIGHT_DNS_RETRY_DELAYS_SECONDS)})",
+                flush=True,
+            )
+    raise AssertionError("unreachable")
 
 
 def merge_insight_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
