@@ -1,4 +1,5 @@
 import hashlib
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -131,14 +132,104 @@ class ReelLedgerTests(unittest.TestCase):
             )
             reel_ledger.record_insight(
                 conn, content_hash="m", channel_id="aibrief_jp", media_id="178000",
-                metrics={"views": 1200, "reach": 900, "saved": 40, "total_interactions": 75},
+                metrics={
+                    "views": 1200,
+                    "total_views": 2200,
+                    "reach": 900,
+                    "likes": 12,
+                    "total_likes": 18,
+                    "comments": 2,
+                    "total_comments": 3,
+                    "saved": 40,
+                    "shares": 5,
+                    "total_interactions": 75,
+                    "ig_reels_video_view_total_time": 987654,
+                    "ig_reels_avg_watch_time": 4321.5,
+                    "reels_skip_rate": 0.375,
+                    "clips_replays_count": 321,
+                    "facebook_views": 700,
+                    "crossposted_views": 1900,
+                    "follows": 9,
+                },
             )
-            row = conn.execute(
-                "SELECT views, reach, saved, total_interactions FROM insights WHERE media_id=?",
-                ("178000",),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM insights WHERE media_id=?", ("178000",)).fetchone()
             self.assertEqual(row["views"], 1200)
+            self.assertEqual(row["total_views"], 2200)
+            self.assertEqual(row["likes"], 12)
+            self.assertEqual(row["total_likes"], 18)
+            self.assertEqual(row["comments"], 2)
+            self.assertEqual(row["total_comments"], 3)
             self.assertEqual(row["saved"], 40)
+            self.assertEqual(row["ig_reels_video_view_total_time"], 987654)
+            self.assertEqual(row["ig_reels_avg_watch_time"], 4321.5)
+            self.assertEqual(row["reels_skip_rate"], 0.375)
+            self.assertEqual(row["clips_replays_count"], 321)
+            self.assertEqual(row["facebook_views"], 700)
+            self.assertEqual(row["crossposted_views"], 1900)
+            self.assertEqual(row["follows"], 9)
+
+            latest = reel_ledger.latest_insight_rows(conn, "aibrief_jp", limit=None)[0]
+            self.assertEqual(latest["views"], 1200)
+            self.assertEqual(latest["total_views"], 2200)
+            self.assertEqual(latest["ig_reels_avg_watch_time"], 4321.5)
+            self.assertEqual(latest["reels_skip_rate"], 0.375)
+            self.assertEqual(latest["facebook_views"], 700)
+            self.assertEqual(latest["crossposted_views"], 1900)
+            self.assertEqual(latest["follows"], 9)
+
+    def test_connect_migrates_existing_insights_table_without_losing_data(self) -> None:
+        with sqlite3.connect(self.db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
+                INSERT INTO schema_meta(key, value) VALUES ('schema_version', '2');
+                CREATE TABLE insights (
+                  id INTEGER PRIMARY KEY,
+                  content_hash TEXT NOT NULL,
+                  channel_id TEXT NOT NULL,
+                  media_id TEXT NOT NULL,
+                  captured_at TEXT NOT NULL,
+                  views INTEGER, reach INTEGER, likes INTEGER, comments INTEGER,
+                  saved INTEGER, shares INTEGER, total_interactions INTEGER,
+                  raw TEXT
+                );
+                INSERT INTO insights (
+                  content_hash, channel_id, media_id, captured_at, views, reach, saved, raw
+                ) VALUES (
+                  'legacy-hash', 'aibrief_jp', 'legacy-media',
+                  '2026-07-01T00:00:00+00:00', 456, 321, 12, '{"legacy": true}'
+                );
+                """
+            )
+
+        with reel_ledger.connect(self.db) as conn:
+            columns = {
+                str(row[1]): str(row[2]).upper()
+                for row in conn.execute("PRAGMA table_info(insights)").fetchall()
+            }
+            self.assertEqual(columns["total_views"], "INTEGER")
+            self.assertEqual(columns["total_likes"], "INTEGER")
+            self.assertEqual(columns["total_comments"], "INTEGER")
+            self.assertEqual(columns["ig_reels_video_view_total_time"], "INTEGER")
+            self.assertEqual(columns["ig_reels_avg_watch_time"], "REAL")
+            self.assertEqual(columns["reels_skip_rate"], "REAL")
+            self.assertEqual(columns["clips_replays_count"], "INTEGER")
+            self.assertEqual(columns["facebook_views"], "INTEGER")
+            self.assertEqual(columns["crossposted_views"], "INTEGER")
+            self.assertEqual(columns["follows"], "INTEGER")
+
+            legacy = conn.execute(
+                "SELECT * FROM insights WHERE media_id='legacy-media'"
+            ).fetchone()
+            self.assertEqual(legacy["views"], 456)
+            self.assertEqual(legacy["reach"], 321)
+            self.assertEqual(legacy["saved"], 12)
+            self.assertIsNone(legacy["total_views"])
+            self.assertEqual(legacy["raw"], '{"legacy": true}')
+            schema_version = conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            self.assertEqual(schema_version, str(reel_ledger.SCHEMA_VERSION))
 
     def test_hash_file_streams_correct_sha256(self) -> None:
         blob = self.db.parent / "x.bin"

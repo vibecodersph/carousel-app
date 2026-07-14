@@ -20,11 +20,11 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = ROOT / "state" / "reels.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Status lifecycle. ``new`` is discovered-but-unscheduled; the rest mirror the
 # legacy schedule.json vocabulary so imports map cleanly.
@@ -105,8 +105,17 @@ CREATE TABLE IF NOT EXISTS insights (
   channel_id   TEXT NOT NULL,
   media_id     TEXT NOT NULL,
   captured_at  TEXT NOT NULL,
-  views INTEGER, reach INTEGER, likes INTEGER, comments INTEGER,
+  views INTEGER, total_views INTEGER, reach INTEGER,
+  likes INTEGER, total_likes INTEGER,
+  comments INTEGER, total_comments INTEGER,
   saved INTEGER, shares INTEGER, total_interactions INTEGER,
+  ig_reels_video_view_total_time INTEGER,
+  ig_reels_avg_watch_time REAL,
+  reels_skip_rate REAL,
+  clips_replays_count INTEGER,
+  facebook_views INTEGER,
+  crossposted_views INTEGER,
+  follows INTEGER,
   raw          TEXT,
   FOREIGN KEY (content_hash, channel_id) REFERENCES reels(content_hash, channel_id)
 );
@@ -160,6 +169,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_reel_column(conn, "trial_reel", "INTEGER NOT NULL DEFAULT 0")
     ensure_reel_column(conn, "trial_graduation_strategy", "TEXT")
+    ensure_insight_column(conn, "total_views", "INTEGER")
+    ensure_insight_column(conn, "total_likes", "INTEGER")
+    ensure_insight_column(conn, "total_comments", "INTEGER")
+    ensure_insight_column(conn, "ig_reels_video_view_total_time", "INTEGER")
+    ensure_insight_column(conn, "ig_reels_avg_watch_time", "REAL")
+    ensure_insight_column(conn, "reels_skip_rate", "REAL")
+    ensure_insight_column(conn, "clips_replays_count", "INTEGER")
+    ensure_insight_column(conn, "facebook_views", "INTEGER")
+    ensure_insight_column(conn, "crossposted_views", "INTEGER")
+    ensure_insight_column(conn, "follows", "INTEGER")
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -171,6 +190,12 @@ def ensure_reel_column(conn: sqlite3.Connection, name: str, definition: str) -> 
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(reels)").fetchall()}
     if name not in columns:
         conn.execute(f"ALTER TABLE reels ADD COLUMN {name} {definition}")
+
+
+def ensure_insight_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(insights)").fetchall()}
+    if name not in columns:
+        conn.execute(f"ALTER TABLE insights ADD COLUMN {name} {definition}")
 
 
 def get_reel(conn: sqlite3.Connection, content_hash: str, channel_id: str) -> sqlite3.Row | None:
@@ -324,13 +349,20 @@ def record_insight(
     """Append a timestamped insights snapshot for a published reel."""
     conn.execute(
         "INSERT INTO insights (content_hash, channel_id, media_id, captured_at, "
-        "views, reach, likes, comments, saved, shares, total_interactions, raw) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "views, total_views, reach, likes, total_likes, comments, total_comments, "
+        "saved, shares, total_interactions, ig_reels_video_view_total_time, "
+        "ig_reels_avg_watch_time, reels_skip_rate, clips_replays_count, "
+        "facebook_views, crossposted_views, follows, raw) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             content_hash, channel_id, media_id, captured_at or utc_now(),
-            metrics.get("views"), metrics.get("reach"), metrics.get("likes"),
-            metrics.get("comments"), metrics.get("saved"), metrics.get("shares"),
-            metrics.get("total_interactions"), raw,
+            metrics.get("views"), metrics.get("total_views"), metrics.get("reach"),
+            metrics.get("likes"), metrics.get("total_likes"), metrics.get("comments"),
+            metrics.get("total_comments"), metrics.get("saved"), metrics.get("shares"),
+            metrics.get("total_interactions"), metrics.get("ig_reels_video_view_total_time"),
+            metrics.get("ig_reels_avg_watch_time"), metrics.get("reels_skip_rate"),
+            metrics.get("clips_replays_count"), metrics.get("facebook_views"),
+            metrics.get("crossposted_views"), metrics.get("follows"), raw,
         ),
     )
 
@@ -496,16 +528,30 @@ def published_reels_for_insights(
     conn: sqlite3.Connection,
     channel_id: str | None = None,
     limit: int | None = None,
+    media_ids: Sequence[str] | None = None,
 ) -> list[sqlite3.Row]:
     """Published reels with an Instagram media id, newest first."""
+    normalized_media_ids = tuple(
+        dict.fromkeys(
+            str(media_id).strip()
+            for media_id in (media_ids or ())
+            if str(media_id).strip()
+        )
+    )
+    if media_ids is not None and not normalized_media_ids:
+        return []
     query = (
         "SELECT * FROM reels WHERE status=? AND media_id IS NOT NULL AND media_id != ''"
         + (" AND channel_id=?" if channel_id else "")
-        + " ORDER BY published_at DESC"
     )
     params: list[Any] = [STATUS_PUBLISHED]
     if channel_id:
         params.append(channel_id)
+    if normalized_media_ids:
+        placeholders = ",".join("?" for _ in normalized_media_ids)
+        query += f" AND media_id IN ({placeholders})"
+        params.extend(normalized_media_ids)
+    query += " ORDER BY published_at DESC"
     if limit is not None:
         query += " LIMIT ?"
         params.append(limit)
@@ -523,8 +569,11 @@ def latest_insight_rows(
           r.content_hash, r.channel_id, r.title, r.published_at, r.permalink, r.media_id,
           r.lang, r.clip_dir, r.media_path, r.source_video, r.caption, r.scheduled_at,
           r.manifest_path, r.trial_reel, r.trial_graduation_strategy,
-          i.captured_at, i.views, i.reach, i.likes, i.comments, i.saved, i.shares,
-          i.total_interactions, i.raw
+          i.captured_at, i.views, i.total_views, i.reach, i.likes, i.total_likes,
+          i.comments, i.total_comments, i.saved, i.shares, i.total_interactions,
+          i.ig_reels_video_view_total_time, i.ig_reels_avg_watch_time,
+          i.reels_skip_rate, i.clips_replays_count, i.facebook_views,
+          i.crossposted_views, i.follows, i.raw
         FROM reels r
         LEFT JOIN insights i
           ON i.id = (

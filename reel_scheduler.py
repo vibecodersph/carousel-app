@@ -3440,19 +3440,17 @@ def parse_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        values = item.get("values") if isinstance(item.get("values"), list) else []
-        if not name or not values:
+        if not name:
             continue
-        latest = values[-1] if isinstance(values[-1], dict) else {}
+        values = item.get("values") if isinstance(item.get("values"), list) else []
+        latest = values[-1] if values and isinstance(values[-1], dict) else {}
         value = latest.get("value") if isinstance(latest, dict) else None
-        if isinstance(value, (int, float)):
-            metrics[name] = int(value)
-    if "total_views" in metrics:
-        metrics["views"] = metrics["total_views"]
-    if "total_likes" in metrics:
-        metrics["likes"] = metrics["total_likes"]
-    if "total_comments" in metrics:
-        metrics["comments"] = metrics["total_comments"]
+        if value is None and isinstance(item.get("total_value"), dict):
+            value = item["total_value"].get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        numeric = float(value)
+        metrics[name] = int(numeric) if numeric.is_integer() else numeric
     return metrics
 
 
@@ -3477,16 +3475,103 @@ def fetch_insights(
     )
 
 
+def merge_insight_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge successful metric responses without inventing missing values."""
+    merged: dict[str, Any] = {"data": []}
+    seen: set[str] = set()
+    for payload in payloads:
+        data = payload.get("data") if isinstance(payload.get("data"), list) else []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if name and name in seen:
+                continue
+            if name:
+                seen.add(name)
+            merged["data"].append(item)
+    return merged
+
+
+def fetch_instagram_insights_resilient(
+    *,
+    media_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Fetch requested metrics while isolating media-dependent optional ones.
+
+    Meta can reject a whole comma-separated request when a single retention or
+    crosspost metric is unavailable for that media object. Try the efficient
+    one-request path first. Only after it fails do we fetch the established
+    core separately and probe optional metrics. A core failure still bubbles up
+    so a deleted/inaccessible media id is never recorded as an empty snapshot.
+    """
+    try:
+        return (
+            fetch_insights(
+                media_id=media_id,
+                metrics=metrics,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            ),
+            [],
+        )
+    except SystemExit:
+        optional = [
+            metric for metric in metrics if metric in INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS
+        ]
+        if not optional:
+            raise
+
+    core = [metric for metric in metrics if metric not in optional]
+    payloads: list[dict[str, Any]] = []
+    if core:
+        payloads.append(
+            fetch_insights(
+                media_id=media_id,
+                metrics=core,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        )
+
+    warnings: list[str] = []
+    try:
+        payloads.append(
+            fetch_insights(
+                media_id=media_id,
+                metrics=optional,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        )
+    except SystemExit:
+        for metric in optional:
+            try:
+                payloads.append(
+                    fetch_insights(
+                        media_id=media_id,
+                        metrics=[metric],
+                        access_token=access_token,
+                        graph_version=graph_version,
+                        graph_api_root=graph_api_root,
+                    )
+                )
+            except SystemExit as exc:
+                warnings.append(f"{metric}: {exc}")
+    merged = merge_insight_payloads(payloads)
+    if warnings:
+        merged["optional_metric_errors"] = warnings
+    return merged, warnings
+
+
 INSIGHT_METRIC_KEYS = (
-    "views",
-    "reach",
-    "likes",
-    "comments",
-    "saved",
-    "shares",
-    "total_interactions",
-)
-INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
     "views",
     "total_views",
     "reach",
@@ -3497,6 +3582,45 @@ INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
     "saved",
     "shares",
     "total_interactions",
+    "ig_reels_video_view_total_time",
+    "ig_reels_avg_watch_time",
+    "reels_skip_rate",
+    "clips_replays_count",
+    "facebook_views",
+    "crossposted_views",
+    "follows",
+)
+INSTAGRAM_CORE_INSIGHT_METRIC_KEYS = (
+    "views",
+    "total_views",
+    "reach",
+    "likes",
+    "total_likes",
+    "comments",
+    "total_comments",
+    "saved",
+    "shares",
+    "total_interactions",
+)
+INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS = (
+    "ig_reels_video_view_total_time",
+    "ig_reels_avg_watch_time",
+    "reels_skip_rate",
+    "clips_replays_count",
+    "facebook_views",
+    "crossposted_views",
+    "follows",
+)
+INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS = (
+    "ig_reels_video_view_total_time",
+    "ig_reels_avg_watch_time",
+    "reels_skip_rate",
+    "facebook_views",
+    "crossposted_views",
+)
+INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
+    *INSTAGRAM_CORE_INSIGHT_METRIC_KEYS,
+    *INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS,
 )
 DEFAULT_REPORT_SYNC_ACTION_URL = (
     f"http://{DEFAULT_QUEUE_UI_HOST}:{DEFAULT_QUEUE_UI_PORT}/sync-insights"
@@ -3795,15 +3919,6 @@ def overlapping_transcript_segments(
     return "", []
 
 
-def latest_insight_metrics(row: Any) -> dict[str, int]:
-    metrics: dict[str, int] = {}
-    for key in INSIGHT_METRIC_KEYS:
-        value = row[key]
-        if isinstance(value, int):
-            metrics[key] = value
-    return metrics
-
-
 def parse_raw_insight_payload(row: Any) -> Any | None:
     raw = str(row["raw"] or "").strip()
     if not raw:
@@ -3812,6 +3927,36 @@ def parse_raw_insight_payload(row: Any) -> Any | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return raw
+
+
+def row_value(row: Any, key: str) -> Any | None:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def latest_insight_metrics(row: Any) -> dict[str, int | float]:
+    """Return scope-safe metrics, repairing legacy snapshots from raw JSON.
+
+    Schema v2 stored combined totals in the visible ``views``, ``likes``, and
+    ``comments`` columns. The untouched API payload still contains both scopes,
+    so it takes precedence when present. New snapshots persist each field in a
+    dedicated column and use the same code path.
+    """
+    raw_payload = parse_raw_insight_payload(row)
+    raw_metrics = parse_insight_metrics(raw_payload) if isinstance(raw_payload, dict) else {}
+    metrics: dict[str, int | float] = {}
+    for key in INSIGHT_METRIC_KEYS:
+        value = raw_metrics.get(key, row_value(row, key))
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        metrics[key] = value
+    return metrics
+
+
+def row_insight_metric(row: Any, key: str) -> int | float | None:
+    return latest_insight_metrics(row).get(key)
 
 
 def build_reel_insight_export_item(row: Any) -> dict[str, Any]:
@@ -3905,10 +4050,35 @@ def build_insights_export(
         "platform": platform,
         "channel_filter": channel_filter or "",
         "db_path": str(db_path),
+        "metric_scopes": {
+            "instagram": ["views", "reach", "likes", "comments", "saved", "shares"],
+            "meta_all_surfaces": ["total_views", "total_likes", "total_comments"],
+            "retention": [
+                "ig_reels_video_view_total_time",
+                "ig_reels_avg_watch_time",
+                "reels_skip_rate",
+                "clips_replays_count",
+            ],
+            "cross_surface_diagnostics": ["facebook_views", "crossposted_views"],
+            "definitions": {
+                "total_views": "Plays or displays across all surfaces.",
+                "facebook_views": (
+                    "Facebook plays, including crossposted and recommended plays."
+                ),
+                "crossposted_views": "Plays aggregated across Instagram and Facebook.",
+            },
+            "warning": (
+                "Instagram, Facebook, crossposted, and Meta all-surface view metrics can overlap; "
+                "never add them together."
+            ),
+        },
         "prompt": (
-            "Review these published reels. Use insights.metrics, source metadata, "
-            "and segment.reel_transcript to recommend what "
-            "topics, hooks, lengths, and posting choices to repeat or avoid."
+            "Review these published reels with metric scopes kept separate: views/likes/comments "
+            "are Instagram, total_views/total_likes/total_comments are Meta all-surface totals, "
+            "crossposted_views is the explicit Instagram-plus-Facebook aggregate when available, "
+            "and these scopes must never be added because they can overlap. "
+            "Use fixed-age snapshots, retention metrics when present, source metadata, and "
+            "segment.reel_transcript to recommend what to scale, iterate, or stop."
         ),
         "items": [build_reel_insight_export_item(row) for row in insight_rows],
     }
@@ -4085,8 +4255,8 @@ def render_insights_markdown(export: dict[str, Any], *, max_transcript_chars: in
         f"- Platform: {markdown_cell(export.get('platform'))}",
         f"- Items: {len(items)}",
         "",
-        "| # | Published | Channel | Reel | Views | Reach | Likes | Comments | Saved | Shares | Interactions | Hook | Reel Transcript |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| # | Published | Channel | Reel | Instagram views | Meta all-surface views | Instagram reach | Instagram likes | Meta all-surface likes | Instagram comments | Meta all-surface comments | Saved | Shares | Interactions | Avg watch time (ms) | Skip rate | Facebook views | IG + Facebook crossposted views | Follows | Hook | Reel Transcript |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for index, raw_item in enumerate(items, start=1):
         if not isinstance(raw_item, dict):
@@ -4100,12 +4270,20 @@ def render_insights_markdown(export: dict[str, Any], *, max_transcript_chars: in
             markdown_cell(raw_item.get("channel_id")),
             reel_link,
             markdown_number(item_metric(raw_item, "views")),
+            markdown_number(item_metric(raw_item, "total_views")),
             markdown_number(item_metric(raw_item, "reach")),
             markdown_number(item_metric(raw_item, "likes")),
+            markdown_number(item_metric(raw_item, "total_likes")),
             markdown_number(item_metric(raw_item, "comments")),
+            markdown_number(item_metric(raw_item, "total_comments")),
             markdown_number(item_metric(raw_item, "saved")),
             markdown_number(item_metric(raw_item, "shares")),
             markdown_number(item_metric(raw_item, "total_interactions")),
+            markdown_number(item_metric(raw_item, "ig_reels_avg_watch_time")),
+            markdown_number(item_metric(raw_item, "reels_skip_rate")),
+            markdown_number(item_metric(raw_item, "facebook_views")),
+            markdown_number(item_metric(raw_item, "crossposted_views")),
+            markdown_number(item_metric(raw_item, "follows")),
             markdown_cell(item_hook(raw_item)),
             markdown_cell(transcript),
         ]
@@ -4236,18 +4414,26 @@ def render_report_html(
             f"<td>{esc(row_time(row, 'published_at'))}</td>"
             f"{publish_type_cell(row)}"
             f"<td>{esc(row['title'])}</td>"
-            f"<td>{esc(row['views'])}</td>"
-            f"<td>{esc(row['reach'])}</td>"
-            f"<td>{esc(row['likes'])}</td>"
-            f"<td>{esc(row['comments'])}</td>"
-            f"<td>{esc(row['saved'])}</td>"
-            f"<td>{esc(row['shares'])}</td>"
-            f"<td>{esc(row['total_interactions'])}</td>"
+            f"<td>{esc(row_insight_metric(row, 'views'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'total_views'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'reach'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'likes'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'total_likes'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'comments'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'total_comments'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'saved'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'shares'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'total_interactions'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'ig_reels_avg_watch_time'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'reels_skip_rate'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'facebook_views'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'crossposted_views'))}</td>"
+            f"<td>{esc(row_insight_metric(row, 'follows'))}</td>"
             f"<td>{esc(row_time(row, 'captured_at') or 'not synced')}</td>"
             "</tr>"
             for row in rows_for_channel(insight_rows, channel_id)
         ]
-        colspan = 11 if show_publish_type else 10
+        colspan = 19 if show_publish_type else 18
         return "".join(rows) or f'<tr><td colspan="{colspan}">No published reels</td></tr>'
     platform_label = "Instagram" if platform == "instagram" else platform.title()
     sync_form = (
@@ -4307,8 +4493,12 @@ def render_report_html(
       <tbody>{published_body_for(channel_id)}</tbody>
     </table>
     <h3>Latest Insights</h3>
+    <p><strong>Metric scope:</strong> Instagram views/reach are Instagram-only;
+      Meta all-surface totals cover all surfaces; IG + Facebook crossposted views
+      are the explicit two-platform aggregate when available. These fields overlap,
+      so never add them together.</p>
     <table>
-      <thead><tr><th>Published</th>{type_header}<th>Title</th><th>Views</th><th>Reach</th><th>Likes</th><th>Comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Captured</th></tr></thead>
+      <thead><tr><th>Published</th>{type_header}<th>Title</th><th>Instagram views</th><th>Meta all-surface views</th><th>Instagram reach</th><th>Instagram likes</th><th>Meta all-surface likes</th><th>Instagram comments</th><th>Meta all-surface comments</th><th>Saved</th><th>Shares</th><th>Interactions</th><th>Avg watch time (ms)</th><th>Skip rate</th><th>Facebook views</th><th>IG + Facebook crossposted views</th><th>Follows</th><th>Captured</th></tr></thead>
       <tbody>{insight_body_for(channel_id)}</tbody>
     </table>
  </section>"""
@@ -4594,6 +4784,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--channel", help="Limit to one channel id")
     sync.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
     sync.add_argument("--limit", type=int, help="Maximum published rows to sync")
+    sync.add_argument(
+        "--media-id",
+        action="append",
+        default=None,
+        help="Sync one exact published Instagram media id; repeat for multiple ids",
+    )
     sync.add_argument("--dry-run", action="store_true", help="Print rows that would be synced")
     sync.add_argument(
         "--metrics",
@@ -5155,6 +5351,9 @@ def sync_insights_command(args: argparse.Namespace) -> int:
         raise SystemExit("--limit must be greater than zero")
     db_path = resolve_db(args)
     platform = resolve_platform(args)
+    media_ids = getattr(args, "media_id", None)
+    if media_ids and platform != "instagram":
+        raise SystemExit("--media-id is currently supported only for Instagram insights")
     if platform == "tiktok":
         return sync_tiktok_insights(args, db_path)
     if platform == "facebook":
@@ -5173,12 +5372,29 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
         args.graph_api_version or instagram_publish.graph_api_version()
     )
     graph_root = (args.graph_api_root or instagram_publish.graph_api_root()).rstrip("/")
+    requested_media_ids = tuple(
+        dict.fromkeys(
+            str(media_id).strip()
+            for media_id in (getattr(args, "media_id", None) or ())
+            if str(media_id).strip()
+        )
+    )
     with reel_ledger.connect(db_path) as conn:
-        rows = reel_ledger.published_reels_for_insights(conn, args.channel, args.limit)
+        rows = reel_ledger.published_reels_for_insights(
+            conn,
+            args.channel,
+            args.limit,
+            media_ids=requested_media_ids if requested_media_ids else None,
+        )
     if not rows:
         print("[reel-scheduler] no published media ids to sync")
-        return 0
-    synced = skipped = 0
+        return 1 if requested_media_ids else 0
+    found_media_ids = {str(row["media_id"] or "") for row in rows}
+    missing_media_ids = sorted(set(requested_media_ids) - found_media_ids)
+    for media_id in missing_media_ids:
+        print(f"[reel-scheduler] skip {media_id}: exact published media id not found")
+    synced = 0
+    skipped = len(missing_media_ids)
     for row in rows:
         manifest = {"channel_id": row["channel_id"]}
         access_token, token_source = instagram_publish.resolve_instagram_access_token(
@@ -5198,7 +5414,7 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
             synced += 1
             continue
         try:
-            payload = fetch_insights(
+            payload, metric_warnings = fetch_instagram_insights_resilient(
                 media_id=str(row["media_id"]),
                 metrics=metrics,
                 access_token=access_token,
@@ -5209,6 +5425,11 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
             skipped += 1
             print(f"[reel-scheduler] skip {row['channel_id']} {row['media_id']}: {exc}")
             continue
+        for warning in metric_warnings:
+            print(
+                f"[reel-scheduler] optional metric unavailable "
+                f"{row['channel_id']} {row['media_id']}: {warning}"
+            )
         parsed = parse_insight_metrics(payload)
         with reel_ledger.connect(db_path) as conn:
             reel_ledger.record_insight(

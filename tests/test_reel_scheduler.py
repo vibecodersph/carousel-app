@@ -1496,10 +1496,77 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             with reel_ledger.connect(db) as conn:
                 row = conn.execute("SELECT * FROM insights WHERE media_id='178900002'").fetchone()
-                self.assertEqual(row["views"], 2200)
-                self.assertEqual(row["likes"], 15)
-                self.assertEqual(row["comments"], 3)
+                self.assertEqual(row["views"], 1200)
+                self.assertEqual(row["total_views"], 2200)
+                self.assertEqual(row["likes"], 12)
+                self.assertEqual(row["total_likes"], 15)
+                self.assertEqual(row["comments"], 2)
+                self.assertEqual(row["total_comments"], 3)
                 self.assertEqual(row["saved"], 44)
+
+    def test_optional_metric_failure_preserves_core_snapshot(self) -> None:
+        self.assertNotIn("follows", reel_scheduler.INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS)
+        self.assertNotIn(
+            "clips_replays_count", reel_scheduler.INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS
+        )
+        self.assertIn("follows", reel_scheduler.INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.upsert_imported(
+                    conn,
+                    content_hash="h-optional",
+                    channel_id="aibrief_jp",
+                    lang="ja",
+                    clip_dir="/clip",
+                    media_path="/clip/reel.mp4",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    published_at="2026-06-23T00:00:00+00:00",
+                    media_id="178900099",
+                )
+            args = argparse.Namespace(
+                platform="instagram",
+                channel="aibrief_jp",
+                db=db,
+                limit=None,
+                dry_run=False,
+                metrics="views,total_views,ig_reels_avg_watch_time,reels_skip_rate",
+                access_token="",
+                graph_api_version="v23.0",
+                graph_api_root="https://graph.instagram.com",
+            )
+            graph_error = SystemExit("Instagram Graph API error 400: metric unavailable")
+            with patch("instagram_publish.load_env_file"), patch(
+                "instagram_publish.resolve_instagram_access_token",
+                return_value=("token", "test"),
+            ), patch.object(
+                reel_scheduler,
+                "fetch_insights",
+                side_effect=[
+                    graph_error,
+                    {"data": [
+                        {"name": "views", "values": [{"value": 1200}]},
+                        {"name": "total_views", "values": [{"value": 2200}]},
+                    ]},
+                    graph_error,
+                    {"data": [{
+                        "name": "ig_reels_avg_watch_time",
+                        "total_value": {"value": 4321.5},
+                    }]},
+                    graph_error,
+                ],
+            ) as fetch:
+                rc = reel_scheduler.sync_insights_command(args)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(fetch.call_count, 5)
+            with reel_ledger.connect(db) as conn:
+                row = conn.execute("SELECT * FROM insights WHERE media_id='178900099'").fetchone()
+                self.assertEqual(row["views"], 1200)
+                self.assertEqual(row["total_views"], 2200)
+                self.assertEqual(row["ig_reels_avg_watch_time"], 4321.5)
+                self.assertIsNone(row["reels_skip_rate"])
+                self.assertIn("reels_skip_rate", row["raw"])
 
     def test_sync_insights_skips_one_graph_error_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1645,8 +1712,13 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     content_hash="h-report",
                     channel_id="vibecodersph",
                     media_id="178900003",
-                    metrics={"views": 1234, "saved": 55, "total_interactions": 90},
-                    raw=json.dumps({"data": [{"name": "views", "values": [{"value": 1234}]}]}),
+                    # Simulate a schema-v2 row whose visible views column was
+                    # overwritten by the combined total; raw retains both scopes.
+                    metrics={"views": 2200, "saved": 55, "total_interactions": 90},
+                    raw=json.dumps({"data": [
+                        {"name": "views", "values": [{"value": 1234}]},
+                        {"name": "total_views", "values": [{"value": 2200}]},
+                    ]}),
                     captured_at="2026-06-25T00:00:00+00:00",
                 )
                 reel_ledger.upsert_imported(
@@ -1693,11 +1765,15 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertNotIn('class="post-type trial"', html)
             self.assertNotIn('class="post-type regular"', html)
             self.assertNotIn("<th>Published</th><th>Channel</th>", html)
+            self.assertIn("<th>Instagram views</th><th>Meta all-surface views</th>", html)
+            self.assertIn("These fields overlap", html)
             payload = json.loads(report_path.with_suffix(".insights.json").read_text(encoding="utf-8"))
+            self.assertIn("never add them together", payload["metric_scopes"]["warning"])
             item = payload["items"][0]
             self.assertNotIn("trial_reel", item)
             self.assertNotIn("trial_graduation_strategy", item)
             self.assertEqual(item["insights"]["metrics"]["views"], 1234)
+            self.assertEqual(item["insights"]["metrics"]["total_views"], 2200)
             self.assertEqual(item["segment"]["transcript"], "This is the exact segment.")
             self.assertEqual(item["segment"]["reel_transcript"], "Reel subtitle transcript.")
             self.assertTrue(item["segment"]["reel_transcript_path"].endswith("subtitles.en.ass"))
@@ -1705,7 +1781,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(item["source"]["url"], "https://example.com/watch")
             self.assertIn("This is the exact segment.", item["segment"]["source_transcript_segments"][1]["text"])
             markdown = report_path.with_suffix(".insights.md").read_text(encoding="utf-8")
-            self.assertIn("| # | Published | Channel | Reel | Views | Reach |", markdown)
+            self.assertIn(
+                "| # | Published | Channel | Reel | Instagram views | Meta all-surface views | Instagram reach |",
+                markdown,
+            )
             self.assertIn("| 1 | 2026-06-24T00:00:00+00:00 | vibecodersph | [reel]", markdown)
             self.assertIn("| 1,234 |", markdown)
             self.assertIn("Exact hook", markdown)
@@ -1837,7 +1916,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             markdown = out_path.read_text(encoding="utf-8")
             self.assertIn("# Reel Insights", markdown)
             self.assertIn("Hook with \\| pipe", markdown)
-            self.assertIn("| 1,000 | 800 | 12 | 3 | 4 | 5 | 24 |", markdown)
+            self.assertIn(
+                "| 1,000 |  | 800 | 12 |  | 3 |  | 4 | 5 | 24 |",
+                markdown,
+            )
             self.assertIn("A long transcript for the table.", markdown)
             self.assertNotIn("## Reel Transcripts", markdown)
 
