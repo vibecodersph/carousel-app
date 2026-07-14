@@ -1,0 +1,45 @@
+{
+  "generator": "OpenAI Image API via imagegen skill CLI",
+  "model": "gpt-image-2",
+  "quality": "high",
+  "size": "2048x1152",
+  "generatedFor": "aibrief_jp GPT-5.6 prompt guidance carousel",
+  "slides": [
+    {
+      "type": "item",
+      "item_name": "数字で見る",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/01_less_input_more_output.png",
+      "prompt": "On the right, a compact folded paper strip uses a terracotta fulcrum to lift a much larger dark-ink block while a tangled strip lies beside it. Premium Japanese editorial technical illustration on warm cream washi; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    },
+    {
+      "type": "item",
+      "item_name": "まず削る",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/02_prune_redundant_instructions.png",
+      "prompt": "On the right, a precise dark-ink blade trims redundant loops from layered cream paper ribbons while essential straight bands continue. Premium Japanese editorial technical illustration on warm cream washi; one terracotta cut edge; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    },
+    {
+      "type": "item",
+      "item_name": "成果から書く",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/03_define_done_first.png",
+      "prompt": "On the right, a completed geometric paper structure appears first, with its assembly sequence receding behind it and a guide line ending at one terracotta stop peg. Premium Japanese editorial technical illustration on warm cream washi; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    },
+    {
+      "type": "item",
+      "item_name": "協働スタイル",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/04_personality_vs_workstyle.png",
+      "prompt": "On the right, an expressive sumi brush path and a precise articulated paper linkage remain distinct while guiding one terracotta sphere to the same endpoint. Premium Japanese editorial technical illustration on warm cream washi; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    },
+    {
+      "type": "item",
+      "item_name": "自走の境界",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/05_single_autonomy_boundary.png",
+      "prompt": "On the right, a continuous terracotta ring encloses a safe paper workshop with one deliberate gate; an envelope, cutting blade, coin, and key wait outside. Premium Japanese editorial technical illustration on warm cream washi; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    },
+    {
+      "type": "item",
+      "item_name": "ツール設計",
+      "image_path": "/Users/aiagent/GitHub/carousel-app/output/imagegen/gpt-5p6-prompt-guidance-jp/06_tools_linked_to_evidence.png",
+      "prompt": "On the right, three precision instruments route blank source slips through parallel paths, an ordered chain, and one fallback tray; a terracotta cord links every output to its source. Premium Japanese editorial technical illustration on warm cream washi; left side copy-safe; no text, logos, UI, screens, charts, robots, or people."
+    }
+  ]
+}
