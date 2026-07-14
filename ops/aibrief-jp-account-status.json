@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "reported_at": "2026-07-13T21:02:24+09:00",
+  "evidence_source": "User-reported Instagram Account Status",
+  "recommendation_eligibility": "GREEN",
+  "removed_content": "GREEN",
+  "feature_access": "GREEN",
+  "other_non_monetization_checks": "GREEN",
+  "monetization_status": "NOT_GREEN",
+  "monetization_reason": null,
+  "interpretation": "No current account-level recommendation restriction is evidenced. Monetization is a separate earning/tool issue unless its exact reason reveals an overlapping policy concern.",
+  "limitations": [
+    "Self-reported status; no screenshot was available to the automation.",
+    "Green recommendation eligibility permits but does not guarantee recommendation distribution.",
+    "The exact monetization warning or policy reason has not been provided."
+  ]
+}

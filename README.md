@@ -523,6 +523,32 @@ To rebuild only the readable table from an existing JSON export:
 uv run python reel_scheduler.py insights-md out/reel_report.insights.json
 ```
 
+The Codex Scheduled task definition for the four-slot Japanese reach review is
+documented in [`ops/codex-aibrief-jp-insights.md`](ops/codex-aibrief-jp-insights.md).
+At 10:15, 14:15, 19:15, and 22:15 JST it refreshes the newest 13 `aibrief_jp`
+media IDs, giving each publishing slot observations near +1, +25, +49, and +73
+hours. With `--daily-full-refresh`, the first run after the oldest non-exempt
+snapshot reaches 13 hours performs a full-account attempt; four reviewed,
+never-synced identities remain explicit Data Holds and no new failure is
+automatically exempted. It regenerates the dedicated Japanese-only
+`out/aibrief_jp_reel_report.html` bundle and a deterministic Japanese reach
+brief while keeping Instagram discovery, Meta all-surface amplification,
+retention, and engagement as separate scoreboards. The safe refresh runner is
+[`scripts/run_aibrief_jp_insights.py`](scripts/run_aibrief_jp_insights.py); it
+coordinates with the publishing lock and promotes a validated report
+atomically only after sync-health and analysis checks pass. The automation is
+analysis-only and never publishes or changes scheduled content. The
+dedicated output prevents the normal publisher and queue UI—which continue to
+refresh shared `out/reel_report.html`—from leaving the Japanese report and reach
+brief at different timestamps. The deterministic classifier, matched-date slot
+test, and balanced experiment plan
+live in
+[`scripts/aibrief_jp_reach_analysis.py`](scripts/aibrief_jp_reach_analysis.py).
+Open the documented desktop create flow with `codex://automations`, then use the
+`RRULE:` value, project, execution mode, and prompt from the runbook. Scheduled
+task state is app-managed and is intentionally not synthesized as a repository
+file.
+
 ## Story Scout Automation
 
 `story_scout.py` is the human-in-the-loop front door. It scans configured X

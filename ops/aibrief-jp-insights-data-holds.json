@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "reviewed_at": "2026-07-13T11:04:50+00:00",
+  "review_basis": "Full-account Meta Graph refresh returned HTTP 400 Unsupported get request for each identity; all other 65 media refreshed.",
+  "holds": [
+    {
+      "content_hash": "887a69d2a3278c3ed62cec46c0459b5cfcba4734c3ed8ab3b3cea7b59d4e3796",
+      "media_id": "18022102937684208",
+      "title": "AIの報酬ハックを阻止!自律チームのカスタムLintルール"
+    },
+    {
+      "content_hash": "284e61cf9da490404b876859d75a707ebcb83fffff25055afe11abdcff142a5f",
+      "media_id": "18234800344311426",
+      "title": "10万行のコードをリファクタリングできるOpus 4.7が、超簡単な「洗車テスト」で撃沈した理由。"
+    },
+    {
+      "content_hash": "e32d5203695757961534a52429dd1453d6f83d57975cd1869fe35197bc260ad9",
+      "media_id": "18144892396464090",
+      "title": "Metaが数百人がかりで「2%」上げた開発速度。このツール、一瞬で「100%」にしちゃいました。"
+    },
+    {
+      "content_hash": "e4472ddcfccdfc4909a8771c174798c26feafd8de506e81759821aa53cc1580f",
+      "media_id": "18120264928767642",
+      "title": "【プログラミングはもう終了?】あなたのスキルが2年後に通用しなくなる理由。"
+    }
+  ]
+}
