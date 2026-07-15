@@ -25,6 +25,7 @@ import hmac
 import json
 import mimetypes
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -300,76 +301,35 @@ def r2_signing_key(secret_access_key: str, datestamp: str) -> bytes:
 
 
 def r2_put_object(path: Path, key: str, config: R2Config, *, timeout: int) -> dict[str, Any]:
-    data = path.read_bytes()
-    payload_hash = sha256_hex(data)
-    now = datetime.now(timezone.utc)
-    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-    datestamp = now.strftime("%Y%m%d")
+    """Upload via curl --aws-sigv4 with retries.
+
+    urllib's one-shot PUT dies with 'broken pipe' on multi-MB bodies over a
+    flaky uplink (TLS bad-record-mac / connection reset); curl retries
+    transient socket errors and succeeds where urllib gives up (2026-07-15).
+    """
     encoded_key = urllib.parse.quote(key, safe="/~")
     host = f"{config.bucket}.{config.account_id}.r2.cloudflarestorage.com"
-    canonical_uri = f"/{encoded_key}"
-    signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical_headers = (
-        f"host:{host}\n"
-        f"x-amz-content-sha256:{payload_hash}\n"
-        f"x-amz-date:{amz_date}\n"
-    )
-    canonical_request = "\n".join(
-        [
-            "PUT",
-            canonical_uri,
-            "",
-            canonical_headers,
-            signed_headers,
-            payload_hash,
-        ]
-    )
-    credential_scope = f"{datestamp}/auto/s3/aws4_request"
-    string_to_sign = "\n".join(
-        [
-            "AWS4-HMAC-SHA256",
-            amz_date,
-            credential_scope,
-            sha256_hex(canonical_request.encode("utf-8")),
-        ]
-    )
-    signature = hmac.new(
-        r2_signing_key(config.secret_access_key, datestamp),
-        string_to_sign.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    request = urllib.request.Request(
-        f"https://{host}{canonical_uri}",
-        data=data,
-        method="PUT",
-        headers={
-            "Authorization": (
-                "AWS4-HMAC-SHA256 "
-                f"Credential={config.access_key_id}/{credential_scope}, "
-                f"SignedHeaders={signed_headers}, Signature={signature}"
-            ),
-            "Content-Type": content_type,
-            "User-Agent": "carousel-app/1.0",
-            "x-amz-content-sha256": payload_hash,
-            "x-amz-date": amz_date,
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read()
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"R2 upload failed for {path.name}: HTTP {exc.code} {body[:400]}") from exc
-    except OSError as exc:
-        raise SystemExit(f"R2 upload failed for {path.name}: {exc}") from exc
+    cmd = [
+        "curl", "-sS", "--fail-with-body",
+        "--retry", "5", "--retry-all-errors", "--retry-delay", "2",
+        "--max-time", str(max(timeout, 300)),
+        "--aws-sigv4", "aws:amz:auto:s3",
+        "--user", f"{config.access_key_id}:{config.secret_access_key}",
+        "-H", f"Content-Type: {content_type}",
+        "-T", str(path),
+        f"https://{host}/{encoded_key}",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[-400:]
+        raise SystemExit(f"R2 upload failed for {path.name}: curl rc={proc.returncode} {detail}")
     return {
         "key": key,
         "local_path": str(path),
         "public_url": public_url_for_key(config.public_base_url, key),
-        "status": status,
-        "bytes": len(data),
+        "status": 200,
+        "bytes": path.stat().st_size,
         "content_type": content_type,
     }
 
@@ -385,9 +345,23 @@ def upload_media_to_r2(
         local_path = Path(item.local_path)
         key = r2_key_for_item(item, config.key_prefix)
         print(f"[r2] uploading slide {item.index} -> {config.bucket}/{key}")
-        result = r2_put_object(local_path, key, config, timeout=timeout)
+        result: dict[str, Any] | None = None
+        last_error: BaseException | None = None
+        for attempt in range(1, 4):
+            try:
+                result = r2_put_object(local_path, key, config, timeout=timeout)
+                break
+            except SystemExit as exc:
+                last_error = exc
+                if attempt >= 3 or "SSL" not in str(exc):
+                    raise
+                print(f"[r2] upload retry {attempt}/3 for slide {item.index}: {exc}")
+                time.sleep(5 * attempt)
+        if result is None:
+            raise SystemExit(f"R2 upload failed for {local_path.name}: {last_error}")
         item.public_url = str(result["public_url"])
         uploads.append(result)
+        time.sleep(5)  # avoid SSL connection reuse issues with urllib
     return uploads
 
 
