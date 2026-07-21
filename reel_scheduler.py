@@ -62,7 +62,10 @@ class ScheduledSlot:
 
 # reel-app multi-channel layout: one clip folder ships a file per channel, where
 # the channel and caption language are encoded in the name reel.<lang>.<channel>.mp4
-CHANNEL_MEDIA_RE = re.compile(r"^reel\.([A-Za-z]{2,5})\.([A-Za-z0-9_-]+)\.mp4$")
+# ``reelcut`` can emit ``original`` (its documented default) alongside
+# localized tokens such as ``en`` and ``ja``.  Accept a bounded language token
+# rather than silently dropping the default-rendered variant during discovery.
+CHANNEL_MEDIA_RE = re.compile(r"^reel\.([A-Za-z][A-Za-z0-9_-]{1,15})\.([A-Za-z0-9_-]+)\.mp4$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
@@ -615,12 +618,30 @@ def parse_channel_media(name: str) -> tuple[str, str] | None:
 
 
 def load_one_liners(clip_dir: Path) -> dict[str, Any]:
-    """Per-language localized hooks (e.g. {"ja": "..."}); empty when absent."""
+    """Load localized hooks from both the flat and schema-v2 formats.
+
+    Older files store ``{"ja": "..."}``; newer files store the selected hook
+    under ``{"languages": {"ja": {"text": "..."}}}``. Normalize both to
+    the flat shape expected by the title-routing code.
+    """
     path = clip_dir / "one_liners.json"
     if not path.exists():
         return {}
     data = read_json(path)
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    languages = data.get("languages")
+    if not isinstance(languages, dict):
+        return data
+    normalized: dict[str, Any] = {}
+    for lang, value in languages.items():
+        if isinstance(value, dict):
+            text = value.get("text")
+        else:
+            text = value
+        if text:
+            normalized[str(lang)] = text
+    return normalized
 
 
 def routed_title(lang: str, notes: dict[str, Any], one_liners: dict[str, Any]) -> str:
@@ -1267,12 +1288,13 @@ def write_ledger_manifest(
 
 
 def round_robin_sources(rows: list[Any]) -> list[Any]:
-    """Interleave new rows by source_video while preserving clip order per source."""
+    """Interleave rows by newest source first, preserving clip order per source."""
     grouped: dict[str, list[Any]] = {}
     for row in rows:
         source = str(row["source_video"] or "")
         grouped.setdefault(source, []).append(row)
-    ordered_sources = sorted(grouped)
+    ordered_sources = source_order_from(rows)
+    ordered_sources.extend(source for source in grouped if source not in ordered_sources)
     interleaved: list[Any] = []
     while any(grouped[source] for source in ordered_sources):
         for source in ordered_sources:
@@ -1297,18 +1319,26 @@ def row_is_after(row: Any, boundary: datetime, timezone_name: str = DEFAULT_TIME
     return scheduled is not None and scheduled.astimezone(timezone.utc) > boundary.astimezone(timezone.utc)
 
 
-def row_is_at_or_before(row: Any, boundary: datetime, timezone_name: str = DEFAULT_TIMEZONE) -> bool:
-    scheduled = parse_row_datetime(row_value(row, "scheduled_at"), timezone_name)
-    return scheduled is not None and scheduled.astimezone(timezone.utc) <= boundary.astimezone(timezone.utc)
-
-
 def source_order_from(rows: list[Any]) -> list[str]:
-    ordered: list[str] = []
-    for row in rows:
+    """Return source folders newest-first, with stable ordering for tied scans."""
+    first_seen: dict[str, int] = {}
+    latest_created: dict[str, float] = {}
+    for index, row in enumerate(rows):
         source = row_source_video(row)
-        if source and source not in ordered:
-            ordered.append(source)
-    return ordered
+        if not source:
+            continue
+        first_seen.setdefault(source, index)
+        created = parse_row_datetime(row_value(row, "created_at"), DEFAULT_TIMEZONE)
+        created_timestamp = (
+            created.astimezone(timezone.utc).timestamp()
+            if created is not None
+            else float("-inf")
+        )
+        latest_created[source] = max(latest_created.get(source, float("-inf")), created_timestamp)
+    return sorted(
+        first_seen,
+        key=lambda source: (-latest_created[source], first_seen[source], source),
+    )
 
 
 def next_source_after(source_order: list[str], last_source: str | None) -> str:
@@ -1340,6 +1370,41 @@ def pop_alternating_row(
         if bucket:
             return bucket.pop(0)
     raise RuntimeError(f"No queued rows left for channel {channel_id}")
+
+
+def source_round_robin_assignments(
+    queued_rows: list[Any],
+) -> tuple[list[tuple[Any, Any, str]], dict[str, list[str]]]:
+    """Assign each channel's slots one row per source, newest sources first."""
+    pools: dict[str, dict[str, list[Any]]] = {}
+    rows_by_channel: dict[str, list[Any]] = {}
+    for row in queued_rows:
+        channel_id = str(row["channel_id"])
+        source = row_source_video(row)
+        pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
+        rows_by_channel.setdefault(channel_id, []).append(row)
+
+    source_orders = {
+        channel_id: source_order_from(channel_rows)
+        for channel_id, channel_rows in rows_by_channel.items()
+    }
+    last_source_by_channel: dict[str, str] = {}
+    assignments: list[tuple[Any, Any, str]] = []
+    for slot in queued_rows:
+        channel_id = str(slot["channel_id"])
+        source_order = source_orders[channel_id]
+        last_source = last_source_by_channel.get(channel_id)
+        desired_source = next_source_after(source_order, last_source)
+        selected = pop_alternating_row(
+            pools,
+            channel_id=channel_id,
+            desired_source=desired_source,
+            source_order=source_order,
+            last_source=last_source,
+        )
+        assignments.append((slot, selected, desired_source))
+        last_source_by_channel[channel_id] = row_source_video(selected)
+    return assignments, source_orders
 
 
 def update_manifest_scheduled_at(
@@ -3030,13 +3095,6 @@ def alternate_source_queue_rows(
     )
     queue_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
     queued_placeholders = ",".join("?" for _ in queue_statuses)
-    scheduled_statuses = [
-        reel_ledger.STATUS_SCHEDULED,
-        reel_ledger.STATUS_PREVIEWED,
-        reel_ledger.STATUS_PUBLISHING,
-        reel_ledger.STATUS_PUBLISHED,
-    ]
-    scheduled_placeholders = ",".join("?" for _ in scheduled_statuses)
     previews: list[tuple[str, str, str, str, str, str, str]] = []
     preview_records: list[dict[str, Any]] = []
     fingerprint_before: dict[str, Any] = {}
@@ -3079,48 +3137,11 @@ def alternate_source_queue_rows(
                 write_preview_if_requested()
                 return 0
 
-            history_query = (
-                "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
-                "AND scheduled_at IS NOT NULL"
-                + (" AND channel_id=?" if channel_filter else "")
-            )
-            history_params: list[Any] = list(scheduled_statuses)
-            if channel_filter:
-                history_params.append(channel_filter)
-            history_rows = [
-                row
-                for row in conn.execute(history_query, history_params).fetchall()
-                if row_is_at_or_before(row, boundary)
-            ]
-            history_rows.sort(key=row_chronological_key)
-            last_source = row_source_video(history_rows[-1]) if history_rows else None
-            source_order = source_order_from(queued_rows)
-            if last_source and last_source not in source_order:
-                source_order.append(last_source)
-            if len(source_order) < 2:
+            assignments, source_orders = source_round_robin_assignments(queued_rows)
+            if not any(len(source_order) >= 2 for source_order in source_orders.values()):
                 print("[reel-scheduler] fewer than two source videos remain in the queued rows")
                 write_preview_if_requested()
                 return 0
-
-            pools: dict[str, dict[str, list[Any]]] = {}
-            for row in queued_rows:
-                channel_id = str(row["channel_id"])
-                source = row_source_video(row)
-                pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
-
-            assignments: list[tuple[Any, Any, str]] = []
-            for slot in queued_rows:
-                channel_id = str(slot["channel_id"])
-                desired_source = next_source_after(source_order, last_source)
-                selected = pop_alternating_row(
-                    pools,
-                    channel_id=channel_id,
-                    desired_source=desired_source,
-                    source_order=source_order,
-                    last_source=last_source,
-                )
-                assignments.append((slot, selected, desired_source))
-                last_source = row_source_video(selected)
 
             for slot, selected, desired_source in assignments:
                 channel_id = str(selected["channel_id"])
@@ -3196,48 +3217,11 @@ def alternate_source_queue_rows(
                 write_preview_if_requested()
                 return 0
 
-            history_query = (
-                "SELECT * FROM reels WHERE status IN (" + scheduled_placeholders + ") "
-                "AND scheduled_at IS NOT NULL"
-                + (" AND channel_id=?" if channel_filter else "")
-            )
-            history_params: list[Any] = list(scheduled_statuses)
-            if channel_filter:
-                history_params.append(channel_filter)
-            history_rows = [
-                row
-                for row in conn.execute(history_query, history_params).fetchall()
-                if row_is_at_or_before(row, boundary)
-            ]
-            history_rows.sort(key=row_chronological_key)
-            last_source = row_source_video(history_rows[-1]) if history_rows else None
-            source_order = source_order_from(queued_rows)
-            if last_source and last_source not in source_order:
-                source_order.append(last_source)
-            if len(source_order) < 2:
+            assignments, source_orders = source_round_robin_assignments(queued_rows)
+            if not any(len(source_order) >= 2 for source_order in source_orders.values()):
                 print("[reel-scheduler] fewer than two source videos remain in the queued rows")
                 write_preview_if_requested()
                 return 0
-
-            pools: dict[str, dict[str, list[Any]]] = {}
-            for row in queued_rows:
-                channel_id = str(row["channel_id"])
-                source = row_source_video(row)
-                pools.setdefault(channel_id, {}).setdefault(source, []).append(row)
-
-            assignments: list[tuple[Any, Any, str]] = []
-            for slot in queued_rows:
-                channel_id = str(slot["channel_id"])
-                desired_source = next_source_after(source_order, last_source)
-                selected = pop_alternating_row(
-                    pools,
-                    channel_id=channel_id,
-                    desired_source=desired_source,
-                    source_order=source_order,
-                    last_source=last_source,
-                )
-                assignments.append((slot, selected, desired_source))
-                last_source = row_source_video(selected)
 
             for slot, selected, desired_source in assignments:
                 channel_id = str(selected["channel_id"])

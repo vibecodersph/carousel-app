@@ -1081,6 +1081,108 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 )
                 self.assertEqual(moved_manifest["scheduled_at"], "2026-06-24T19:00:00+09:00")
 
+    def test_alternate_sources_round_robins_newest_folders_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "reels.db"
+            rows = [
+                ("old-1", "OLD", "2026-06-24T09:00:00+09:00"),
+                ("old-2", "OLD", "2026-06-24T13:00:00+09:00"),
+                ("middle-1", "MIDDLE", "2026-06-24T18:00:00+09:00"),
+                ("middle-2", "MIDDLE", "2026-06-24T21:00:00+09:00"),
+                ("new-1", "NEW", "2026-06-25T09:00:00+09:00"),
+                ("new-2", "NEW", "2026-06-25T13:00:00+09:00"),
+            ]
+            source_created = {
+                "OLD": "2026-06-01T00:00:00+00:00",
+                "MIDDLE": "2026-06-02T00:00:00+00:00",
+                "NEW": "2026-06-03T00:00:00+00:00",
+            }
+            with reel_ledger.connect(db) as conn:
+                for content_hash, source, scheduled_at in rows:
+                    clip = root / source / "clips" / content_hash
+                    clip.mkdir(parents=True)
+                    media = clip / "reel.ja.aibrief_jp.mp4"
+                    media.write_bytes(content_hash.encode("utf-8"))
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=content_hash,
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir=clip,
+                        media_path=media,
+                        source_video=source,
+                        title=content_hash,
+                        status=reel_ledger.STATUS_SCHEDULED,
+                        scheduled_at=scheduled_at,
+                    )
+                    conn.execute(
+                        "UPDATE reels SET created_at=? WHERE content_hash=? AND channel_id=?",
+                        (source_created[source], content_hash, "aibrief_jp"),
+                    )
+
+            reel_scheduler.alternate_source_queue_rows(
+                db_path=db,
+                after_text="2026-06-24T08:00:00+09:00",
+                channel_filter="aibrief_jp",
+                apply=True,
+            )
+
+            with reel_ledger.connect(db) as conn:
+                scheduled = conn.execute(
+                    "SELECT content_hash, source_video FROM reels "
+                    "WHERE channel_id=? AND status=? ORDER BY scheduled_at",
+                    ("aibrief_jp", reel_ledger.STATUS_SCHEDULED),
+                ).fetchall()
+            self.assertEqual(
+                [(row["content_hash"], row["source_video"]) for row in scheduled],
+                [
+                    ("new-1", "NEW"),
+                    ("middle-1", "MIDDLE"),
+                    ("old-1", "OLD"),
+                    ("new-2", "NEW"),
+                    ("middle-2", "MIDDLE"),
+                    ("old-2", "OLD"),
+                ],
+            )
+
+    def test_source_round_robin_keeps_channel_cursors_independent(self) -> None:
+        queued_rows = [
+            {
+                "content_hash": "vibe-old",
+                "channel_id": "vibecodersph",
+                "source_video": "VIBE_OLD",
+                "created_at": "2026-06-01T00:00:00+00:00",
+            },
+            {
+                "content_hash": "jp-old",
+                "channel_id": "aibrief_jp",
+                "source_video": "JP_OLD",
+                "created_at": "2026-06-01T00:00:00+00:00",
+            },
+            {
+                "content_hash": "vibe-new",
+                "channel_id": "vibecodersph",
+                "source_video": "VIBE_NEW",
+                "created_at": "2026-06-02T00:00:00+00:00",
+            },
+            {
+                "content_hash": "jp-new",
+                "channel_id": "aibrief_jp",
+                "source_video": "JP_NEW",
+                "created_at": "2026-06-03T00:00:00+00:00",
+            },
+        ]
+
+        assignments, source_orders = reel_scheduler.source_round_robin_assignments(queued_rows)
+
+        self.assertEqual(source_orders["vibecodersph"], ["VIBE_NEW", "VIBE_OLD"])
+        self.assertEqual(source_orders["aibrief_jp"], ["JP_NEW", "JP_OLD"])
+        self.assertEqual(
+            [selected["content_hash"] for _, selected, _ in assignments],
+            ["vibe-new", "jp-new", "vibe-old", "jp-old"],
+        )
+
     def test_unschedule_queued_reel_marks_skipped_and_refuses_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2046,6 +2148,10 @@ class ReelChannelRoutingTests(unittest.TestCase):
         self.assertEqual(
             reel_scheduler.parse_channel_media("reel.en.vibecodersph.mp4"), ("en", "vibecodersph")
         )
+        self.assertEqual(
+            reel_scheduler.parse_channel_media("reel.original.vibecodersph.mp4"),
+            ("original", "vibecodersph"),
+        )
         self.assertIsNone(reel_scheduler.parse_channel_media("reel.mp4"))
         self.assertIsNone(reel_scheduler.parse_channel_media("poster.png"))
 
@@ -2058,6 +2164,34 @@ class ReelChannelRoutingTests(unittest.TestCase):
             "翻訳",
         )
         self.assertEqual(reel_scheduler.routed_title("ja", {"one_liner": "EN"}, {}), "EN")
+
+    def test_load_one_liners_supports_schema_v2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip"
+            clip.mkdir()
+            (clip / "one_liners.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "languages": {
+                            "ja": {
+                                "text": "日本語フック",
+                                "variants": ["別案"],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            one_liners = reel_scheduler.load_one_liners(clip)
+
+            self.assertEqual(one_liners, {"ja": "日本語フック"})
+            self.assertEqual(
+                reel_scheduler.routed_title("ja", {"one_liner": "English hook"}, one_liners),
+                "日本語フック",
+            )
 
     def test_ph_impeachment_profile_adds_sara_caption_hashtags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -143,7 +143,7 @@ class SchedulerFacebookPlatformTests(unittest.TestCase):
         self.assertEqual(settings["timezone"], "Asia/Manila")
         self.assertEqual(
             settings["slots"],
-            ["07:00", "09:00", "12:00", "15:00", "17:00", "20:00", "22:00"],
+            ["15:00", "17:00", "20:00", "22:00"],
         )
 
     def test_publisher_command_facebook_shape(self) -> None:
