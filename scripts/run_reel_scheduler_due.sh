@@ -23,12 +23,28 @@ export UV_CACHE_DIR="$ROOT/state/uv-cache"
 cd "$ROOT" || exit 1
 
 echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler run start"
+"$UV" run python scripts/sync_aibrief_facebook_queue.py
+facebook_sync_exit=$?
+if [ "$facebook_sync_exit" -ne 0 ]; then
+  echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] aibrief Facebook queue sync exit=$facebook_sync_exit"
+fi
+
 "$UV" run python reel_scheduler.py run-due --upload-r2
-exit_code=$?
+instagram_exit=$?
+
+facebook_exit=0
+if [ "$facebook_sync_exit" -eq 0 ]; then
+  "$UV" run python reel_scheduler.py run-due --platform facebook --channel aibrief_jp
+  facebook_exit=$?
+fi
+
 "$UV" run python reel_scheduler.py report --out out/reel_report.html
 report_exit=$?
 if [ "$report_exit" -ne 0 ]; then
   echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler report exit=$report_exit"
 fi
-echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler run exit=$exit_code"
-exit $exit_code
+echo "[$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')] reel scheduler run instagram_exit=$instagram_exit facebook_sync_exit=$facebook_sync_exit facebook_exit=$facebook_exit"
+if [ "$instagram_exit" -ne 0 ] || [ "$facebook_sync_exit" -ne 0 ] || [ "$facebook_exit" -ne 0 ]; then
+  exit 1
+fi
+exit 0

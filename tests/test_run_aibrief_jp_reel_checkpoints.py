@@ -58,6 +58,7 @@ class ReelCheckpointTests(unittest.TestCase):
         *,
         content_hash: str = "abcdef1234567890",
         media_id: str = "media-1",
+        trial_reel: bool = False,
     ) -> None:
         with reel_ledger.connect(self.db) as connection:
             reel_ledger.upsert_imported(
@@ -72,6 +73,46 @@ class ReelCheckpointTests(unittest.TestCase):
                 published_at=self.published.isoformat(),
                 media_id=media_id,
                 permalink=f"https://instagram.com/reel/{media_id}/",
+            )
+            if trial_reel:
+                connection.execute(
+                    "UPDATE reels SET trial_reel=1, "
+                    "trial_graduation_strategy='MANUAL' "
+                    "WHERE content_hash=? AND channel_id=?",
+                    (content_hash, checkpoints.CHANNEL),
+                )
+
+    def insert_trial_experiment(
+        self,
+        *,
+        content_hash: str = "abcdef1234567890",
+        media_id: str = "media-1",
+        state: str = "active",
+        graduated_at: str | None = None,
+    ) -> None:
+        with reel_ledger.connect(self.db) as connection:
+            now = self.published.isoformat()
+            connection.execute(
+                """
+                INSERT INTO trial_experiments (
+                  experiment_id, content_hash, channel_id, case_type,
+                  parent_media_id, asset_family_id, baseline_hook, variant_hook,
+                  changed_variables_json, state, graduated_at, created_at, updated_at
+                ) VALUES (
+                  'TRIAL-001', ?, ?, 'successful_post_variant',
+                  ?, 'aibrief_jp:source:clip-1', '旧フック', '新フック',
+                  '["hook"]', ?, ?, ?, ?
+                )
+                """,
+                (
+                    content_hash,
+                    checkpoints.CHANNEL,
+                    media_id,
+                    state,
+                    graduated_at,
+                    now,
+                    now,
+                ),
             )
 
     def insert_snapshot(
@@ -100,6 +141,8 @@ class ReelCheckpointTests(unittest.TestCase):
             str(self.root),
             "--db",
             str(self.db),
+            "--report-version",
+            "1",
             *extra,
         ]
         with patch.object(sys, "argv", argv):
@@ -215,6 +258,47 @@ class ReelCheckpointTests(unittest.TestCase):
         text = first.decode("utf-8")
         self.assertIn("| Instagram views | 180 | +80 |", text)
         self.assertIn("Compared with: +1h at 1.20h", text)
+
+    def test_72_hour_file_uses_exact_window_and_includes_trial_metadata(self) -> None:
+        self.insert_reel(trial_reel=True)
+        self.insert_trial_experiment()
+        self.insert_snapshot(age=24.5, metrics=complete_metrics(views=180, reach=130))
+        self.insert_snapshot(age=72.5, metrics=complete_metrics(views=240, reach=190))
+        self.insert_snapshot(age=80, metrics=complete_metrics(views=999, reach=900))
+
+        rc = self.run_main(
+            "--no-sync",
+            "--checkpoint",
+            "72h",
+            "--as-of",
+            (self.published + timedelta(hours=100)).isoformat(),
+        )
+
+        self.assertEqual(rc, 0)
+        path = (
+            self.root
+            / "out"
+            / "aibrief_jp_reel_learning"
+            / "2026-07-14"
+            / "0900_abcdef123456"
+            / "72h.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Actual observed age: **72.50h**", text)
+        self.assertIn("| Instagram views | 240 | +60 |", text)
+        self.assertNotIn("999", text)
+        self.assertIn("Launch type: `TRIAL_REEL`", text)
+        self.assertIn("Cohort: `TRIAL_ACTIVE`", text)
+        self.assertIn("Trial phase at capture: `PRE_GRADUATION`", text)
+        self.assertIn("Experiment ID: `TRIAL-001`", text)
+        self.assertIn("Asset family: `aibrief_jp:source:clip-1`", text)
+
+    def test_default_lookback_covers_72_hour_checkpoint(self) -> None:
+        parser = checkpoints.build_parser()
+        args = parser.parse_args([])
+
+        self.assertGreaterEqual(args.lookback_hours, 100)
+        self.assertIn("72h", checkpoints.CHECKPOINT_BY_KEY)
 
     def test_past_window_writes_missed_without_substituting_late_snapshot(self) -> None:
         self.insert_reel()

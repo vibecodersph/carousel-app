@@ -24,7 +24,7 @@ from typing import Any, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = ROOT / "state" / "reels.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Status lifecycle. ``new`` is discovered-but-unscheduled; the rest mirror the
 # legacy schedule.json vocabulary so imports map cleanly.
@@ -35,6 +35,28 @@ STATUS_PREVIEWED = "publish_previewed"
 STATUS_PUBLISHED = "published"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+
+TRIAL_CASE_SUCCESSFUL_POST_VARIANT = "successful_post_variant"
+TRIAL_CASE_SCHEDULED_CONVERSION = "scheduled_conversion"
+TRIAL_CASE_TYPES = {
+    TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+    TRIAL_CASE_SCHEDULED_CONVERSION,
+}
+
+TRIAL_STATE_SCHEDULED = "scheduled"
+TRIAL_STATE_PUBLISHING = "publishing"
+TRIAL_STATE_ACTIVE = "active"
+TRIAL_STATE_GRADUATED = "graduated"
+TRIAL_STATE_STOPPED = "stopped"
+TRIAL_STATE_FAILED = "failed"
+TRIAL_STATES = {
+    TRIAL_STATE_SCHEDULED,
+    TRIAL_STATE_PUBLISHING,
+    TRIAL_STATE_ACTIVE,
+    TRIAL_STATE_GRADUATED,
+    TRIAL_STATE_STOPPED,
+    TRIAL_STATE_FAILED,
+}
 
 # Precedence used when two records collide (e.g. a clip scheduled in two
 # different schedules). Higher wins, so an import never downgrades a published
@@ -98,6 +120,36 @@ CREATE TABLE IF NOT EXISTS reels (
 );
 CREATE INDEX IF NOT EXISTS idx_reels_channel_status ON reels(channel_id, status);
 CREATE INDEX IF NOT EXISTS idx_reels_scheduled ON reels(scheduled_at);
+
+CREATE TABLE IF NOT EXISTS trial_experiments (
+  experiment_id       TEXT PRIMARY KEY,
+  content_hash        TEXT NOT NULL,
+  channel_id          TEXT NOT NULL,
+  case_type           TEXT NOT NULL,
+  parent_content_hash TEXT,
+  parent_media_id     TEXT,
+  asset_family_id     TEXT NOT NULL,
+  baseline_hook       TEXT,
+  variant_hook        TEXT NOT NULL,
+  changed_variables_json TEXT NOT NULL,
+  state               TEXT NOT NULL DEFAULT 'scheduled',
+  decision            TEXT,
+  decision_reason     TEXT,
+  displaced_content_hash TEXT,
+  scheduled_at        TEXT,
+  published_at        TEXT,
+  decision_at         TEXT,
+  graduated_at        TEXT,
+  stopped_at          TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  UNIQUE (content_hash, channel_id),
+  FOREIGN KEY (content_hash, channel_id) REFERENCES reels(content_hash, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trial_experiments_channel_state
+  ON trial_experiments(channel_id, state);
+CREATE INDEX IF NOT EXISTS idx_trial_experiments_parent
+  ON trial_experiments(parent_content_hash, channel_id);
 
 CREATE TABLE IF NOT EXISTS insights (
   id           INTEGER PRIMARY KEY,
@@ -314,6 +366,24 @@ def set_status(
         f"UPDATE reels SET {', '.join(columns)} WHERE content_hash=? AND channel_id=?",
         values,
     )
+    trial_state = {
+        STATUS_SCHEDULED: TRIAL_STATE_SCHEDULED,
+        STATUS_PREVIEWED: TRIAL_STATE_SCHEDULED,
+        STATUS_PUBLISHING: TRIAL_STATE_PUBLISHING,
+        STATUS_PUBLISHED: TRIAL_STATE_ACTIVE,
+        STATUS_FAILED: TRIAL_STATE_FAILED,
+    }.get(status)
+    if trial_state:
+        trial_fields: dict[str, Any] = {}
+        if status == STATUS_PUBLISHED:
+            trial_fields["published_at"] = fields.get("published_at") or utc_now()
+        set_trial_experiment_state_for_reel(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            state=trial_state,
+            **trial_fields,
+        )
 
 
 def claim_for_publish(
@@ -332,6 +402,177 @@ def claim_for_publish(
         "UPDATE reels SET status=?, updated_at=?, last_error=NULL "
         "WHERE content_hash=? AND channel_id=? AND status IN (" + placeholders + ")",
         [STATUS_PUBLISHING, utc_now(), content_hash, channel_id, *allowed],
+    )
+    if cursor.rowcount == 1:
+        set_trial_experiment_state_for_reel(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            state=TRIAL_STATE_PUBLISHING,
+        )
+    return cursor.rowcount == 1
+
+
+def get_trial_experiment(
+    conn: sqlite3.Connection,
+    experiment_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM trial_experiments WHERE experiment_id=?",
+        (experiment_id,),
+    ).fetchone()
+
+
+def trial_experiment_for_reel(
+    conn: sqlite3.Connection,
+    content_hash: str,
+    channel_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM trial_experiments WHERE content_hash=? AND channel_id=?",
+        (content_hash, channel_id),
+    ).fetchone()
+
+
+def upsert_trial_experiment(
+    conn: sqlite3.Connection,
+    *,
+    experiment_id: str,
+    content_hash: str,
+    channel_id: str,
+    case_type: str,
+    parent_content_hash: str | None,
+    parent_media_id: str | None,
+    asset_family_id: str,
+    baseline_hook: str | None,
+    variant_hook: str,
+    changed_variables_json: str,
+    state: str = TRIAL_STATE_SCHEDULED,
+    displaced_content_hash: str | None = None,
+    scheduled_at: str | None = None,
+    published_at: str | None = None,
+) -> str:
+    """Insert or idempotently refresh one explicitly registered Trial experiment.
+
+    An experiment id and a reel identity are both immutable. Reusing either for
+    a different Trial raises instead of silently re-linking analytics history.
+    """
+    experiment_id = experiment_id.strip()
+    asset_family_id = asset_family_id.strip()
+    variant_hook = variant_hook.strip()
+    if not experiment_id:
+        raise ValueError("experiment_id must not be empty")
+    if case_type not in TRIAL_CASE_TYPES:
+        raise ValueError(f"Unknown Trial case_type: {case_type}")
+    if state not in TRIAL_STATES:
+        raise ValueError(f"Unknown Trial state: {state}")
+    if not asset_family_id:
+        raise ValueError("asset_family_id must not be empty")
+    if not variant_hook:
+        raise ValueError("variant_hook must not be empty")
+    reel = get_reel(conn, content_hash, channel_id)
+    if reel is None:
+        raise ValueError(
+            f"Trial reel does not exist in ledger: {channel_id}/{content_hash}"
+        )
+    existing = get_trial_experiment(conn, experiment_id)
+    if existing is not None and (
+        str(existing["content_hash"]) != content_hash
+        or str(existing["channel_id"]) != channel_id
+    ):
+        raise ValueError(
+            f"Trial experiment {experiment_id!r} is already linked to another reel"
+        )
+    linked = trial_experiment_for_reel(conn, content_hash, channel_id)
+    if linked is not None and str(linked["experiment_id"]) != experiment_id:
+        raise ValueError(
+            f"Reel {channel_id}/{content_hash} is already linked to Trial "
+            f"{linked['experiment_id']!r}"
+        )
+    now = utc_now()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO trial_experiments ("
+            "experiment_id, content_hash, channel_id, case_type, parent_content_hash, "
+            "parent_media_id, asset_family_id, baseline_hook, variant_hook, "
+            "changed_variables_json, state, displaced_content_hash, scheduled_at, "
+            "published_at, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                experiment_id,
+                content_hash,
+                channel_id,
+                case_type,
+                parent_content_hash,
+                parent_media_id,
+                asset_family_id,
+                baseline_hook,
+                variant_hook,
+                changed_variables_json,
+                state,
+                displaced_content_hash,
+                scheduled_at,
+                published_at,
+                now,
+                now,
+            ),
+        )
+        return "inserted"
+    conn.execute(
+        "UPDATE trial_experiments SET case_type=?, parent_content_hash=?, "
+        "parent_media_id=?, asset_family_id=?, baseline_hook=?, variant_hook=?, "
+        "changed_variables_json=?, state=?, displaced_content_hash=?, scheduled_at=?, "
+        "published_at=COALESCE(?, published_at), updated_at=? WHERE experiment_id=?",
+        (
+            case_type,
+            parent_content_hash,
+            parent_media_id,
+            asset_family_id,
+            baseline_hook,
+            variant_hook,
+            changed_variables_json,
+            state,
+            displaced_content_hash,
+            scheduled_at,
+            published_at,
+            now,
+            experiment_id,
+        ),
+    )
+    return "updated"
+
+
+def set_trial_experiment_state_for_reel(
+    conn: sqlite3.Connection,
+    *,
+    content_hash: str,
+    channel_id: str,
+    state: str,
+    **fields: Any,
+) -> bool:
+    if state not in TRIAL_STATES:
+        raise ValueError(f"Unknown Trial state: {state}")
+    allowed_fields = {
+        "decision",
+        "decision_reason",
+        "scheduled_at",
+        "published_at",
+        "decision_at",
+        "graduated_at",
+        "stopped_at",
+    }
+    assignments = ["state=?", "updated_at=?"]
+    values: list[Any] = [state, utc_now()]
+    for key, value in fields.items():
+        if key not in allowed_fields:
+            raise ValueError(f"Unknown Trial experiment column: {key}")
+        assignments.append(f"{key}=?")
+        values.append(value)
+    values.extend([content_hash, channel_id])
+    cursor = conn.execute(
+        f"UPDATE trial_experiments SET {', '.join(assignments)} "
+        "WHERE content_hash=? AND channel_id=?",
+        values,
     )
     return cursor.rowcount == 1
 
@@ -530,7 +771,7 @@ def published_reels_for_insights(
     limit: int | None = None,
     media_ids: Sequence[str] | None = None,
 ) -> list[sqlite3.Row]:
-    """Published reels with an Instagram media id, newest first."""
+    """Published reels with a platform media id, newest first."""
     normalized_media_ids = tuple(
         dict.fromkeys(
             str(media_id).strip()

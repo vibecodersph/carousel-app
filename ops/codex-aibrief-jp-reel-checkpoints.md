@@ -3,72 +3,113 @@
 This is a regular observation journal for `aibrief_jp`. It is not an A/B test
 and does not attempt to prove which hook caused distribution.
 
-For every newly published Japanese Reel, the runner records one immutable
-Markdown analysis at each checkpoint:
+For every newly published Japanese Reel, the default v2 runner records one
+immutable Markdown analysis at each checkpoint:
 
-- `01h.md`: first core-valid snapshot from +1.0 through +2.0 hours.
-- `03h.md`: first core-valid snapshot from +3.0 through +4.5 hours.
-- `24h.md`: first core-valid snapshot from +24.0 through +28.0 hours.
+- `01h.v2.md`: first core-valid snapshot from +1.0 through +2.0 hours.
+- `03h.v2.md`: first core-valid snapshot from +3.0 through +4.5 hours.
+- `24h.v2.md`: first core-valid snapshot from +24.0 through +28.0 hours.
+- `72h.v2.md`: first core-valid snapshot from +72.0 through +76.0 hours.
 
-Every file prints the actual observed age. A later lifetime total is never
-relabeled as an earlier checkpoint. If a window closes without a valid
-snapshot, the runner records `MISSED_CHECKPOINT`.
+Each platform prints its actual observed age from its own `published_at`. A
+later lifetime total is never relabeled as an earlier checkpoint.
+
+The runner treats the same full `(channel_id, content_hash)` as one logical
+Reel and supports two distribution modes:
+
+- `legacy_crosspost`: one Instagram media object supplies the historical
+  crosspost metrics.
+- `independent_dual_upload`: Instagram and Facebook have separate media
+  objects, publication clocks, snapshots, links, and deltas.
+
+Platform states are `NOT_STARTED`, `DUE`, `RECORDED`, `MISSED_CHECKPOINT`,
+`NOT_PUBLISHED`, or `MEDIA_ID_MISSING`. A v2 file is written only after every
+expected platform is terminal; `NOT_STARTED` and `DUE` remain retryable.
 
 ## Output folder
 
 ```text
 out/aibrief_jp_reel_learning/
-  YYYY-MM-DD/                   # actual publication date in JST
+  YYYY-MM-DD/                   # first actual platform publication date in JST
     HHMM_<content-hash-12>/
-      01h.md
-      03h.md
-      24h.md
+      01h.v2.md
+      03h.v2.md
+      24h.v2.md
+      72h.v2.md
 ```
 
-The files keep Instagram, Meta all-surface, Facebook, and explicit
-Instagram-plus-Facebook metrics separate. At +3h and +24h, the report includes
-deltas from the previous available frozen checkpoint.
+The directory identity is anchored to the first actual platform publication;
+snapshot selection and age calculations still use each platform's own clock.
+Existing legacy `01h.md`, `03h.md`, `24h.md`, and `72h.md` files are never
+overwritten.
+
+The report keeps Instagram and Facebook metrics in separate panels. For
+independent uploads it may show a clearly labeled sum of non-unique platform
+play events only when both counts exist. It never sums reach. For legacy
+crossposts, `crossposted_views` is already the aggregate and is never added to
+Instagram views. At +3h, +24h, and +72h, each platform includes deltas from its
+own previous available frozen checkpoint. The default 120-hour lookback is
+long enough to find a Reel throughout the +72h window.
+
+Each file also records whether the Reel launched as regular or Trial, its
+current Trial cohort, and its phase at capture. When a matching
+`trial_experiments` row exists, it adds the experiment id, case, state, asset
+family, parent media, and baseline/variant hooks. A Reel launched as Trial
+stays outside the regular performance baseline after graduation.
 
 ## Manual commands
 
 Preview current work without Graph calls or file writes:
 
 ```bash
-UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --dry-run
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --report-version 2 --dry-run
 ```
 
 Run the collector normally:
 
 ```bash
-UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --report-version 2
 ```
 
-Rebuild only from snapshots already in SQLite:
+Render still-missing files only from snapshots already in SQLite:
 
 ```bash
-UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --no-sync
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --report-version 2 --no-sync
 ```
 
-The normal runner calls `reel_scheduler.py sync-insights --media-id ...` only
-for the exact Reel identities with a checkpoint due. A run with no due
+Run the preserved Instagram-only formatter when a legacy v1 output is
+specifically required:
+
+```bash
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --report-version 1
+```
+
+V2 requires both `state/reels.db` and `state/facebook.db`, including when it is
+rendering historical crossposts. The normal runner calls
+`reel_scheduler.py sync-insights --media-id ...` only for exact platform media
+IDs with a checkpoint due, against the corresponding ledger. Independent
+Instagram requests omit the old crosspost metrics. A run with no due
 checkpoint performs no Graph request.
 
 ## Codex Scheduled task
 
 Create one standalone Scheduled task in **local-project mode** for
 `/Users/aiagent/GitHub/carousel-app`. Local mode is required because the task
-shares `state/reels.db`, the scheduler lock, and the `out/` journal with the
-publisher.
+shares `state/reels.db`, `state/facebook.db`, the scheduler lock, and the
+`out/` journal with the publisher.
 
 Use this advanced recurrence rule in Asia/Tokyo time:
 
 ```text
-RRULE:FREQ=DAILY;BYHOUR=0,9,10,12,13,14,16,18,19,21,22;BYMINUTE=30;BYSECOND=0
+RRULE:FREQ=DAILY;BYHOUR=0,9,10,12,13,14,15,16,18,19,21,22;BYMINUTE=30;BYSECOND=0
 ```
 
-The eleven runs cover all unique checkpoint times for the regular 09:00,
-13:00, 18:00, and 21:00 posting slots. The actual `published_at`, never the
-nominal slot, decides whether a checkpoint is due.
+The twelve runs cover all unique checkpoint times for the regular 09:00,
+13:00, 18:00, and 21:00 posting slots. The 15:30 run also covers the +3h
+window for manually published or jittered late-morning Trials such as
+`PILOT-000`. The runs revisit the same clock times three days later for +72h.
+The actual `published_at`, never the nominal slot, decides whether a checkpoint
+is due.
 
 ### Task prompt
 
@@ -77,37 +118,46 @@ Act as the AI Brief JP Reel checkpoint recorder in
 /Users/aiagent/GitHub/carousel-app.
 
 Run exactly:
-UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/run_aibrief_jp_reel_checkpoints.py --report-version 2
 
 This task is analytics-only. Never queue, reschedule, edit, render, delete,
 publish, or repost any content. The script may append exact-media insight
-snapshots to state/reels.db and write immutable checkpoint Markdown files only
-under out/aibrief_jp_reel_learning/.
+snapshots to state/reels.db and state/facebook.db and write immutable v2
+Markdown checkpoint files only under out/aibrief_jp_reel_learning/.
 
-If the command fails because Graph access is blocked by DNS/network sandboxing,
-retry the same exact command once with escalated network permission. Do not
-change arguments, do not use `--no-sync` to mask the failure, and do not
-fabricate checkpoints from later snapshots.
+If the command fails because Instagram or Facebook Graph access is blocked by
+DNS/network sandboxing, retry the same exact command once with escalated
+network permission. Do not change arguments, do not use `--no-sync` to mask
+the failure, and do not fabricate checkpoints from later snapshots.
 
-If the command records files, report their paths and whether they are +1h,
-+3h, +24h, or MISSED_CHECKPOINT. If nothing is due, say so briefly. If Graph
-access still fails after the retry or the scheduler lock prevents the run,
-report the exact error and do not fabricate a checkpoint from a later snapshot.
+If the command records files, report each path, its +1h, +3h, +24h, or +72h
+checkpoint, its distribution mode, and each platform checkpoint status:
+RECORDED, MISSED_CHECKPOINT, NOT_PUBLISHED, or MEDIA_ID_MISSING. If the runner
+is waiting on a DUE or NOT_STARTED platform, report that briefly. If nothing is
+due, say so briefly. If Graph access still fails after the retry or the
+scheduler lock prevents the run, report the exact error and do not fabricate a
+checkpoint from a later snapshot.
 ```
 
-The Scheduled task needs the same narrow Meta Graph access already used by the
-existing insight sync. Do not grant publishing permission for this analytics
-task.
+The Scheduled task needs Instagram Insights access plus Facebook Page Video
+Insights access. The Facebook Page token must be allowed to read insights for
+the Page (including the appropriate `read_insights` grant and Page task);
+publishing access alone is not sufficient.
 
 ## Interpretation rules
 
 - `EARLY_OBSERVATION` (+1h): baseline only; wait for +3h.
 - `EARLY_TRAJECTORY` (+3h): describe movement from +1h; wait for +24h.
 - `PROVISIONAL_24H` (+24h): suggest one future retest, then continue to the
-  existing 72–96-hour decision window.
+  +72-hour decision checkpoint.
+- `DECISION_READY_72H` (+72h): make a manual Trial graduate/stop decision and
+  preserve the launch cohort for later analytics.
 - Raw counts stay beside engagement rates. A high rate on small reach is not a
   broad-audience win.
 - Average watch divided by estimated duration is a diagnostic ratio, not a
   completion rate or retention curve.
-- Never add overlapping Instagram, Facebook, crossposted, or Meta all-surface
-  view metrics.
+- For independent uploads, a combined play count is non-unique and never a
+  reach estimate. Never sum reach or add Instagram all-surface/crosspost fields
+  to the separate Facebook object.
+- For legacy crossposts, never add the already-aggregated
+  `crossposted_views` to Instagram views.

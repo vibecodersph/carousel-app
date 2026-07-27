@@ -44,6 +44,19 @@ INSIGHT_DNS_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 SCHEDULE_VERSION = 1
 DEFAULT_TRIAL_GRADUATION_STRATEGY = "MANUAL"
 TRIAL_GRADUATION_STRATEGIES = {"MANUAL", "SS_PERFORMANCE"}
+TRIAL_CAPTION_MODES = {"preserve-parent", "rebuild"}
+TRIAL_DECISIONS = {"graduate", "stop"}
+TRIAL_DECISION_MIN_AGE_HOURS = 72.0
+TRIAL_DECISION_CHECKPOINT_MAX_AGE_HOURS = 76.0
+TRIAL_DECISION_CORE_METRICS = (
+    "views",
+    "reach",
+    "likes",
+    "comments",
+    "saved",
+    "shares",
+    "total_interactions",
+)
 
 
 @dataclass(frozen=True)
@@ -395,7 +408,13 @@ def occupied_slot_keys(
         if scheduled.tzinfo is None:
             scheduled = scheduled.replace(tzinfo=tz)
         local = scheduled.astimezone(tz)
-        occupied.add(slot_occupancy_key(local, slots, trial_reel=row_trial_enabled(row)))
+        is_trial = row_trial_enabled(row)
+        occupied.add(slot_occupancy_key(local, slots, trial_reel=is_trial))
+        # Explicit Trial conversions replace an ordinary publishing slot; they
+        # are not an extra lane. Mark the corresponding regular slot occupied
+        # as well so a later reflow cannot place a second Reel at that instant.
+        if is_trial:
+            occupied.add(slot_occupancy_key(local, slots, trial_reel=False))
     return occupied
 
 
@@ -730,16 +749,7 @@ def profile_hashtags(clip_dir: Path) -> list[str]:
     return list(PROFILE_HASHTAGS.get(selection_profile_for_clip(clip_dir), []))
 
 
-def caption_hashtags(channel: Channel, clip_dir: Path, notes: dict[str, Any], settings: dict[str, Any]) -> list[str]:
-    profile_tags = profile_hashtags(clip_dir)
-    hashtags = profile_tags if profile_tags else configured_hashtags(channel, settings)
-    searchable = " ".join(
-        note_text(notes, key).lower()
-        for key in ("one_liner", "one_liner_translated", "reason", "source_chapter", "transcript")
-    )
-    for needles, hashtag in TOPIC_HASHTAGS:
-        if any(needle in searchable for needle in needles):
-            hashtags.append(hashtag)
+def deduplicate_hashtags(hashtags: list[str]) -> list[str]:
     deduplicated: list[str] = []
     seen: set[str] = set()
     for hashtag in hashtags:
@@ -747,7 +757,105 @@ def caption_hashtags(channel: Channel, clip_dir: Path, notes: dict[str, Any], se
         if normalized not in seen:
             deduplicated.append(hashtag)
             seen.add(normalized)
-    return deduplicated[:8]
+    return deduplicated
+
+
+def caption_hashtags(channel: Channel, clip_dir: Path, notes: dict[str, Any], settings: dict[str, Any]) -> list[str]:
+    profile_tags = profile_hashtags(clip_dir)
+    configured = configured_hashtags(channel, settings)
+    searchable = " ".join(
+        note_text(notes, key).lower()
+        for key in ("one_liner", "one_liner_translated", "reason", "source_chapter", "transcript")
+    )
+    topic_tags: list[str] = []
+    for needles, hashtag in TOPIC_HASHTAGS:
+        if any(needle in searchable for needle in needles):
+            topic_tags.append(hashtag)
+
+    limit = int(settings.get("hashtag_limit") or 8)
+    required = settings.get("required_hashtags")
+    required_tags = (
+        [str(value).strip() for value in required if str(value).strip().startswith("#")]
+        if isinstance(required, list)
+        else []
+    )
+    if settings.get("prefer_topic_hashtags"):
+        hashtags = required_tags + profile_tags + topic_tags + configured
+    else:
+        hashtags = (profile_tags if profile_tags else configured) + topic_tags + required_tags
+    return deduplicate_hashtags(hashtags)[: max(0, limit)]
+
+
+def ass_dialogue_text(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    cues: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) != 10:
+            continue
+        text = re.sub(r"\{[^}]*\}", "", parts[-1])
+        text = text.replace(r"\N", "").replace(r"\n", "")
+        text = re.sub(r"\s+", " ", text).strip()
+        if text and (not cues or cues[-1] != text):
+            cues.append(text)
+    return cues
+
+
+def japanese_caption_excerpt(clip_dir: Path, *, max_chars: int = 180) -> str:
+    """Build a concise, grounded caption detail from the reel's Japanese cues."""
+    cues = ass_dialogue_text(clip_dir / "subtitles.ja.ass")
+    if not cues:
+        return ""
+    selected: list[str] = []
+    length = 0
+    for cue in cues:
+        if not re.search(r"[。！？!?]$", cue):
+            if cue.endswith("か"):
+                cue += "？"
+            elif re.search(
+                r"(?:ます|ません|です|でした|でしょう|だった|だ|ない|ある|いる|"
+                r"できる|できます|できません|ました|しない|される|られる)$",
+                cue,
+            ):
+                cue += "。"
+        if selected and length + len(cue) > max_chars:
+            break
+        selected.append(cue)
+        length += len(cue)
+        if length >= 95 and re.search(r"[。！？!?]$", cue):
+            break
+    excerpt = "".join(selected).strip()
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars].rstrip("、, ")
+        if not re.search(r"[。！？!?]$", excerpt):
+            excerpt += "。"
+    return excerpt
+
+
+def japanese_topic_takeaway(title: str, notes: dict[str, Any]) -> str:
+    searchable = " ".join(
+        [title]
+        + [
+            note_text(notes, key)
+            for key in ("one_liner", "one_liner_translated", "reason", "source_chapter")
+        ]
+    ).casefold()
+    if any(term in searchable for term in ("research", "science", "数学", "研究", "dna", "医療")):
+        return "AIが研究や専門職をどう変え始めているか、考える材料になる事例です。"
+    if any(term in searchable for term in ("military", "government", "軍事", "政府", "法律", "官僚")):
+        return "AIを社会でどう扱うべきか、技術だけでは終わらない論点です。"
+    if any(term in searchable for term in ("business", "startup", "netflix", "ビジネス", "企業", "市場")):
+        return "AIがプロダクトやビジネスに与える影響が見える事例です。"
+    if any(term in searchable for term in ("claude", "codex", "coding", "code", "開発", "エンジニア")):
+        return "AIを開発現場でどう使うか、その具体像が見える事例です。"
+    return "AIが現場や社会をどう変え始めているか、その具体像が見える事例です。"
 
 
 def build_caption(
@@ -763,20 +871,36 @@ def build_caption(
     title = title_override or clip_title(channel, clip_dir, notes)
     hashtags = caption_hashtags(channel, clip_dir, notes, settings)
     if channel.language_name.lower().startswith("japanese"):
-        context = setting_text(
-            settings,
-            "caption_context",
-            "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
-        )
+        if settings.get("caption_style") == "grounded_editorial":
+            detail = japanese_caption_excerpt(clip_dir)
+            context_blocks = [
+                detail
+                or setting_text(
+                    settings,
+                    "caption_context",
+                    "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
+                ),
+                japanese_topic_takeaway(title, notes),
+            ]
+        else:
+            context_blocks = [
+                setting_text(
+                    settings,
+                    "caption_context",
+                    "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
+                )
+            ]
         cta = setting_text(settings, "caption_cta", "気になったら保存して、あとで見返してください。")
     else:
-        context = setting_text(
-            settings,
-            "caption_context",
-            "A short look at what this means for people building with AI.",
-        )
+        context_blocks = [
+            setting_text(
+                settings,
+                "caption_context",
+                "A short look at what this means for people building with AI.",
+            )
+        ]
         cta = setting_text(settings, "caption_cta", "Save this reel to revisit later.")
-    blocks = [title, context, cta, " ".join(hashtags)]
+    blocks = [title, *context_blocks, cta, " ".join(hashtags)]
     if source_url:
         blocks.append(f"Source: {source_url}")
     caption = "\n\n".join(blocks)
@@ -1440,6 +1564,925 @@ def mark_manifest_unscheduled(manifest_path: Path) -> None:
     data.pop("instagram_trial_reel", None)
     data["schedule_status"] = reel_ledger.STATUS_SKIPPED
     write_json(manifest_path, data)
+
+
+def trial_changed_variables_json(
+    values: list[str] | None,
+    *,
+    defaults: tuple[str, ...],
+) -> str:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or list(defaults):
+        key = re.sub(r"\s+", "_", str(value or "").strip().lower())
+        if key and key not in seen:
+            normalized.append(key)
+            seen.add(key)
+    if not normalized:
+        raise SystemExit("At least one Trial changed variable is required")
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+def row_asset_family_id(row: Any) -> str:
+    source = str(row_value(row, "source_video") or "").strip()
+    clip_name = Path(str(row_value(row, "clip_dir") or "")).name
+    if source and clip_name:
+        return f"{source}/{clip_name}"
+    return source or clip_name or str(row_value(row, "content_hash") or "")
+
+
+def row_hook(row: Any) -> str:
+    title = re.sub(r"\s+", " ", str(row_value(row, "title") or "")).strip()
+    if title:
+        return title
+    manifest_path = Path(str(row_value(row, "manifest_path") or ""))
+    return manifest_title(manifest_path)
+
+
+def require_reel(
+    conn: sqlite3.Connection,
+    *,
+    content_hash: str,
+    channel_id: str,
+    role: str,
+) -> Any:
+    row = reel_ledger.get_reel(conn, content_hash.strip(), channel_id.strip())
+    if row is None:
+        raise SystemExit(
+            f"{role} reel not found in ledger: {channel_id}/{content_hash}"
+        )
+    return row
+
+
+def normalized_trial_strategy(value: str | None) -> str:
+    strategy = str(value or DEFAULT_TRIAL_GRADUATION_STRATEGY).strip().upper()
+    if strategy not in TRIAL_GRADUATION_STRATEGIES:
+        raise SystemExit(
+            f"Invalid Trial graduation strategy {strategy!r}; "
+            f"choose from {sorted(TRIAL_GRADUATION_STRATEGIES)}"
+        )
+    return strategy
+
+
+def trial_manifest_metadata(
+    *,
+    experiment_id: str,
+    case_type: str,
+    parent_content_hash: str | None,
+    parent_media_id: str | None,
+    asset_family_id: str,
+    baseline_hook: str | None,
+    variant_hook: str,
+    changed_variables_json: str,
+) -> dict[str, Any]:
+    return {
+        "experiment_id": experiment_id,
+        "case_type": case_type,
+        "parent_content_hash": parent_content_hash or "",
+        "parent_media_id": parent_media_id or "",
+        "asset_family_id": asset_family_id,
+        "baseline_hook": baseline_hook or "",
+        "variant_hook": variant_hook,
+        "changed_variables": json.loads(changed_variables_json),
+    }
+
+
+def update_manifest_for_trial(
+    manifest_path: Path,
+    *,
+    content_hash: str,
+    channel_id: str,
+    scheduled_at: str | None,
+    graduation_strategy: str,
+    experiment_metadata: dict[str, Any],
+) -> None:
+    if not manifest_path.is_file():
+        raise SystemExit(f"Trial manifest does not exist: {manifest_path}")
+    data = read_json(manifest_path)
+    if not isinstance(data, dict):
+        raise SystemExit(f"Trial manifest must contain a JSON object: {manifest_path}")
+    if scheduled_at:
+        data["scheduled_at"] = scheduled_at
+    data["source_type"] = f"trial_reel_{experiment_metadata['case_type']}"
+    data["instagram_trial_reel"] = {
+        "enabled": True,
+        "graduation_strategy": graduation_strategy,
+    }
+    data["reel_ledger"] = {
+        "content_hash": content_hash,
+        "channel_id": channel_id,
+    }
+    data["trial_experiment"] = experiment_metadata
+    data.pop("schedule_status", None)
+    write_json(manifest_path, data)
+
+
+def replace_manifest_caption(manifest_path: Path, caption: str) -> None:
+    """Keep a hook-only Trial's Instagram caption byte-for-byte equivalent."""
+    data = read_json(manifest_path)
+    if not isinstance(data, dict):
+        raise SystemExit(f"Trial manifest must contain a JSON object: {manifest_path}")
+    data["instagram_caption"] = caption
+    write_json(manifest_path, data)
+    manifest_path.with_name("caption.txt").write_text(
+        caption.rstrip("\n") + "\n",
+        encoding="utf-8",
+    )
+
+
+def return_scheduled_row_to_new(conn: sqlite3.Connection, row: Any) -> None:
+    manifest_path = Path(str(row_value(row, "manifest_path") or ""))
+    if manifest_path.is_file():
+        data = read_json(manifest_path)
+        if isinstance(data, dict):
+            data.pop("scheduled_at", None)
+            data.pop("instagram_trial_reel", None)
+            data.pop("trial_experiment", None)
+            data["schedule_status"] = reel_ledger.STATUS_NEW
+            write_json(manifest_path, data)
+    conn.execute(
+        "UPDATE reels SET status=?, scheduled_at=NULL, manifest_path=NULL, "
+        "trial_reel=0, trial_graduation_strategy=NULL, last_error=NULL, updated_at=? "
+        "WHERE content_hash=? AND channel_id=?",
+        (
+            reel_ledger.STATUS_NEW,
+            utc_now(),
+            row["content_hash"],
+            row["channel_id"],
+        ),
+    )
+
+
+def queue_trial_from_published(
+    *,
+    db_path: Path,
+    channel_id: str,
+    parent_content_hash: str,
+    replacement_content_hash: str,
+    media_path: Path,
+    experiment_id: str,
+    variant_hook: str,
+    asset_family_id: str | None,
+    changed_variables: list[str] | None,
+    graduation_strategy: str,
+    out_dir: Path,
+    apply: bool,
+    expected_scheduled_at: str | None = None,
+    caption_mode: str = "preserve-parent",
+) -> dict[str, Any]:
+    """Replace one exact queued row with a rerendered variant of a published Reel."""
+    channel_id = channel_id.strip()
+    experiment_id = experiment_id.strip()
+    variant_hook = re.sub(r"\s+", " ", variant_hook).strip()
+    if not channel_id or not experiment_id or not variant_hook:
+        raise SystemExit("--channel, --experiment-id, and --hook are required")
+    if caption_mode not in TRIAL_CAPTION_MODES:
+        raise SystemExit(
+            f"Invalid Trial caption mode {caption_mode!r}; "
+            f"choose from {sorted(TRIAL_CAPTION_MODES)}"
+        )
+    resolved_media = media_path.expanduser().resolve()
+    if not resolved_media.is_file():
+        raise SystemExit(f"Rerendered Trial media does not exist: {resolved_media}")
+    content_hash = reel_ledger.hash_file(resolved_media)
+    strategy = normalized_trial_strategy(graduation_strategy)
+    changed_json = trial_changed_variables_json(
+        changed_variables,
+        defaults=(
+            ("overlay_hook",)
+            if caption_mode == "preserve-parent"
+            else ("overlay_hook", "caption")
+        ),
+    )
+    if caption_mode == "preserve-parent" and "caption" in json.loads(changed_json):
+        raise SystemExit(
+            "--changed-variable caption conflicts with --caption-mode preserve-parent"
+        )
+    with reel_ledger.connect(db_path) as conn:
+        parent = require_reel(
+            conn,
+            content_hash=parent_content_hash,
+            channel_id=channel_id,
+            role="Parent",
+        )
+        displaced = require_reel(
+            conn,
+            content_hash=replacement_content_hash,
+            channel_id=channel_id,
+            role="Replacement target",
+        )
+        if str(parent["status"]) != reel_ledger.STATUS_PUBLISHED or not str(
+            parent["media_id"] or ""
+        ).strip():
+            raise SystemExit("Parent reel must be successfully published with a media_id")
+        if str(displaced["status"]) != reel_ledger.STATUS_SCHEDULED:
+            raise SystemExit("Replacement target must have status=scheduled")
+        if not str(displaced["scheduled_at"] or "").strip():
+            raise SystemExit("Replacement target has no scheduled_at timeslot")
+        scheduled_at = str(displaced["scheduled_at"]).strip()
+        if (
+            expected_scheduled_at is not None
+            and scheduled_at != expected_scheduled_at.strip()
+        ):
+            raise SystemExit(
+                "Replacement target timeslot changed after selection: "
+                f"expected {expected_scheduled_at.strip()!r}, actual {scheduled_at!r}"
+            )
+        parent_caption = str(parent["caption"] or "")
+        if caption_mode == "preserve-parent" and not parent_caption.strip():
+            raise SystemExit(
+                "Parent reel has no ledger caption to preserve; "
+                "use --caption-mode rebuild only after reviewing the expanded treatment"
+            )
+        if row_trial_enabled(displaced):
+            raise SystemExit("Replacement target is already a Trial Reel")
+        if reel_ledger.trial_experiment_for_reel(
+            conn,
+            str(displaced["content_hash"]),
+            channel_id,
+        ) is not None:
+            raise SystemExit("Replacement target is already linked to a Trial experiment")
+        if content_hash in {str(parent["content_hash"]), str(displaced["content_hash"])}:
+            raise SystemExit("Rerendered Trial media must have a distinct content hash")
+        existing_experiment = reel_ledger.get_trial_experiment(conn, experiment_id)
+        if existing_experiment is not None:
+            raise SystemExit(f"Trial experiment id already exists: {experiment_id}")
+        existing = reel_ledger.get_reel(conn, content_hash, channel_id)
+        if existing is not None and (
+            str(existing["status"]) != reel_ledger.STATUS_NEW
+            or str(existing["scheduled_at"] or "").strip()
+        ):
+            raise SystemExit(
+                "Rerendered Trial media is already scheduled or published in this channel"
+            )
+        family_id = (asset_family_id or row_asset_family_id(parent)).strip()
+        baseline_hook = row_hook(parent)
+        metadata = trial_manifest_metadata(
+            experiment_id=experiment_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or ""),
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+        )
+        preview = {
+            "action": "queue_trial_from_published",
+            "mode": "apply" if apply else "dry-run",
+            "experiment_id": experiment_id,
+            "channel_id": channel_id,
+            "content_hash": content_hash,
+            "parent_content_hash": str(parent["content_hash"]),
+            "displaced_content_hash": str(displaced["content_hash"]),
+            "scheduled_at": scheduled_at,
+            "media_path": str(resolved_media),
+            "graduation_strategy": strategy,
+            "caption_mode": caption_mode,
+            "trial_experiment": metadata,
+        }
+        if not apply:
+            return preview
+
+        reel_ledger.upsert_discovered(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            lang=str(parent["lang"] or "") or None,
+            clip_dir=str(parent["clip_dir"]),
+            media_path=resolved_media,
+            source_video=str(parent["source_video"] or "") or None,
+            title=variant_hook,
+        )
+        trial_row = require_reel(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            role="Rerendered Trial",
+        )
+        scheduled = parse_datetime(scheduled_at, DEFAULT_TIMEZONE)
+        manifest_path, caption, title = write_ledger_manifest(
+            row=trial_row,
+            channel=load_channel(channel_id),
+            scheduled_at=scheduled,
+            out_dir=out_dir,
+            trial_reel=True,
+            trial_graduation_strategy=strategy,
+        )
+        update_manifest_for_trial(
+            manifest_path,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            scheduled_at=scheduled_at,
+            graduation_strategy=strategy,
+            experiment_metadata=metadata,
+        )
+        if caption_mode == "preserve-parent":
+            caption = parent_caption
+            replace_manifest_caption(manifest_path, caption)
+        reel_ledger.set_status(
+            conn,
+            content_hash,
+            channel_id,
+            reel_ledger.STATUS_SCHEDULED,
+            scheduled_at=scheduled_at,
+            manifest_path=str(manifest_path),
+            caption=caption,
+            title=title,
+            trial_reel=1,
+            trial_graduation_strategy=strategy,
+            last_error=None,
+        )
+        reel_ledger.upsert_trial_experiment(
+            conn,
+            experiment_id=experiment_id,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or "") or None,
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook or None,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+            state=reel_ledger.TRIAL_STATE_SCHEDULED,
+            displaced_content_hash=str(displaced["content_hash"]),
+            scheduled_at=scheduled_at,
+        )
+        return_scheduled_row_to_new(conn, displaced)
+        preview["manifest_path"] = str(manifest_path)
+        return preview
+
+
+def convert_scheduled_reel_to_trial(
+    *,
+    db_path: Path,
+    channel_id: str,
+    content_hash: str,
+    experiment_id: str,
+    hook: str | None,
+    asset_family_id: str | None,
+    changed_variables: list[str] | None,
+    graduation_strategy: str,
+    apply: bool,
+    expected_scheduled_at: str | None = None,
+) -> dict[str, Any]:
+    """Convert one exact scheduled Instagram row in place, preserving its slot."""
+    strategy = normalized_trial_strategy(graduation_strategy)
+    changed_json = trial_changed_variables_json(
+        changed_variables,
+        defaults=("distribution_mode",),
+    )
+    with reel_ledger.connect(db_path) as conn:
+        row = require_reel(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            role="Scheduled",
+        )
+        if str(row["status"]) != reel_ledger.STATUS_SCHEDULED:
+            raise SystemExit("Trial conversion target must have status=scheduled")
+        if row_trial_enabled(row):
+            raise SystemExit("Trial conversion target is already a Trial Reel")
+        scheduled_at = str(row["scheduled_at"] or "").strip()
+        if not scheduled_at:
+            raise SystemExit("Trial conversion target has no scheduled_at timeslot")
+        if (
+            expected_scheduled_at is not None
+            and scheduled_at != expected_scheduled_at.strip()
+        ):
+            raise SystemExit(
+                "Trial conversion target timeslot changed after selection: "
+                f"expected {expected_scheduled_at.strip()!r}, actual {scheduled_at!r}"
+            )
+        manifest_path = Path(str(row["manifest_path"] or ""))
+        if not manifest_path.is_file():
+            raise SystemExit(f"Trial conversion manifest does not exist: {manifest_path}")
+        baseline_hook = row_hook(row)
+        variant_hook = re.sub(r"\s+", " ", str(hook or baseline_hook)).strip()
+        if not variant_hook:
+            raise SystemExit("--hook is required when the queued row has no title")
+        family_id = (asset_family_id or row_asset_family_id(row)).strip()
+        metadata = trial_manifest_metadata(
+            experiment_id=experiment_id,
+            case_type=reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
+            parent_content_hash=None,
+            parent_media_id=None,
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+        )
+        preview = {
+            "action": "convert_scheduled_reel_to_trial",
+            "mode": "apply" if apply else "dry-run",
+            "experiment_id": experiment_id,
+            "channel_id": channel_id,
+            "content_hash": str(row["content_hash"]),
+            "scheduled_at": scheduled_at,
+            "manifest_path": str(manifest_path),
+            "graduation_strategy": strategy,
+            "trial_experiment": metadata,
+        }
+        if not apply:
+            return preview
+        reel_ledger.upsert_trial_experiment(
+            conn,
+            experiment_id=experiment_id,
+            content_hash=str(row["content_hash"]),
+            channel_id=channel_id,
+            case_type=reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
+            parent_content_hash=None,
+            parent_media_id=None,
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook or None,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+            state=reel_ledger.TRIAL_STATE_SCHEDULED,
+            scheduled_at=scheduled_at,
+        )
+        reel_ledger.set_status(
+            conn,
+            str(row["content_hash"]),
+            channel_id,
+            reel_ledger.STATUS_SCHEDULED,
+            trial_reel=1,
+            trial_graduation_strategy=strategy,
+            last_error=None,
+        )
+        update_manifest_for_trial(
+            manifest_path,
+            content_hash=str(row["content_hash"]),
+            channel_id=channel_id,
+            scheduled_at=scheduled_at,
+            graduation_strategy=strategy,
+            experiment_metadata=metadata,
+        )
+        return preview
+
+
+def register_published_trial(
+    *,
+    db_path: Path,
+    channel_id: str,
+    manifest_path: Path,
+    report_path: Path,
+    experiment_id: str,
+    parent_content_hash: str,
+    baseline_hook: str | None,
+    variant_hook: str | None,
+    asset_family_id: str | None,
+    changed_variables: list[str] | None,
+    published_at: str | None,
+    apply: bool,
+) -> dict[str, Any]:
+    """Backfill an already-published Trial so checkpoints can discover it."""
+    resolved_manifest = manifest_path.expanduser().resolve()
+    resolved_report = report_path.expanduser().resolve()
+    manifest_data = read_json(resolved_manifest)
+    report_data = read_json(resolved_report)
+    if not isinstance(manifest_data, dict) or not isinstance(report_data, dict):
+        raise SystemExit("Trial manifest and publish report must both be JSON objects")
+    manifest_channel = str(manifest_data.get("channel_id") or "").strip()
+    if manifest_channel and manifest_channel != channel_id:
+        raise SystemExit(
+            f"Manifest channel {manifest_channel!r} does not match --channel {channel_id!r}"
+        )
+    trial_settings = manifest_data.get("instagram_trial_reel")
+    if not isinstance(trial_settings, dict) or not bool(trial_settings.get("enabled")):
+        raise SystemExit("Manifest is not marked as an Instagram Trial Reel")
+    if not bool(report_data.get("trial_reel")):
+        raise SystemExit("Publish report does not confirm trial_reel=true")
+    media_id, permalink = report_publish_identity(resolved_report)
+    if not media_id:
+        raise SystemExit("Publish report has no published media id")
+    slides = (
+        manifest_data.get("slides")
+        if isinstance(manifest_data.get("slides"), list)
+        else []
+    )
+    if (
+        len(slides) != 1
+        or not isinstance(slides[0], dict)
+        or str(slides[0].get("type") or "").strip().lower() != "video"
+    ):
+        raise SystemExit("Published Trial manifest must contain exactly one video slide")
+    media_path = manifest_media_path(manifest_data)
+    if media_path is None:
+        raise SystemExit("Trial manifest has no video media path")
+    media_path = media_path.expanduser().resolve()
+    if not media_path.is_file():
+        raise SystemExit(f"Published Trial media does not exist locally: {media_path}")
+    content_hash = reel_ledger.hash_file(media_path)
+    strategy = normalized_trial_strategy(str(trial_settings.get("graduation_strategy") or ""))
+    report_created_at = str(report_data.get("created_at") or "").strip()
+    publish_time = str(published_at or report_created_at or utc_now()).strip()
+    parse_datetime(publish_time, DEFAULT_TIMEZONE)
+    trial_retest = (
+        manifest_data.get("trial_retest")
+        if isinstance(manifest_data.get("trial_retest"), dict)
+        else {}
+    )
+    inferred_variant = str(
+        variant_hook
+        or trial_retest.get("new_hook")
+        or manifest_data.get("topic")
+        or manifest_title(resolved_manifest)
+    )
+    changed_json = trial_changed_variables_json(
+        changed_variables,
+        defaults=("overlay_hook", "caption"),
+    )
+    with reel_ledger.connect(db_path) as conn:
+        parent = require_reel(
+            conn,
+            content_hash=parent_content_hash,
+            channel_id=channel_id,
+            role="Parent",
+        )
+        if str(parent["status"]) != reel_ledger.STATUS_PUBLISHED:
+            raise SystemExit("Parent reel must have status=published")
+        existing = reel_ledger.get_reel(conn, content_hash, channel_id)
+        if existing is not None and str(existing["media_id"] or "") not in {"", media_id}:
+            raise SystemExit("Trial media hash is already linked to a different media id")
+        family_id = (asset_family_id or row_asset_family_id(parent)).strip()
+        base_hook = str(baseline_hook or row_hook(parent)).strip()
+        metadata = trial_manifest_metadata(
+            experiment_id=experiment_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or ""),
+            asset_family_id=family_id,
+            baseline_hook=base_hook,
+            variant_hook=inferred_variant,
+            changed_variables_json=changed_json,
+        )
+        preview = {
+            "action": "register_published_trial",
+            "mode": "apply" if apply else "dry-run",
+            "experiment_id": experiment_id,
+            "channel_id": channel_id,
+            "content_hash": content_hash,
+            "media_id": media_id,
+            "permalink": permalink,
+            "published_at": publish_time,
+            "manifest_path": str(resolved_manifest),
+            "trial_experiment": metadata,
+        }
+        if not apply:
+            return preview
+        reel_ledger.upsert_imported(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            lang=str(parent["lang"] or "") or None,
+            clip_dir=str(parent["clip_dir"]),
+            media_path=str(media_path),
+            source_video=str(parent["source_video"] or "") or None,
+            title=inferred_variant,
+            status=reel_ledger.STATUS_PUBLISHED,
+            scheduled_at=str(manifest_data.get("scheduled_at") or publish_time),
+            published_at=publish_time,
+            media_id=media_id,
+            permalink=permalink or None,
+            manifest_path=str(resolved_manifest),
+        )
+        reel_ledger.set_status(
+            conn,
+            content_hash,
+            channel_id,
+            reel_ledger.STATUS_PUBLISHED,
+            scheduled_at=str(manifest_data.get("scheduled_at") or publish_time),
+            published_at=publish_time,
+            media_id=media_id,
+            permalink=permalink or None,
+            manifest_path=str(resolved_manifest),
+            caption=str(manifest_data.get("instagram_caption") or "") or None,
+            title=inferred_variant,
+            trial_reel=1,
+            trial_graduation_strategy=strategy,
+            last_error=None,
+        )
+        reel_ledger.upsert_trial_experiment(
+            conn,
+            experiment_id=experiment_id,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or "") or None,
+            asset_family_id=family_id,
+            baseline_hook=base_hook or None,
+            variant_hook=inferred_variant,
+            changed_variables_json=changed_json,
+            state=reel_ledger.TRIAL_STATE_ACTIVE,
+            scheduled_at=str(manifest_data.get("scheduled_at") or publish_time),
+            published_at=publish_time,
+        )
+        update_manifest_for_trial(
+            resolved_manifest,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            scheduled_at=str(manifest_data.get("scheduled_at") or publish_time),
+            graduation_strategy=strategy,
+            experiment_metadata=metadata,
+        )
+        return preview
+
+
+def parse_trial_decision_datetime(value: Any, *, field: str) -> datetime:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit(f"{field} must be an ISO 8601 timestamp with an offset") from exc
+    if parsed.tzinfo is None:
+        raise SystemExit(f"{field} must include a timezone offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def trial_decision_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    content_hash: str,
+    channel_id: str,
+    media_id: str,
+    published_at: datetime,
+    decision_at: datetime,
+) -> dict[str, Any] | None:
+    """Return the same core-valid snapshot accepted by the immutable +72h job."""
+    rows = conn.execute(
+        "SELECT * FROM insights WHERE content_hash=? AND channel_id=? AND media_id=? "
+        "ORDER BY captured_at, id",
+        (content_hash, channel_id, media_id),
+    ).fetchall()
+    candidates: list[tuple[datetime, int, dict[str, Any]]] = []
+    for row in rows:
+        try:
+            captured_at = parse_trial_decision_datetime(
+                row["captured_at"],
+                field="insights.captured_at",
+            )
+        except SystemExit:
+            continue
+        if captured_at > decision_at:
+            continue
+        age_hours = (captured_at - published_at).total_seconds() / 3600
+        if not (
+            TRIAL_DECISION_MIN_AGE_HOURS
+            <= age_hours
+            <= TRIAL_DECISION_CHECKPOINT_MAX_AGE_HOURS
+        ):
+            continue
+        metrics = latest_insight_metrics(row)
+        if not all(
+            isinstance(metrics.get(name), (int, float))
+            and not isinstance(metrics.get(name), bool)
+            and float(metrics[name]) >= 0
+            for name in TRIAL_DECISION_CORE_METRICS
+        ):
+            continue
+        checkpoint = {
+            "insight_id": int(row["id"]),
+            "captured_at": captured_at.replace(microsecond=0).isoformat(),
+            "age_hours": round(age_hours, 3),
+        }
+        candidates.append((captured_at, int(row["id"]), checkpoint))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def decide_trial_experiment(
+    *,
+    db_path: Path,
+    experiment_id: str,
+    decision: str,
+    reason: str,
+    apply: bool,
+    override_72h_checkpoint_and_age: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Record one terminal Trial decision after its +72h evidence checkpoint."""
+    experiment_id = experiment_id.strip()
+    normalized_decision = decision.strip().lower()
+    normalized_reason = reason.strip()
+    if not experiment_id:
+        raise SystemExit("--experiment-id is required")
+    if normalized_decision not in TRIAL_DECISIONS:
+        raise SystemExit(
+            f"Invalid Trial decision {decision!r}; choose from {sorted(TRIAL_DECISIONS)}"
+        )
+    if not normalized_reason:
+        raise SystemExit("--reason must contain the operator's decision rationale")
+    decision_at = now or datetime.now(timezone.utc)
+    if decision_at.tzinfo is None:
+        raise SystemExit("Trial decision time must include a timezone offset")
+    decision_at = decision_at.astimezone(timezone.utc).replace(microsecond=0)
+    decision_at_text = decision_at.isoformat()
+    target_state = (
+        reel_ledger.TRIAL_STATE_GRADUATED
+        if normalized_decision == "graduate"
+        else reel_ledger.TRIAL_STATE_STOPPED
+    )
+    target_timestamp_field = (
+        "graduated_at" if normalized_decision == "graduate" else "stopped_at"
+    )
+
+    with reel_ledger.connect(db_path) as conn:
+        experiment = reel_ledger.get_trial_experiment(conn, experiment_id)
+        if experiment is None:
+            raise SystemExit(f"Trial experiment not found: {experiment_id}")
+
+        current_state = str(experiment["state"] or "").strip().lower()
+        existing_decision = str(experiment["decision"] or "").strip().lower()
+        existing_reason = str(experiment["decision_reason"] or "").strip()
+        existing_decision_at = str(experiment["decision_at"] or "").strip()
+        existing_target_at = str(experiment[target_timestamp_field] or "").strip()
+        other_timestamp_field = (
+            "stopped_at" if target_timestamp_field == "graduated_at" else "graduated_at"
+        )
+        existing_other_at = str(experiment[other_timestamp_field] or "").strip()
+        is_exact_repeat = (
+            current_state == target_state
+            and existing_decision == normalized_decision
+            and existing_reason == normalized_reason
+            and bool(existing_decision_at)
+            and existing_decision_at == existing_target_at
+            and not existing_other_at
+        )
+        if is_exact_repeat:
+            return {
+                "action": "decide_trial_experiment",
+                "mode": "already-applied",
+                "idempotent": True,
+                "experiment_id": experiment_id,
+                "decision": normalized_decision,
+                "reason": normalized_reason,
+                "previous_state": current_state,
+                "target_state": target_state,
+                "decision_at": existing_decision_at,
+                target_timestamp_field: existing_target_at,
+            }
+        terminal_states = {
+            reel_ledger.TRIAL_STATE_GRADUATED,
+            reel_ledger.TRIAL_STATE_STOPPED,
+            reel_ledger.TRIAL_STATE_FAILED,
+        }
+        if (
+            current_state in terminal_states
+            or existing_decision
+            or existing_reason
+            or existing_decision_at
+            or str(experiment["graduated_at"] or "").strip()
+            or str(experiment["stopped_at"] or "").strip()
+        ):
+            raise SystemExit(
+                f"Trial experiment {experiment_id} already has a terminal or "
+                "conflicting decision; refusing to overwrite it"
+            )
+        if current_state != reel_ledger.TRIAL_STATE_ACTIVE:
+            raise SystemExit(
+                f"Trial experiment {experiment_id} must be active before a decision; "
+                f"current state is {current_state!r}"
+            )
+
+        content_hash = str(experiment["content_hash"])
+        channel_id = str(experiment["channel_id"])
+        reel = reel_ledger.get_reel(conn, content_hash, channel_id)
+        if reel is None:
+            raise SystemExit(
+                f"Trial experiment {experiment_id} has no linked Reel ledger row"
+            )
+        if (
+            str(reel["status"]) != reel_ledger.STATUS_PUBLISHED
+            or not int(reel["trial_reel"] or 0)
+        ):
+            raise SystemExit(
+                f"Trial experiment {experiment_id} must link to a published Trial Reel"
+            )
+
+        published_at_text = str(
+            experiment["published_at"] or reel["published_at"] or ""
+        ).strip()
+        published_at: datetime | None = None
+        published_at_error = ""
+        if published_at_text:
+            try:
+                published_at = parse_trial_decision_datetime(
+                    published_at_text,
+                    field="published_at",
+                )
+            except SystemExit as exc:
+                published_at_error = str(exc)
+        else:
+            published_at_error = "published_at is missing"
+
+        age_hours: float | None = None
+        checkpoint: dict[str, Any] | None = None
+        if published_at is not None:
+            age_hours = (decision_at - published_at).total_seconds() / 3600
+            media_id = str(reel["media_id"] or "").strip()
+            if media_id:
+                checkpoint = trial_decision_checkpoint(
+                    conn,
+                    content_hash=content_hash,
+                    channel_id=channel_id,
+                    media_id=media_id,
+                    published_at=published_at,
+                    decision_at=decision_at,
+                )
+
+        if not override_72h_checkpoint_and_age:
+            if published_at is None:
+                raise SystemExit(
+                    f"Trial decision requires a valid publish time: {published_at_error}; "
+                    "use --override-72h-checkpoint-and-age only for an audited exception"
+                )
+            assert age_hours is not None
+            if age_hours < TRIAL_DECISION_MIN_AGE_HOURS:
+                raise SystemExit(
+                    "Trial decision requires the Reel to be at least 72 hours old; "
+                    f"current age is {age_hours:.2f}h. "
+                    "Use --override-72h-checkpoint-and-age only for an audited exception"
+                )
+            if checkpoint is None:
+                raise SystemExit(
+                    "Trial decision requires a core-valid +72h insight checkpoint "
+                    "captured in the 72–76h window. "
+                    "Use --override-72h-checkpoint-and-age only for an audited exception"
+                )
+
+        preview = {
+            "action": "decide_trial_experiment",
+            "mode": "apply" if apply else "dry-run",
+            "idempotent": False,
+            "experiment_id": experiment_id,
+            "content_hash": content_hash,
+            "channel_id": channel_id,
+            "decision": normalized_decision,
+            "reason": normalized_reason,
+            "previous_state": current_state,
+            "target_state": target_state,
+            "decision_at": decision_at_text,
+            "published_at": (
+                published_at.replace(microsecond=0).isoformat()
+                if published_at is not None
+                else published_at_text
+            ),
+            "age_hours": round(age_hours, 3) if age_hours is not None else None,
+            "checkpoint_72h": checkpoint,
+            "override_72h_checkpoint_and_age": override_72h_checkpoint_and_age,
+        }
+        if not apply:
+            return preview
+
+        graduated_at = (
+            decision_at_text if target_state == reel_ledger.TRIAL_STATE_GRADUATED else None
+        )
+        stopped_at = (
+            decision_at_text if target_state == reel_ledger.TRIAL_STATE_STOPPED else None
+        )
+        cursor = conn.execute(
+            "UPDATE trial_experiments SET state=?, decision=?, decision_reason=?, "
+            "decision_at=?, graduated_at=?, stopped_at=?, updated_at=? "
+            "WHERE experiment_id=? AND state=? AND decision IS NULL "
+            "AND decision_reason IS NULL AND decision_at IS NULL "
+            "AND graduated_at IS NULL AND stopped_at IS NULL",
+            (
+                target_state,
+                normalized_decision,
+                normalized_reason,
+                decision_at_text,
+                graduated_at,
+                stopped_at,
+                decision_at_text,
+                experiment_id,
+                reel_ledger.TRIAL_STATE_ACTIVE,
+            ),
+        )
+        if cursor.rowcount != 1:
+            latest = reel_ledger.get_trial_experiment(conn, experiment_id)
+            if latest is not None and (
+                str(latest["state"] or "").strip().lower() == target_state
+                and str(latest["decision"] or "").strip().lower()
+                == normalized_decision
+                and str(latest["decision_reason"] or "").strip()
+                == normalized_reason
+                and str(latest["decision_at"] or "").strip()
+                == str(latest[target_timestamp_field] or "").strip()
+                and not str(latest[other_timestamp_field] or "").strip()
+            ):
+                preview["mode"] = "already-applied"
+                preview["idempotent"] = True
+                preview["decision_at"] = str(latest["decision_at"] or "")
+                return preview
+            raise SystemExit(
+                f"Trial experiment {experiment_id} changed while the decision was "
+                "being recorded; inspect it and retry"
+            )
+        preview[target_timestamp_field] = decision_at_text
+        return preview
 
 
 def rebuilt_caption_for_row(row: Any, settings_key: str) -> tuple[str, list[str], str]:
@@ -2824,7 +3867,7 @@ def make_queue_ui_handler(
                             db=db_path,
                             limit=None,
                             dry_run=False,
-                            metrics=",".join(INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS),
+                            metrics="",
                             access_token="",
                             graph_api_version="",
                             graph_api_root="",
@@ -3000,7 +4043,8 @@ def reflow_queue_rows(
             eligible_rows = [
                 row
                 for row in by_channel[channel_id]
-                if (parse_row_datetime(row["scheduled_at"], timezone_name) or start_at) >= start_at
+                if not row_trial_enabled(row)
+                and (parse_row_datetime(row["scheduled_at"], timezone_name) or start_at) >= start_at
             ]
             channel_rows = round_robin_sources(eligible_rows)
             queue_hashes = {str(row["content_hash"]) for row in channel_rows}
@@ -3129,7 +4173,7 @@ def alternate_source_queue_rows(
             queued_rows = [
                 row
                 for row in conn.execute(queued_query, queued_params).fetchall()
-                if row_is_after(row, boundary)
+                if row_is_after(row, boundary) and not row_trial_enabled(row)
             ]
             queued_rows.sort(key=row_chronological_key)
             if not queued_rows:
@@ -3209,7 +4253,7 @@ def alternate_source_queue_rows(
             queued_rows = [
                 row
                 for row in conn.execute(queued_query, queued_params).fetchall()
-                if row_is_after(row, boundary)
+                if row_is_after(row, boundary) and not row_trial_enabled(row)
             ]
             queued_rows.sort(key=row_chronological_key)
             if not queued_rows:
@@ -3421,6 +4465,22 @@ def run_due_ledger(
 
 def parse_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    for name, value in insight_payload_values(payload).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        numeric = float(value)
+        metrics[name] = int(numeric) if numeric.is_integer() else numeric
+    return metrics
+
+
+def insight_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the latest raw value for every Graph insight metric.
+
+    Instagram metrics are generally numeric. Facebook Video Insights also
+    returns nested reaction/social-action mappings, so callers that need those
+    values must see the untouched object rather than the numeric-only parser.
+    """
+    values_by_name: dict[str, Any] = {}
     data = payload.get("data") if isinstance(payload.get("data"), list) else []
     for item in data:
         if not isinstance(item, dict):
@@ -3433,10 +4493,109 @@ def parse_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         value = latest.get("value") if isinstance(latest, dict) else None
         if value is None and isinstance(item.get("total_value"), dict):
             value = item["total_value"].get("value")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        numeric = float(value)
-        metrics[name] = int(numeric) if numeric.is_integer() else numeric
+        if value is not None:
+            values_by_name[name] = value
+    return values_by_name
+
+
+def numeric_metric_value(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return int(numeric) if numeric.is_integer() else numeric
+
+
+def nested_numeric_total(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return numeric_metric_value(value)
+    if not isinstance(value, dict):
+        return None
+    numbers = [
+        number
+        for nested in value.values()
+        if (number := nested_numeric_total(nested)) is not None
+    ]
+    if not numbers:
+        return None
+    return numeric_metric_value(sum(float(number) for number in numbers))
+
+
+def facebook_social_action(
+    value: Any,
+    *names: str,
+) -> int | float | None:
+    if not isinstance(value, dict):
+        return None
+    aliases = {name.casefold() for name in names}
+    matches = [
+        number
+        for key, nested in value.items()
+        if str(key).casefold() in aliases
+        and (number := nested_numeric_total(nested)) is not None
+    ]
+    return numeric_metric_value(sum(float(number) for number in matches)) if matches else None
+
+
+def facebook_reel_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Facebook Reel metrics while retaining platform-native keys."""
+    raw_values = insight_payload_values(payload)
+    metrics: dict[str, Any] = {}
+    for name in (
+        "fb_reels_total_plays",
+        "blue_reels_play_count",
+        "fb_reels_replay_count",
+        "post_total_media_view_unique",
+        "total_video_impressions_unique",
+        "post_impressions_unique",
+        "post_video_avg_time_watched",
+        "post_video_followers",
+        "post_video_view_time",
+    ):
+        value = numeric_metric_value(raw_values.get(name))
+        if value is not None:
+            metrics[name] = value
+
+    reactions_raw = raw_values.get("post_video_likes_by_reaction_type")
+    reactions = (
+        nested_numeric_total(reactions_raw)
+        if isinstance(reactions_raw, dict)
+        else numeric_metric_value(reactions_raw)
+    )
+    social = raw_values.get("post_video_social_actions")
+    comments = facebook_social_action(social, "comment", "comments")
+    shares = facebook_social_action(social, "share", "shares")
+
+    aliases = {
+        "views": metrics.get("fb_reels_total_plays"),
+        "reach": next(
+            (
+                metrics.get(name)
+                for name in (
+                    "post_total_media_view_unique",
+                    "total_video_impressions_unique",
+                    "post_impressions_unique",
+                )
+                if metrics.get(name) is not None
+            ),
+            None,
+        ),
+        "likes": reactions,
+        "comments": comments,
+        "shares": shares,
+        "ig_reels_avg_watch_time": metrics.get("post_video_avg_time_watched"),
+        "ig_reels_video_view_total_time": metrics.get("post_video_view_time"),
+        "clips_replays_count": metrics.get("fb_reels_replay_count"),
+        "follows": metrics.get("post_video_followers"),
+    }
+    for name, value in aliases.items():
+        if value is not None:
+            metrics[name] = value
+    if all(metrics.get(name) is not None for name in ("likes", "comments", "shares")):
+        metrics["total_interactions"] = numeric_metric_value(
+            float(metrics["likes"]) + float(metrics["comments"]) + float(metrics["shares"])
+        )
     return metrics
 
 
@@ -3447,6 +4606,9 @@ def fetch_insights(
     access_token: str,
     graph_version: str,
     graph_api_root: str,
+    edge: str = "insights",
+    api_name: str = "Instagram",
+    period: str = "",
 ) -> dict[str, Any]:
     import instagram_publish
 
@@ -3454,7 +4616,10 @@ def fetch_insights(
         "access_token": access_token,
         "graph_version": graph_version,
         "graph_api_root": graph_api_root,
-        "params": {"metric": ",".join(metrics)},
+        "params": {
+            "metric": ",".join(metrics),
+            **({"period": period} if period else {}),
+        },
         "method": "GET",
         "timeout": 30,
     }
@@ -3462,7 +4627,11 @@ def fetch_insights(
         if delay:
             time_module.sleep(delay)
         try:
-            return instagram_publish.graph_request(f"{media_id}/insights", **request)
+            return instagram_publish.graph_request(
+                f"{media_id}/{edge}",
+                api_name=api_name,
+                **request,
+            )
         except SystemExit as exc:
             message = str(exc)
             dns_failure = any(
@@ -3482,6 +4651,26 @@ def fetch_insights(
                 flush=True,
             )
     raise AssertionError("unreachable")
+
+
+def fetch_facebook_video_insights(
+    *,
+    video_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    return fetch_insights(
+        media_id=video_id,
+        metrics=metrics,
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        edge="video_insights",
+        api_name="Facebook",
+        period="lifetime",
+    )
 
 
 def merge_insight_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3580,6 +4769,70 @@ def fetch_instagram_insights_resilient(
     return merged, warnings
 
 
+def fetch_facebook_insights_resilient(
+    *,
+    video_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Fetch the required Facebook play count and isolate optional metrics."""
+    try:
+        return (
+            fetch_facebook_video_insights(
+                video_id=video_id,
+                metrics=metrics,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            ),
+            [],
+        )
+    except SystemExit:
+        optional = [
+            metric
+            for metric in metrics
+            if metric not in FACEBOOK_CORE_INSIGHT_METRIC_KEYS
+        ]
+        if not optional:
+            raise
+
+    core = [
+        metric for metric in metrics if metric in FACEBOOK_CORE_INSIGHT_METRIC_KEYS
+    ]
+    payloads: list[dict[str, Any]] = []
+    if core:
+        payloads.append(
+            fetch_facebook_video_insights(
+                video_id=video_id,
+                metrics=core,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        )
+
+    warnings: list[str] = []
+    for metric in optional:
+        try:
+            payloads.append(
+                fetch_facebook_video_insights(
+                    video_id=video_id,
+                    metrics=[metric],
+                    access_token=access_token,
+                    graph_version=graph_version,
+                    graph_api_root=graph_api_root,
+                )
+            )
+        except SystemExit as exc:
+            warnings.append(f"{metric}: {exc}")
+    merged = merge_insight_payloads(payloads)
+    if warnings:
+        merged["optional_metric_errors"] = warnings
+    return merged, warnings
+
+
 INSIGHT_METRIC_KEYS = (
     "views",
     "total_views",
@@ -3630,6 +4883,22 @@ INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS = (
 INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
     *INSTAGRAM_CORE_INSIGHT_METRIC_KEYS,
     *INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS,
+)
+FACEBOOK_CORE_INSIGHT_METRIC_KEYS = ("fb_reels_total_plays",)
+FACEBOOK_OPTIONAL_INSIGHT_METRIC_KEYS = (
+    "blue_reels_play_count",
+    "fb_reels_replay_count",
+    "post_total_media_view_unique",
+    "total_video_impressions_unique",
+    "post_video_avg_time_watched",
+    "post_video_followers",
+    "post_video_view_time",
+    "post_video_likes_by_reaction_type",
+    "post_video_social_actions",
+)
+FACEBOOK_INSIGHT_REQUEST_METRIC_KEYS = (
+    *FACEBOOK_CORE_INSIGHT_METRIC_KEYS,
+    *FACEBOOK_OPTIONAL_INSIGHT_METRIC_KEYS,
 )
 DEFAULT_REPORT_SYNC_ACTION_URL = (
     f"http://{DEFAULT_QUEUE_UI_HOST}:{DEFAULT_QUEUE_UI_PORT}/sync-insights"
@@ -4639,6 +5908,151 @@ def build_parser() -> argparse.ArgumentParser:
     plan_ledger.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this plan")
     plan_ledger.add_argument("--no-scan", action="store_true", help="Plan existing new ledger rows only")
 
+    trial_from_published = subparsers.add_parser(
+        "trial-from-published",
+        help="Replace one exact scheduled row with a rerendered Trial of a published Reel",
+    )
+    trial_from_published.add_argument("--channel", required=True, help="Instagram channel id")
+    trial_from_published.add_argument("--parent-content-hash", required=True)
+    trial_from_published.add_argument(
+        "--replace-content-hash",
+        required=True,
+        help="Exact scheduled row whose timeslot the Trial will take",
+    )
+    trial_from_published.add_argument("--media-path", type=Path, required=True)
+    trial_from_published.add_argument("--experiment-id", required=True)
+    trial_from_published.add_argument("--hook", required=True, help="Hook rendered into the variant")
+    trial_from_published.add_argument("--asset-family-id")
+    trial_from_published.add_argument(
+        "--changed-variable",
+        action="append",
+        dest="changed_variables",
+        help=(
+            "Changed surface; repeat as needed "
+            "(default: overlay_hook when preserving the parent caption)"
+        ),
+    )
+    trial_from_published.add_argument(
+        "--caption-mode",
+        choices=sorted(TRIAL_CAPTION_MODES),
+        default="preserve-parent",
+        help=(
+            "Preserve the published parent's exact caption for a hook-only test "
+            "(default), or rebuild it around the variant hook"
+        ),
+    )
+    trial_from_published.add_argument(
+        "--expected-scheduled-at",
+        help="Fail if the selected replacement row no longer has this exact ISO timeslot",
+    )
+    trial_from_published.add_argument(
+        "--graduation-strategy",
+        choices=sorted(TRIAL_GRADUATION_STRATEGIES),
+        default=DEFAULT_TRIAL_GRADUATION_STRATEGY,
+    )
+    trial_from_published.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT / "trial_experiments",
+        help="Folder for the generated ledger manifest",
+    )
+    trial_from_published.add_argument("--db", type=Path, default=None)
+    trial_from_published.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
+    convert_trial = subparsers.add_parser(
+        "trial-convert-scheduled",
+        help="Convert one exact scheduled Instagram Reel to Trial in the same timeslot",
+    )
+    convert_trial.add_argument("--channel", required=True, help="Instagram channel id")
+    convert_trial.add_argument("--content-hash", required=True)
+    convert_trial.add_argument("--experiment-id", required=True)
+    convert_trial.add_argument(
+        "--hook",
+        help="Actual hook already rendered in the media (defaults to the ledger title)",
+    )
+    convert_trial.add_argument("--asset-family-id")
+    convert_trial.add_argument(
+        "--changed-variable",
+        action="append",
+        dest="changed_variables",
+        help="Changed surface; repeat as needed (default: distribution_mode)",
+    )
+    convert_trial.add_argument(
+        "--expected-scheduled-at",
+        help="Fail if the selected row no longer has this exact ISO timeslot",
+    )
+    convert_trial.add_argument(
+        "--graduation-strategy",
+        choices=sorted(TRIAL_GRADUATION_STRATEGIES),
+        default=DEFAULT_TRIAL_GRADUATION_STRATEGY,
+    )
+    convert_trial.add_argument("--db", type=Path, default=None)
+    convert_trial.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
+    register_trial = subparsers.add_parser(
+        "register-trial-publish",
+        help="Backfill an already-published Trial Reel and its experiment into the ledger",
+    )
+    register_trial.add_argument("--channel", required=True, help="Instagram channel id")
+    register_trial.add_argument("--manifest", type=Path, required=True)
+    register_trial.add_argument("--report", type=Path, required=True)
+    register_trial.add_argument("--experiment-id", required=True)
+    register_trial.add_argument("--parent-content-hash", required=True)
+    register_trial.add_argument("--baseline-hook")
+    register_trial.add_argument("--variant-hook")
+    register_trial.add_argument("--asset-family-id")
+    register_trial.add_argument(
+        "--changed-variable",
+        action="append",
+        dest="changed_variables",
+        help="Changed surface; repeat as needed (default: overlay_hook and caption)",
+    )
+    register_trial.add_argument("--published-at", help="ISO publish time override")
+    register_trial.add_argument("--db", type=Path, default=None)
+    register_trial.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
+    decide_trial = subparsers.add_parser(
+        "trial-decide",
+        help="Record a graduate or stop decision after a Trial's +72h checkpoint",
+    )
+    decide_trial.add_argument("--experiment-id", required=True)
+    decide_trial.add_argument(
+        "--decision",
+        required=True,
+        choices=sorted(TRIAL_DECISIONS),
+    )
+    decide_trial.add_argument(
+        "--reason",
+        required=True,
+        help="Required operator rationale stored with the decision",
+    )
+    decide_trial.add_argument("--db", type=Path, default=None)
+    decide_trial.add_argument(
+        "--override-72h-checkpoint-and-age",
+        action="store_true",
+        help=(
+            "Explicitly bypass both the 72h age and core-valid 72–76h checkpoint "
+            "requirements for an audited exception"
+        ),
+    )
+    decide_trial.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
     queue_outputs = subparsers.add_parser(
         "queue-outputs",
         help="Scan reel-app outputs, schedule new rows, and optionally reshuffle the queue",
@@ -4788,7 +6202,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = subparsers.add_parser("sync-insights", help="Fetch insights for published ledger rows")
     sync.add_argument(
-        "--platform", choices=sorted(PLATFORMS), default=None, help="instagram (Graph) or tiktok (video.list)"
+        "--platform",
+        choices=sorted(PLATFORMS),
+        default=None,
+        help="instagram/facebook (Graph) or tiktok (video.list)",
     )
     sync.add_argument("--channel", help="Limit to one channel id")
     sync.add_argument("--db", type=Path, default=None, help="Ledger db path (default: platform db)")
@@ -4797,15 +6214,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--media-id",
         action="append",
         default=None,
-        help="Sync one exact published Instagram media id; repeat for multiple ids",
+        help="Sync one exact published Instagram/Facebook media id; repeat for multiple ids",
     )
     sync.add_argument("--dry-run", action="store_true", help="Print rows that would be synced")
     sync.add_argument(
         "--metrics",
-        default=",".join(INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS),
-        help="Comma-separated Instagram insight metrics",
+        default="",
+        help="Comma-separated insight metrics; defaults to the selected platform's standard set",
     )
-    sync.add_argument("--access-token", default="", help="Override Instagram access token")
+    sync.add_argument("--access-token", default="", help="Override platform access token")
     sync.add_argument("--graph-api-version", default="")
     sync.add_argument("--graph-api-root", default="")
 
@@ -4987,6 +6404,96 @@ def plan_ledger_command(args: argparse.Namespace) -> int:
         print(f"[reel-scheduler] planned {planned[channel_id]} {channel_id} {platform} reel(s)")
     print(f"[reel-scheduler] manifests: {args.out_dir.expanduser().resolve()}")
     print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def print_trial_operation(result: dict[str, Any], db_path: Path) -> None:
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("mode") == "dry-run":
+        print("[reel-scheduler] dry run only; rerun with --apply to update the ledger")
+    print(f"[reel-scheduler] ledger: {db_path}")
+
+
+def trial_from_published_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    try:
+        result = queue_trial_from_published(
+            db_path=db_path,
+            channel_id=args.channel,
+            parent_content_hash=args.parent_content_hash,
+            replacement_content_hash=args.replace_content_hash,
+            media_path=args.media_path,
+            experiment_id=args.experiment_id,
+            variant_hook=args.hook,
+            asset_family_id=args.asset_family_id,
+            changed_variables=args.changed_variables,
+            graduation_strategy=args.graduation_strategy,
+            out_dir=args.out_dir,
+            apply=args.apply,
+            expected_scheduled_at=args.expected_scheduled_at,
+            caption_mode=args.caption_mode,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print_trial_operation(result, db_path)
+    return 0
+
+
+def trial_convert_scheduled_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    try:
+        result = convert_scheduled_reel_to_trial(
+            db_path=db_path,
+            channel_id=args.channel,
+            content_hash=args.content_hash,
+            experiment_id=args.experiment_id,
+            hook=args.hook,
+            asset_family_id=args.asset_family_id,
+            changed_variables=args.changed_variables,
+            graduation_strategy=args.graduation_strategy,
+            apply=args.apply,
+            expected_scheduled_at=args.expected_scheduled_at,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print_trial_operation(result, db_path)
+    return 0
+
+
+def trial_decide_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    result = decide_trial_experiment(
+        db_path=db_path,
+        experiment_id=args.experiment_id,
+        decision=args.decision,
+        reason=args.reason,
+        apply=args.apply,
+        override_72h_checkpoint_and_age=args.override_72h_checkpoint_and_age,
+    )
+    print_trial_operation(result, db_path)
+    return 0
+
+
+def register_trial_publish_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    try:
+        result = register_published_trial(
+            db_path=db_path,
+            channel_id=args.channel,
+            manifest_path=args.manifest,
+            report_path=args.report,
+            experiment_id=args.experiment_id,
+            parent_content_hash=args.parent_content_hash,
+            baseline_hook=args.baseline_hook,
+            variant_hook=args.variant_hook,
+            asset_family_id=args.asset_family_id,
+            changed_variables=args.changed_variables,
+            published_at=args.published_at,
+            apply=args.apply,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print_trial_operation(result, db_path)
     return 0
 
 
@@ -5361,12 +6868,12 @@ def sync_insights_command(args: argparse.Namespace) -> int:
     db_path = resolve_db(args)
     platform = resolve_platform(args)
     media_ids = getattr(args, "media_id", None)
-    if media_ids and platform != "instagram":
-        raise SystemExit("--media-id is currently supported only for Instagram insights")
+    if media_ids and platform == "tiktok":
+        raise SystemExit("--media-id is currently supported only for Instagram/Facebook insights")
     if platform == "tiktok":
         return sync_tiktok_insights(args, db_path)
     if platform == "facebook":
-        raise SystemExit("Facebook insights sync is not implemented; use report/status for this ledger")
+        return sync_facebook_insights(args, db_path)
     return sync_instagram_insights(args, db_path)
 
 
@@ -5375,7 +6882,7 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
 
     metrics = [part.strip() for part in str(args.metrics or "").split(",") if part.strip()]
     if not metrics:
-        raise SystemExit("--metrics must include at least one metric")
+        metrics = list(INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS)
     instagram_publish.load_env_file(ROOT / ".env")
     graph_version = instagram_publish.normalize_graph_version(
         args.graph_api_version or instagram_publish.graph_api_version()
@@ -5452,6 +6959,140 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
         synced += 1
         print(f"[reel-scheduler] synced {row['channel_id']} {row['media_id']}")
     print(f"[reel-scheduler] insights synced={synced} skipped={skipped}")
+    return 0 if skipped == 0 else 1
+
+
+def sync_facebook_insights(args: argparse.Namespace, db_path: Path) -> int:
+    import facebook_publish
+    import instagram_publish
+
+    metrics = [part.strip() for part in str(args.metrics or "").split(",") if part.strip()]
+    if not metrics:
+        metrics = list(FACEBOOK_INSIGHT_REQUEST_METRIC_KEYS)
+    else:
+        metrics = list(dict.fromkeys((*FACEBOOK_CORE_INSIGHT_METRIC_KEYS, *metrics)))
+    facebook_publish.load_env_file(ROOT / ".env")
+    graph_version = instagram_publish.normalize_graph_version(
+        args.graph_api_version or instagram_publish.graph_api_version()
+    )
+    graph_root = (
+        args.graph_api_root
+        or os.environ.get("FACEBOOK_GRAPH_API_ROOT")
+        or instagram_publish.META_GRAPH_API_ROOT
+    ).rstrip("/")
+    requested_media_ids = tuple(
+        dict.fromkeys(
+            str(media_id).strip()
+            for media_id in (getattr(args, "media_id", None) or ())
+            if str(media_id).strip()
+        )
+    )
+    with reel_ledger.connect(db_path) as conn:
+        rows = reel_ledger.published_reels_for_insights(
+            conn,
+            args.channel,
+            args.limit,
+            media_ids=requested_media_ids if requested_media_ids else None,
+        )
+    if not rows:
+        print("[reel-scheduler] no published Facebook video ids to sync")
+        return 1 if requested_media_ids else 0
+
+    found_media_ids = {str(row["media_id"] or "") for row in rows}
+    missing_media_ids = sorted(set(requested_media_ids) - found_media_ids)
+    for media_id in missing_media_ids:
+        print(f"[reel-scheduler] skip {media_id}: exact published Facebook video id not found")
+
+    credentials: dict[str, tuple[str, str]] = {}
+    synced = 0
+    skipped = len(missing_media_ids)
+    for row in rows:
+        channel_id = str(row["channel_id"])
+        if channel_id not in credentials:
+            manifest = {"channel_id": channel_id}
+            page_id, _ = facebook_publish.resolve_facebook_page_id(
+                "",
+                manifest,
+                ROOT / "reel_scheduler.py",
+            )
+            access_token, token_source = facebook_publish.resolve_facebook_access_token(
+                args.access_token,
+                manifest,
+                ROOT / "reel_scheduler.py",
+            )
+            if not page_id or not access_token:
+                credentials[channel_id] = ("", token_source)
+            elif args.dry_run:
+                credentials[channel_id] = (access_token, token_source)
+            else:
+                try:
+                    credentials[channel_id] = facebook_publish.resolve_page_access_token_for_publish(
+                        page_id=page_id,
+                        access_token=access_token,
+                        access_token_source=token_source,
+                        graph_version=graph_version,
+                        graph_api_root=graph_root,
+                    )
+                except SystemExit as exc:
+                    print(
+                        f"[reel-scheduler] Facebook credential resolution failed "
+                        f"for {channel_id}: {exc}"
+                    )
+                    credentials[channel_id] = ("", token_source)
+        access_token, token_source = credentials[channel_id]
+        if not access_token:
+            skipped += 1
+            print(
+                f"[reel-scheduler] skip {row['media_id']}: "
+                f"no Facebook Page access token for {channel_id}"
+            )
+            continue
+        if args.dry_run:
+            print(
+                f"[reel-scheduler] would sync Facebook {channel_id} {row['media_id']} "
+                f"via {token_source}"
+            )
+            synced += 1
+            continue
+        try:
+            payload, metric_warnings = fetch_facebook_insights_resilient(
+                video_id=str(row["media_id"]),
+                metrics=metrics,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_root,
+            )
+        except SystemExit as exc:
+            skipped += 1
+            print(f"[reel-scheduler] skip Facebook {channel_id} {row['media_id']}: {exc}")
+            continue
+        for warning in metric_warnings:
+            print(
+                f"[reel-scheduler] optional Facebook metric unavailable "
+                f"{channel_id} {row['media_id']}: {warning}"
+            )
+        parsed = facebook_reel_insight_metrics(payload)
+        missing_core = [name for name in ("views",) if parsed.get(name) is None]
+        if missing_core:
+            skipped += 1
+            print(
+                f"[reel-scheduler] skip Facebook {channel_id} {row['media_id']}: "
+                f"core metric(s) unavailable ({', '.join(missing_core)}); "
+                "no partial snapshot recorded"
+            )
+            continue
+        with reel_ledger.connect(db_path) as conn:
+            reel_ledger.record_insight(
+                conn,
+                content_hash=str(row["content_hash"]),
+                channel_id=channel_id,
+                media_id=str(row["media_id"]),
+                metrics=parsed,
+                raw=json.dumps(payload, ensure_ascii=False),
+            )
+        synced += 1
+        print(f"[reel-scheduler] synced Facebook {channel_id} {row['media_id']}")
+    print(f"[reel-scheduler] Facebook insights synced={synced} skipped={skipped}")
     return 0 if skipped == 0 else 1
 
 
@@ -5583,6 +7224,14 @@ def main() -> int:
         return run_due_command(args)
     if args.command == "plan-ledger":
         return plan_ledger_command(args)
+    if args.command == "trial-from-published":
+        return trial_from_published_command(args)
+    if args.command == "trial-convert-scheduled":
+        return trial_convert_scheduled_command(args)
+    if args.command == "register-trial-publish":
+        return register_trial_publish_command(args)
+    if args.command == "trial-decide":
+        return trial_decide_command(args)
     if args.command == "queue-outputs":
         return queue_outputs_command(args)
     if args.command == "reflow-queue":

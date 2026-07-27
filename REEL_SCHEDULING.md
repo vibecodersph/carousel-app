@@ -115,6 +115,103 @@ uv run python reel_scheduler.py sync-insights --limit 10
 uv run python reel_scheduler.py report --out out/reel_report.html
 ```
 
+### Trial Reel Workflows
+
+Trial Reels use the existing Instagram schedule; they do not add extra posting
+slots. Candidate selection is a separate, read-only step:
+
+```sh
+uv run python scripts/select_aibrief_jp_trial_candidates.py \
+  --as-of 2026-07-27T13:30:00+09:00 \
+  --json-out out/trial_candidates/2026-07-27.json \
+  --markdown-out out/trial_candidates/2026-07-27.md
+```
+
+The selector alternates the two Trial lanes across the `09/13/18/21` slots,
+allows at most two Trials per JST week and two nonterminal experiments, requires
+48 hours between launches, and never mutates the queue. Published rerender
+parents come only from mature 72–96h Instagram winner evidence. Scheduled
+conversions use a deterministic hash lottery among the next three
+operationally eligible posts in the prescribed slot; title semantics and
+reel-app scores are not used to predict performance.
+
+Both execution commands below are dry runs unless `--apply` is supplied.
+
+**Case 1 — rerender a successful post with a new hook.** Render the variant MP4
+first, then replace one exact scheduled row. The Trial takes that row's
+`scheduled_at` value, while the displaced row returns to the unscheduled `new`
+pool.
+
+```sh
+uv run python reel_scheduler.py trial-from-published \
+  --channel aibrief_jp \
+  --parent-content-hash <published-winner-hash> \
+  --replace-content-hash <scheduled-row-hash> \
+  --media-path <rerendered-variant.mp4> \
+  --experiment-id TRIAL-001 \
+  --hook '<new rendered hook>' \
+  --caption-mode preserve-parent \
+  --expected-scheduled-at '<selected exact ISO timeslot>'
+
+# Review the JSON preview, then repeat with:
+#   --apply
+```
+
+**Case 2 — convert a scheduled post in place.** The media, caption, and exact
+timeslot stay unchanged; only its Instagram distribution mode becomes Trial.
+
+```sh
+uv run python reel_scheduler.py trial-convert-scheduled \
+  --channel aibrief_jp \
+  --content-hash <scheduled-row-hash> \
+  --experiment-id TRIAL-002 \
+  --expected-scheduled-at '<selected exact ISO timeslot>'
+
+# Review the JSON preview, then repeat with:
+#   --apply
+```
+
+The default graduation strategy is `MANUAL`. Each conversion writes an
+experiment record with its case, asset family, baseline/variant hook, changed
+variables, parent, and lifecycle state. Queue reflow and source alternation
+leave Trial rows in their assigned slots. Trial-launched rows are also excluded
+from the regular-reel analytics baseline and from Facebook queue mirroring.
+Their immutable checkpoints are recorded at +1h, +3h, +24h, and +72h.
+The default published-rerender caption mode preserves the parent caption
+exactly, so the rendered overlay hook is the only changed content surface.
+`--expected-scheduled-at` makes execution fail if queue reflow moved the
+selected row after its recommendation packet was generated.
+
+**Record the terminal decision.** After reviewing the +72h checkpoint, record
+either `graduate` or `stop` with an operator-written reason. The command is a
+dry run unless `--apply` is supplied.
+
+```sh
+uv run python reel_scheduler.py trial-decide \
+  --experiment-id TRIAL-V1-0001-B18-b344c83d \
+  --decision graduate \
+  --reason 'Reach and save rate cleared the approved 72h thresholds.'
+
+# Review the JSON preview, then repeat with:
+#   --apply
+```
+
+The normal gate requires both:
+
+- the Trial to be at least 72 hours past its stored publish timestamp; and
+- a core-valid insight snapshot captured inside the immutable +72h checkpoint
+  window (72–76 hours after publication).
+
+For an exceptional early safety stop or a documented missing-checkpoint
+incident, `--override-72h-checkpoint-and-age` explicitly bypasses both checks.
+The reason is still required. Applying `graduate` writes `state=graduated`,
+`decision=graduate`, and matching `decision_at`/`graduated_at` timestamps;
+applying `stop` writes the corresponding stopped state and timestamp. Repeating
+the exact same terminal decision and reason is a no-op, while any conflicting
+decision or changed reason is rejected. This records the operational decision
+in the ledger; it does not call Instagram's API. Reels launched as Trials
+remain marked as such for baseline isolation after either decision.
+
 ### Legacy Schedule Limits
 
 - **Schedule-centric, not clip-centric.** Legacy truth lives inside each per-run

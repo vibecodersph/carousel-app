@@ -235,6 +235,121 @@ class MetricAndClassificationTests(unittest.TestCase):
                 result["classification_language"]["AUDIENCE_FIT_WINNER"],
             )
 
+    def test_trial_launches_are_excluded_from_regular_baseline_and_monitored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db_path = root / "reels.db"
+            report_path = root / "report.json"
+            initialize_db(db_path)
+            published = datetime(2026, 7, 1, tzinfo=timezone.utc)
+            items = [
+                insert_reel(
+                    db_path,
+                    index=index,
+                    published_at=published,
+                    base_views=300,
+                    combined_views=900,
+                    reach=200,
+                    interactions=8,
+                    saved=4,
+                    shares=1,
+                )
+                for index in range(1, 5)
+            ]
+            with sqlite3.connect(db_path) as connection:
+                connection.executescript(
+                    """
+                    ALTER TABLE reels ADD COLUMN trial_reel INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE reels ADD COLUMN trial_graduation_strategy TEXT;
+                    CREATE TABLE trial_experiments (
+                      experiment_id TEXT PRIMARY KEY,
+                      content_hash TEXT NOT NULL,
+                      channel_id TEXT NOT NULL,
+                      case_type TEXT NOT NULL,
+                      parent_media_id TEXT,
+                      asset_family_id TEXT NOT NULL,
+                      baseline_hook TEXT,
+                      variant_hook TEXT NOT NULL,
+                      changed_variables_json TEXT NOT NULL,
+                      state TEXT NOT NULL,
+                      graduated_at TEXT,
+                      UNIQUE(content_hash, channel_id)
+                    );
+                    """
+                )
+                connection.execute(
+                    "UPDATE reels SET trial_reel=1, "
+                    "trial_graduation_strategy='MANUAL' "
+                    "WHERE content_hash IN ('hash-3', 'hash-4')"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO trial_experiments (
+                      experiment_id, content_hash, channel_id, case_type,
+                      parent_media_id, asset_family_id, baseline_hook, variant_hook,
+                      changed_variables_json, state, graduated_at
+                    ) VALUES (
+                      'TRIAL-003', 'hash-3', 'aibrief_jp',
+                      'successful_post_variant', 'parent-3', 'family-3',
+                      'old 3', 'new 3', '["hook"]', 'active', NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO trial_experiments (
+                      experiment_id, content_hash, channel_id, case_type,
+                      parent_media_id, asset_family_id, baseline_hook, variant_hook,
+                      changed_variables_json, state, graduated_at
+                    ) VALUES (
+                      'TRIAL-004', 'hash-4', 'aibrief_jp',
+                      'scheduled_conversion', NULL, 'family-4',
+                      'old 4', 'new 4', '["hook"]', 'graduated',
+                      '2026-07-02T16:00:00+00:00'
+                    )
+                    """
+                )
+            write_report(report_path, items)
+
+            result = reach_analysis.build_analysis(
+                report_path=report_path,
+                db_path=db_path,
+                matrix_start=date(2026, 7, 14),
+            )
+
+            self.assertEqual(result["coverage"]["scope"], "REGULAR_BASELINE_ONLY")
+            self.assertEqual(result["coverage"]["published_reels"], 2)
+            self.assertEqual(result["coverage"]["all_published_reels"], 4)
+            self.assertEqual(result["coverage"]["excluded_trial_reels"], 2)
+            self.assertEqual(result["latest_inventory"]["published_reels"], 2)
+            self.assertEqual(
+                sum(result["counts"]["classification"].values()),
+                2,
+            )
+            monitoring = result["trial_monitoring"]
+            self.assertEqual(monitoring["published_reels"], 2)
+            self.assertEqual(
+                monitoring["by_distribution_cohort"],
+                {"GRADUATED_TRIAL": 1, "TRIAL_ACTIVE": 1},
+            )
+            by_media = {row["media_id"]: row for row in monitoring["reels"]}
+            self.assertEqual(
+                by_media["media-3"]["trial_experiment"]["experiment_id"],
+                "TRIAL-003",
+            )
+            self.assertEqual(by_media["media-3"]["trial_phase"], "PRE_GRADUATION")
+            self.assertEqual(by_media["media-4"]["trial_phase"], "POST_GRADUATION")
+            self.assertTrue(
+                all(row["trial_reel"] for row in monitoring["reels"])
+            )
+            markdown = reach_analysis.render_markdown(result)
+            self.assertIn("## Trial Reel monitoring", markdown)
+            self.assertIn("TRIAL-003", markdown)
+            self.assertIn(
+                "never enters the regular baseline, including after graduation",
+                markdown,
+            )
+
     def test_total_views_falls_back_to_raw_base_without_losing_scope(self) -> None:
         snapshot = {
             "raw_api_payload": raw_payload(

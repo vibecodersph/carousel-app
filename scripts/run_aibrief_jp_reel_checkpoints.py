@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture immutable +1h, +3h, and +24h analyses for AI Brief JP Reels.
+"""Capture immutable +1h, +3h, +24h, and +72h analyses for AI Brief JP Reels.
 
 The runner is intentionally narrow:
 
@@ -56,6 +56,25 @@ DISPLAY_METRICS = (
     "facebook_views",
     "crossposted_views",
 )
+TRIAL_EXPERIMENT_COLUMNS = (
+    "experiment_id",
+    "case_type",
+    "parent_content_hash",
+    "parent_media_id",
+    "asset_family_id",
+    "baseline_hook",
+    "variant_hook",
+    "changed_variables_json",
+    "state",
+    "decision",
+    "decision_reason",
+    "displaced_content_hash",
+    "scheduled_at",
+    "published_at",
+    "decision_at",
+    "graduated_at",
+    "stopped_at",
+)
 
 
 @dataclass(frozen=True)
@@ -95,7 +114,19 @@ CHECKPOINTS = (
         minimum_hours=24.0,
         maximum_hours=28.0,
         stage="PROVISIONAL_24H",
-        next_step="Keep monitoring to the existing 72–96h decision window.",
+        next_step="Recheck at +72h before making a Trial graduation decision.",
+    ),
+    Checkpoint(
+        key="72h",
+        label="+72h",
+        target_hours=72.0,
+        minimum_hours=72.0,
+        maximum_hours=76.0,
+        stage="DECISION_READY_72H",
+        next_step=(
+            "For a Trial Reel, record a manual graduate or stop decision. "
+            "Keep every Reel launched as Trial outside the regular baseline."
+        ),
     ),
 )
 CHECKPOINT_BY_KEY = {checkpoint.key: checkpoint for checkpoint in CHECKPOINTS}
@@ -103,11 +134,27 @@ CHECKPOINT_BY_KEY = {checkpoint.key: checkpoint for checkpoint in CHECKPOINTS}
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Record per-Reel aibrief_jp analyses at +1h, +3h, and +24h"
+        description="Record per-Reel aibrief_jp analyses at +1h, +3h, +24h, and +72h"
     )
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--db", type=Path, default=None)
+    parser.add_argument("--facebook-db", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument(
+        "--report-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="Write legacy v1 files or dual-platform v2 files (default: 2)",
+    )
+    parser.add_argument(
+        "--independent-start-at",
+        default="",
+        help=(
+            "Override the independent Facebook-upload cutover timestamp; "
+            "defaults to publishing.facebook_reels.mirror_start_at"
+        ),
+    )
     parser.add_argument(
         "--checkpoint",
         action="append",
@@ -117,8 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lookback-hours",
         type=float,
-        default=48.0,
-        help="Inspect Reels published within this many hours (default: 48)",
+        default=120.0,
+        help="Inspect Reels published within this many hours (default: 120)",
     )
     parser.add_argument(
         "--as-of",
@@ -159,6 +206,92 @@ def resolve_as_of(value: str) -> datetime:
     if parsed is None:
         raise SystemExit(f"invalid --as-of timestamp: {value!r}")
     return parsed
+
+
+def mapping_value(item: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    """Read sqlite.Row and ordinary mappings through one defensive interface."""
+    try:
+        return item[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    if table not in {"reels", "trial_experiments"}:
+        raise ValueError(f"unsupported table: {table}")
+    return {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+def load_trial_experiment(
+    connection: sqlite3.Connection,
+    reel: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return normalized experiment metadata when the optional table exists."""
+    columns = table_columns(connection, "trial_experiments")
+    if not {"content_hash", "channel_id"}.issubset(columns):
+        return {}
+    selected = [name for name in TRIAL_EXPERIMENT_COLUMNS if name in columns]
+    if not selected:
+        return {}
+    row = connection.execute(
+        f"SELECT {', '.join(selected)} FROM trial_experiments "
+        "WHERE content_hash=? AND channel_id=? LIMIT 1",
+        (
+            str(mapping_value(reel, "content_hash") or ""),
+            str(mapping_value(reel, "channel_id") or ""),
+        ),
+    ).fetchone()
+    return {name: row[name] for name in selected} if row is not None else {}
+
+
+def trial_launch_enabled(item: Mapping[str, Any]) -> bool:
+    value = mapping_value(item, "trial_reel", 0)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def experiment_is_graduated(experiment: Mapping[str, Any]) -> bool:
+    return bool(str(experiment.get("graduated_at") or "").strip()) or (
+        str(experiment.get("state") or "").strip().lower() == "graduated"
+    )
+
+
+def trial_distribution_cohort(
+    item: Mapping[str, Any],
+    experiment: Mapping[str, Any],
+) -> str:
+    if not trial_launch_enabled(item):
+        return "REGULAR"
+    if experiment_is_graduated(experiment):
+        return "GRADUATED_TRIAL"
+    state = str(experiment.get("state") or "").strip().lower()
+    if state in {"stopped", "failed"}:
+        return "CLOSED_TRIAL"
+    return "TRIAL_ACTIVE"
+
+
+def trial_phase_at(
+    captured_at: datetime | None,
+    *,
+    item: Mapping[str, Any],
+    experiment: Mapping[str, Any],
+) -> str:
+    if not trial_launch_enabled(item):
+        return "NOT_TRIAL"
+    graduated_at = parse_datetime(experiment.get("graduated_at"))
+    if graduated_at is not None and captured_at is not None:
+        return (
+            "POST_GRADUATION"
+            if captured_at >= graduated_at
+            else "PRE_GRADUATION"
+        )
+    if experiment_is_graduated(experiment):
+        return "GRADUATION_TIME_UNKNOWN"
+    return "PRE_GRADUATION"
 
 
 @contextmanager
@@ -227,6 +360,7 @@ def load_recent_reels(
         current_age = age_hours(as_of, published_at)
         if 0 <= current_age <= lookback_hours:
             reel["current_age_hours"] = current_age
+            reel["trial_experiment"] = load_trial_experiment(connection, reel)
             reels.append(reel)
     return reels
 
@@ -429,6 +563,13 @@ def previous_checkpoint_key(checkpoint: Checkpoint, available: Mapping[str, sqli
             return "03h"
         if "01h" in available:
             return "01h"
+    if checkpoint.key == "72h":
+        if "24h" in available:
+            return "24h"
+        if "03h" in available:
+            return "03h"
+        if "01h" in available:
+            return "01h"
     return None
 
 
@@ -490,7 +631,13 @@ def observation_lines(
         )
     )
 
-    if checkpoint.key == "24h":
+    if checkpoint.key == "72h":
+        hypothesis = (
+            "Decision checkpoint: compare a Trial only with the Trial cohort and its "
+            "registered parent. Do not add a Reel launched as Trial to the regular baseline, "
+            "even after graduation."
+        )
+    elif checkpoint.key == "24h":
         if skip_rate is not None and float(skip_rate) >= 65:
             hypothesis = (
                 "Candidate next test: keep the topic and payoff, but state the consequence "
@@ -518,7 +665,9 @@ def render_checkpoint(
     checkpoint: Checkpoint,
     row: sqlite3.Row,
     available: Mapping[str, sqlite3.Row],
+    trial_experiment: Mapping[str, Any] | None = None,
 ) -> str:
+    experiment = dict(trial_experiment or {})
     item = reel_scheduler.build_reel_insight_export_item(row)
     metrics = reel_scheduler.latest_insight_metrics(row)
     published_at = parse_datetime(row["published_at"])
@@ -554,6 +703,23 @@ def render_checkpoint(
         if previous_key and previous_age is not None
         else "NOT_AVAILABLE"
     )
+    trial_enabled = trial_launch_enabled(row)
+    distribution_cohort = trial_distribution_cohort(row, experiment)
+    trial_phase = trial_phase_at(
+        captured_at,
+        item=row,
+        experiment=experiment,
+    )
+    experiment_id = str(experiment.get("experiment_id") or "").strip()
+    experiment_state = str(experiment.get("state") or "").strip()
+    experiment_case = str(experiment.get("case_type") or "").strip()
+    asset_family = str(experiment.get("asset_family_id") or "").strip()
+    parent_media_id = str(experiment.get("parent_media_id") or "").strip()
+    baseline_hook = str(experiment.get("baseline_hook") or "").strip()
+    variant_hook = str(experiment.get("variant_hook") or "").strip()
+    graduation_strategy = str(
+        mapping_value(row, "trial_graduation_strategy") or ""
+    ).strip()
 
     lines = [
         f"# Reel checkpoint — {checkpoint.label}",
@@ -570,6 +736,24 @@ def render_checkpoint(
             "after actual publication"
         ),
         f"- Compared with: {comparison_label}",
+        "",
+        "## Distribution cohort",
+        "",
+        f"- Launch type: `{'TRIAL_REEL' if trial_enabled else 'REGULAR_REEL'}`",
+        f"- Cohort: `{distribution_cohort}`",
+        f"- Trial phase at capture: `{trial_phase}`",
+        (
+            f"- Trial graduation strategy: `{graduation_strategy}`"
+            if trial_enabled and graduation_strategy
+            else "- Trial graduation strategy: not applicable"
+        ),
+        f"- Experiment ID: `{experiment_id}`" if experiment_id else "- Experiment ID: not registered",
+        f"- Experiment case: `{experiment_case}`" if experiment_case else "- Experiment case: unavailable",
+        f"- Experiment state: `{experiment_state}`" if experiment_state else "- Experiment state: unavailable",
+        f"- Asset family: `{asset_family}`" if asset_family else "- Asset family: unavailable",
+        f"- Parent media: `{parent_media_id}`" if parent_media_id else "- Parent media: unavailable",
+        f"- Baseline hook: {markdown_inline(baseline_hook)}" if baseline_hook else "- Baseline hook: unavailable",
+        f"- Trial hook: {markdown_inline(variant_hook)}" if variant_hook else "- Trial hook: unavailable",
         "",
         "## Snapshot",
         "",
@@ -642,12 +826,21 @@ def render_checkpoint(
     return "\n".join(lines)
 
 
-def render_missed(reel: Mapping[str, Any], checkpoint: Checkpoint) -> str:
+def render_missed(
+    reel: Mapping[str, Any],
+    checkpoint: Checkpoint,
+    *,
+    trial_experiment: Mapping[str, Any] | None = None,
+) -> str:
     published_at = parse_datetime(reel.get("published_at"))
     if published_at is None:
         raise ValueError("published Reel is missing a valid published_at")
     permalink = str(reel.get("permalink") or "").strip()
     reel_link = f"[Open Reel]({permalink})" if permalink else "Unavailable"
+    experiment = dict(trial_experiment or {})
+    trial_enabled = trial_launch_enabled(reel)
+    experiment_id = str(experiment.get("experiment_id") or "").strip()
+    experiment_state = str(experiment.get("state") or "").strip()
     return "\n".join(
         [
             f"# Reel checkpoint — {checkpoint.label}",
@@ -663,6 +856,18 @@ def render_missed(reel: Mapping[str, Any], checkpoint: Checkpoint) -> str:
             (
                 f"- Required window: {checkpoint.minimum_hours:g}–{checkpoint.maximum_hours:g}h "
                 "after actual publication"
+            ),
+            f"- Launch type: `{'TRIAL_REEL' if trial_enabled else 'REGULAR_REEL'}`",
+            f"- Cohort: `{trial_distribution_cohort(reel, experiment)}`",
+            (
+                f"- Experiment ID: `{experiment_id}`"
+                if experiment_id
+                else "- Experiment ID: not registered"
+            ),
+            (
+                f"- Experiment state: `{experiment_state}`"
+                if experiment_state
+                else "- Experiment state: unavailable"
             ),
             "",
             "No core-valid insight snapshot was stored inside this checkpoint window. "
@@ -695,18 +900,22 @@ def run_exact_sync(
     root: Path,
     db_path: Path,
     media_ids: Sequence[str],
+    platform: str = "instagram",
+    metrics: Sequence[str] | None = None,
 ) -> int:
     command = [
         sys.executable,
         str(root / "reel_scheduler.py"),
         "sync-insights",
         "--platform",
-        "instagram",
+        platform,
         "--channel",
         CHANNEL,
         "--db",
         str(db_path),
     ]
+    if metrics is not None:
+        command.extend(["--metrics", ",".join(metrics)])
     for media_id in sorted(set(media_ids)):
         command.extend(["--media-id", media_id])
     print(f"[aibrief-jp-checkpoints] run: {' '.join(command)}", flush=True)
@@ -722,8 +931,7 @@ def describe_work(
     )
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main_v1(args: argparse.Namespace) -> int:
     root = args.root.expanduser().resolve()
     db_path = (args.db or root / "state" / "reels.db").expanduser().resolve()
     out_dir = (
@@ -831,6 +1039,7 @@ def main() -> int:
                             checkpoint=checkpoint,
                             row=selected,
                             available=available,
+                            trial_experiment=reel.get("trial_experiment"),
                         )
                         if atomic_write_if_absent(path, content):
                             written += 1
@@ -840,7 +1049,14 @@ def main() -> int:
                             + describe_work(reel, checkpoint, "recorded", path)
                         )
                     elif action == "missed":
-                        if atomic_write_if_absent(path, render_missed(reel, checkpoint)):
+                        if atomic_write_if_absent(
+                            path,
+                            render_missed(
+                                reel,
+                                checkpoint,
+                                trial_experiment=reel.get("trial_experiment"),
+                            ),
+                        ):
                             written += 1
                         missed += 1
                         print(
@@ -863,6 +1079,30 @@ def main() -> int:
             return 0 if sync_rc == 0 or not due_media_ids else sync_rc
         finally:
             connection.close()
+
+
+def main() -> int:
+    """Dispatch to immutable legacy reports or the dual-platform v2 runner."""
+    args = build_parser().parse_args()
+    report_version_explicit = any(
+        value == "--report-version" or value.startswith("--report-version=")
+        for value in sys.argv[1:]
+    )
+    legacy_custom_db = (
+        args.db is not None
+        and args.facebook_db is None
+        and not report_version_explicit
+    )
+    if args.report_version == 1 or legacy_custom_db:
+        return main_v1(args)
+    if __name__ == "__main__":
+        sys.modules.setdefault(
+            "scripts.run_aibrief_jp_reel_checkpoints",
+            sys.modules[__name__],
+        )
+    from scripts import aibrief_jp_reel_checkpoints_v2
+
+    return aibrief_jp_reel_checkpoints_v2.main_v2(args)
 
 
 if __name__ == "__main__":

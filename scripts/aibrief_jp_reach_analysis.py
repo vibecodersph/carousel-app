@@ -45,6 +45,25 @@ DIAGNOSTIC_METRICS = (
     "crossposted_views",
     "follows",
 )
+TRIAL_EXPERIMENT_COLUMNS = (
+    "experiment_id",
+    "case_type",
+    "parent_content_hash",
+    "parent_media_id",
+    "asset_family_id",
+    "baseline_hook",
+    "variant_hook",
+    "changed_variables_json",
+    "state",
+    "decision",
+    "decision_reason",
+    "displaced_content_hash",
+    "scheduled_at",
+    "published_at",
+    "decision_at",
+    "graduated_at",
+    "stopped_at",
+)
 
 OBSERVATIONAL_CAVEATS = (
     "This analysis is observational. Post-level outcomes do not establish that a hook, "
@@ -152,6 +171,45 @@ def numeric(value: Any) -> int | float | None:
     return None
 
 
+def truthy_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def trial_distribution_cohort(
+    trial_reel: bool,
+    experiment: Mapping[str, Any] | None,
+) -> str:
+    if not trial_reel:
+        return "REGULAR"
+    metadata = experiment if isinstance(experiment, Mapping) else {}
+    state = str(metadata.get("state") or "").strip().lower()
+    if str(metadata.get("graduated_at") or "").strip() or state == "graduated":
+        return "GRADUATED_TRIAL"
+    if state in {"stopped", "failed"}:
+        return "CLOSED_TRIAL"
+    return "TRIAL_ACTIVE"
+
+
+def trial_phase_at_snapshot(
+    *,
+    trial_reel: bool,
+    captured_at: Any,
+    experiment: Mapping[str, Any] | None,
+) -> str:
+    if not trial_reel:
+        return "NOT_TRIAL"
+    metadata = experiment if isinstance(experiment, Mapping) else {}
+    captured = parse_datetime(captured_at)
+    graduated = parse_datetime(metadata.get("graduated_at"))
+    if captured is not None and graduated is not None:
+        return "POST_GRADUATION" if captured >= graduated else "PRE_GRADUATION"
+    if trial_distribution_cohort(True, metadata) == "GRADUATED_TRIAL":
+        return "GRADUATION_TIME_UNKNOWN"
+    return "PRE_GRADUATION"
+
+
 def raw_metric_map(payload: Any) -> dict[str, int | float]:
     if isinstance(payload, str):
         try:
@@ -240,10 +298,25 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
     }
 
     with _readonly_connection(db_path) as connection:
+        reel_schema = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(reels)").fetchall()
+        }
         insight_schema = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(insights)").fetchall()
         }
+        experiment_schema = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(trial_experiments)"
+            ).fetchall()
+        }
+        optional_reel_columns = [
+            name
+            for name in ("trial_reel", "trial_graduation_strategy")
+            if name in reel_schema
+        ]
         optional_insight_columns = [
             name
             for name in (
@@ -254,16 +327,31 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
             )
             if name in insight_schema
         ]
+        optional_reel_select = "".join(
+            f", {name}" for name in optional_reel_columns
+        )
         reel_rows = connection.execute(
-            """
+            f"""
             SELECT content_hash, channel_id, title, published_at, scheduled_at,
-                   media_id, permalink, status
+                   media_id, permalink, status{optional_reel_select}
             FROM reels
             WHERE channel_id=? AND status='published'
             ORDER BY published_at, content_hash
             """,
             (CHANNEL,),
         ).fetchall()
+        experiment_rows: list[sqlite3.Row] = []
+        if {"content_hash", "channel_id"}.issubset(experiment_schema):
+            selected_experiment_columns = [
+                name for name in TRIAL_EXPERIMENT_COLUMNS if name in experiment_schema
+            ]
+            if selected_experiment_columns:
+                experiment_rows = connection.execute(
+                    "SELECT content_hash, channel_id, "
+                    + ", ".join(selected_experiment_columns)
+                    + " FROM trial_experiments WHERE channel_id=?",
+                    (CHANNEL,),
+                ).fetchall()
         optional_select = "".join(f", {name}" for name in optional_insight_columns)
         insight_rows = connection.execute(
             f"""
@@ -277,6 +365,14 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
             (CHANNEL,),
         ).fetchall()
 
+    experiments_by_reel = {
+        (str(row["content_hash"] or ""), str(row["channel_id"] or "")): {
+            name: row[name]
+            for name in TRIAL_EXPERIMENT_COLUMNS
+            if name in row.keys()
+        }
+        for row in experiment_rows
+    }
     snapshots_by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in insight_rows:
         snapshots_by_hash[str(row["content_hash"] or "")].append(
@@ -303,6 +399,12 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
     for row in reel_rows:
         media_id = str(row["media_id"] or "")
         content_hash = str(row["content_hash"] or "")
+        trial_reel = (
+            truthy_flag(row["trial_reel"])
+            if "trial_reel" in row.keys()
+            else False
+        )
+        experiment = experiments_by_reel.get((content_hash, CHANNEL), {})
         report_item = report_by_media.get(media_id) or report_by_hash.get(content_hash) or {}
         report_segment = report_item.get("segment")
         report_segment = report_segment if isinstance(report_segment, Mapping) else {}
@@ -323,6 +425,17 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
                 "permalink": str(row["permalink"] or report_item.get("permalink") or ""),
                 "duration_seconds": numeric(report_segment.get("duration")),
                 "reel_transcript": str(report_segment.get("reel_transcript") or "").strip(),
+                "trial_reel": trial_reel,
+                "trial_graduation_strategy": (
+                    str(row["trial_graduation_strategy"] or "")
+                    if "trial_graduation_strategy" in row.keys()
+                    else ""
+                ),
+                "trial_experiment": experiment,
+                "distribution_cohort": trial_distribution_cohort(
+                    trial_reel,
+                    experiment,
+                ),
                 "snapshots": snapshots,
             }
         )
@@ -337,6 +450,13 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
         snapshot = _snapshot_from_report(item)
         report_segment = item.get("segment")
         report_segment = report_segment if isinstance(report_segment, Mapping) else {}
+        report_trial_reel = truthy_flag(item.get("trial_reel"))
+        report_experiment = item.get("trial_experiment")
+        report_experiment = (
+            dict(report_experiment)
+            if isinstance(report_experiment, Mapping)
+            else {}
+        )
         records.append(
             {
                 "content_hash": content_hash,
@@ -347,6 +467,15 @@ def load_reels(report: Mapping[str, Any], db_path: Path) -> list[dict[str, Any]]
                 "permalink": str(item.get("permalink") or ""),
                 "duration_seconds": numeric(report_segment.get("duration")),
                 "reel_transcript": str(report_segment.get("reel_transcript") or "").strip(),
+                "trial_reel": report_trial_reel,
+                "trial_graduation_strategy": str(
+                    item.get("trial_graduation_strategy") or ""
+                ),
+                "trial_experiment": report_experiment,
+                "distribution_cohort": trial_distribution_cohort(
+                    report_trial_reel,
+                    report_experiment,
+                ),
                 "snapshots": [snapshot] if snapshot else [],
                 "report_only": True,
             }
@@ -1109,6 +1238,17 @@ def action_for(candidate: Mapping[str, Any], metrics: Mapping[str, Any]) -> str:
 def classify_reel(
     reel: Mapping[str, Any], *, coverage: float
 ) -> dict[str, Any]:
+    trial_reel = truthy_flag(reel.get("trial_reel"))
+    trial_experiment = reel.get("trial_experiment")
+    trial_experiment = (
+        dict(trial_experiment)
+        if isinstance(trial_experiment, Mapping)
+        else {}
+    )
+    distribution_cohort = trial_distribution_cohort(
+        trial_reel,
+        trial_experiment,
+    )
     published_at = parse_datetime(reel.get("published_at"))
     snapshots = reel.get("snapshots", [])
     snapshot, age_hours, selection_warnings = select_snapshot(snapshots, published_at)
@@ -1150,9 +1290,20 @@ def classify_reel(
             "completion rate or a retention curve."
         ),
         "warnings": sorted(set(diagnostic_warnings)),
+        "trial_phase": trial_phase_at_snapshot(
+            trial_reel=trial_reel,
+            captured_at=(
+                diagnostic_snapshot.get("captured_at")
+                if diagnostic_snapshot
+                else None
+            ),
+            experiment=trial_experiment,
+        ),
     }
     errors: list[str] = []
     warnings = list(selection_warnings)
+    if trial_experiment and not trial_reel:
+        warnings.append("EXPERIMENT_PRESENT_BUT_TRIAL_REEL_FALSE")
     if coverage < MIN_COVERAGE:
         errors.append("COVERAGE_BELOW_90_PERCENT")
     if published_at is None:
@@ -1197,6 +1348,18 @@ def classify_reel(
         "published_at": str(reel.get("published_at") or ""),
         "permalink": str(reel.get("permalink") or ""),
         "duration_seconds": duration_seconds,
+        "launch_type": "TRIAL_REEL" if trial_reel else "REGULAR_REEL",
+        "trial_reel": trial_reel,
+        "trial_graduation_strategy": str(
+            reel.get("trial_graduation_strategy") or ""
+        ),
+        "distribution_cohort": distribution_cohort,
+        "trial_phase": trial_phase_at_snapshot(
+            trial_reel=trial_reel,
+            captured_at=(snapshot.get("captured_at") if snapshot else None),
+            experiment=trial_experiment,
+        ),
+        "trial_experiment": trial_experiment,
         "snapshot_captured_at": str(snapshot.get("captured_at") or "") if snapshot else "",
         "snapshot_age_hours": age_hours,
         "snapshot_source": str(snapshot.get("source") or "") if snapshot else "",
@@ -1566,20 +1729,58 @@ def build_analysis(
 ) -> dict[str, Any]:
     report = load_report(report_path)
     reels = load_reels(report, db_path)
-    with_snapshots = sum(bool(reel.get("snapshots")) for reel in reels)
-    coverage = with_snapshots / len(reels) if reels else 0.0
-    classified = [classify_reel(reel, coverage=coverage) for reel in reels]
-    stage_counts = Counter(record["stage"] for record in classified)
-    classification_counts = Counter(record["classification"] for record in classified)
-    action_counts = Counter(record["action"] for record in classified)
+    regular_reels = [
+        reel for reel in reels if not truthy_flag(reel.get("trial_reel"))
+    ]
+    trial_reels = [
+        reel for reel in reels if truthy_flag(reel.get("trial_reel"))
+    ]
+    regular_with_snapshots = sum(
+        bool(reel.get("snapshots")) for reel in regular_reels
+    )
+    trial_with_snapshots = sum(
+        bool(reel.get("snapshots")) for reel in trial_reels
+    )
+    coverage = (
+        regular_with_snapshots / len(regular_reels)
+        if regular_reels
+        else 0.0
+    )
+    trial_coverage = (
+        trial_with_snapshots / len(trial_reels)
+        if trial_reels
+        else 0.0
+    )
+    classified = [
+        classify_reel(
+            reel,
+            coverage=trial_coverage if truthy_flag(reel.get("trial_reel")) else coverage,
+        )
+        for reel in reels
+    ]
+    regular_classified = [
+        record for record in classified if not truthy_flag(record.get("trial_reel"))
+    ]
+    trial_classified = [
+        record for record in classified if truthy_flag(record.get("trial_reel"))
+    ]
+    stage_counts = Counter(record["stage"] for record in regular_classified)
+    classification_counts = Counter(
+        record["classification"] for record in regular_classified
+    )
+    action_counts = Counter(record["action"] for record in regular_classified)
     start = matrix_start or default_matrix_start(report)
     growth_analysis = early_to_fixed_growth_analysis(
-        reels,
+        regular_reels,
         permutations=permutations,
         seed=GROWTH_PERMUTATION_SEED,
     )
     latest_inventory = latest_inventory_summary(
-        reels,
+        regular_reels,
+        reference_time=parse_datetime(report.get("generated_at")),
+    )
+    trial_latest_inventory = latest_inventory_summary(
+        trial_reels,
         reference_time=parse_datetime(report.get("generated_at")),
     )
     classification_language_map = dict(CLASSIFICATION_LANGUAGE)
@@ -1592,7 +1793,7 @@ def build_analysis(
         provisional = f"PROVISIONAL_{candidate}"
         classification_language_map[provisional] = classification_language(provisional)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "channel_id": CHANNEL,
         "report_generated_at": str(report.get("generated_at") or ""),
         "source_report": str(
@@ -1605,11 +1806,50 @@ def build_analysis(
         "observational_caveats": list(OBSERVATIONAL_CAVEATS),
         "classification_language": classification_language_map,
         "coverage": {
-            "published_reels": len(reels),
-            "reels_with_snapshots": with_snapshots,
+            "scope": "REGULAR_BASELINE_ONLY",
+            "published_reels": len(regular_reels),
+            "reels_with_snapshots": regular_with_snapshots,
             "ratio": coverage,
             "minimum_required": MIN_COVERAGE,
             "healthy": coverage >= MIN_COVERAGE,
+            "all_published_reels": len(reels),
+            "excluded_trial_reels": len(trial_reels),
+        },
+        "regular_baseline": {
+            "selection_rule": (
+                "trial_reel=0 in the reels ledger; a Reel launched as Trial remains "
+                "excluded after graduation"
+            ),
+            "published_reels": len(regular_reels),
+            "reels_with_snapshots": regular_with_snapshots,
+            "excluded_trial_reels": len(trial_reels),
+        },
+        "trial_monitoring": {
+            "selection_rule": "trial_reel=1 in the reels ledger",
+            "published_reels": len(trial_reels),
+            "reels_with_snapshots": trial_with_snapshots,
+            "coverage_ratio": trial_coverage,
+            "by_distribution_cohort": dict(
+                sorted(
+                    Counter(
+                        record["distribution_cohort"]
+                        for record in trial_classified
+                    ).items()
+                )
+            ),
+            "by_experiment_state": dict(
+                sorted(
+                    Counter(
+                        str(
+                            record.get("trial_experiment", {}).get("state")
+                            or "UNREGISTERED"
+                        ).upper()
+                        for record in trial_classified
+                    ).items()
+                )
+            ),
+            "latest_inventory": trial_latest_inventory,
+            "reels": trial_classified,
         },
         "thresholds": {
             "performance_bands": {
@@ -1638,7 +1878,7 @@ def build_analysis(
         "latest_inventory": latest_inventory,
         "early_to_fixed_growth_analysis": growth_analysis,
         "slot_analysis": analyze_slots(
-            classified,
+            regular_classified,
             min_dates=slot_min_dates,
             permutations=permutations,
             seed=permutation_seed,
@@ -1679,6 +1919,10 @@ def _growth_correlation_cell(result: Any) -> str:
 
 def render_markdown(analysis: Mapping[str, Any]) -> str:
     coverage = analysis["coverage"]
+    trial_monitoring = analysis.get("trial_monitoring", {})
+    trial_monitoring = (
+        trial_monitoring if isinstance(trial_monitoring, Mapping) else {}
+    )
     inventory = analysis.get("latest_inventory", {})
     inventory = inventory if isinstance(inventory, Mapping) else {}
     inventory_counts = inventory.get("counts", {})
@@ -1705,7 +1949,8 @@ def render_markdown(analysis: Mapping[str, Any]) -> str:
         "# AI Brief JP Reach Analysis",
         "",
         f"- Report generated: {_markdown_cell(analysis.get('report_generated_at'))}",
-        f"- Coverage: {coverage['reels_with_snapshots']}/{coverage['published_reels']} ({coverage['ratio']:.1%})",
+        f"- Regular-baseline coverage: {coverage['reels_with_snapshots']}/{coverage['published_reels']} ({coverage['ratio']:.1%})",
+        f"- Reels launched as Trial and excluded from the regular baseline: {coverage.get('excluded_trial_reels', 0)}",
         "- Metric scopes: Instagram/base `views`, Meta all-surface `total_views`, explicit Instagram + Facebook `crossposted_views`, and engagement are kept separate.",
         "",
         "## Interpretation guardrails",
@@ -1738,11 +1983,54 @@ def render_markdown(analysis: Mapping[str, Any]) -> str:
         f"- Explicit surface fields available: `facebook_views` {inventory_availability.get('facebook_views_n', 0)}; `crossposted_views` {inventory_availability.get('crossposted_views_n', 0)}",
         f"- Scope guardrail: {_markdown_cell(inventory.get('scope_guardrail'))}",
         "",
+        "## Trial Reel monitoring",
+        "",
+        (
+            f"- Trial Reel coverage: {trial_monitoring.get('reels_with_snapshots', 0)}/"
+            f"{trial_monitoring.get('published_reels', 0)} "
+            f"({float(trial_monitoring.get('coverage_ratio') or 0):.1%})"
+        ),
+        (
+            "- Distribution cohorts: "
+            + _markdown_cell(trial_monitoring.get("by_distribution_cohort", {}))
+        ),
+        (
+            "- Experiment states: "
+            + _markdown_cell(trial_monitoring.get("by_experiment_state", {}))
+        ),
+        "- A Reel launched as Trial never enters the regular baseline, including after graduation.",
+        "",
+        "| Experiment | Type | State | Cohort | Phase at performance snapshot | Asset family | Parent media | Title |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for reel in trial_monitoring.get("reels", []):
+        experiment = reel.get("trial_experiment", {})
+        experiment = experiment if isinstance(experiment, Mapping) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _markdown_cell(experiment.get("experiment_id") or "UNREGISTERED"),
+                    _markdown_cell(experiment.get("case_type")),
+                    _markdown_cell(experiment.get("state") or "UNREGISTERED"),
+                    _markdown_cell(reel.get("distribution_cohort")),
+                    _markdown_cell(reel.get("trial_phase")),
+                    _markdown_cell(experiment.get("asset_family_id")),
+                    _markdown_cell(experiment.get("parent_media_id")),
+                    _markdown_cell(reel.get("title")),
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+        "",
         "## Reel classifications",
         "",
-        "| Title | Performance age h | Diagnostic age h | Instagram/base views | Meta all-surface views | Instagram reach | Interactions | Save+share / 1k | Avg watch / estimated duration % (not completion) | First-3s skip % | Classification | Action | Warnings |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
-    ]
+        "| Title | Cohort | Experiment | Performance age h | Diagnostic age h | Instagram/base views | Meta all-surface views | Instagram reach | Interactions | Save+share / 1k | Avg watch / estimated duration % (not completion) | First-3s skip % | Classification | Action | Warnings |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        ]
+    )
     for reel in analysis.get("reels", []):
         metrics = reel.get("metrics", {})
         latest_diagnostics = reel.get("latest_diagnostics", {})
@@ -1755,11 +2043,15 @@ def render_markdown(analysis: Mapping[str, Any]) -> str:
         )
         warnings = [*reel.get("warnings", []), *reel.get("data_errors", [])]
         warnings.extend(latest_diagnostics.get("warnings", []))
+        experiment = reel.get("trial_experiment", {})
+        experiment = experiment if isinstance(experiment, Mapping) else {}
         lines.append(
             "| "
             + " | ".join(
                 (
                     _markdown_cell(reel.get("title")),
+                    _markdown_cell(reel.get("distribution_cohort")),
+                    _markdown_cell(experiment.get("experiment_id")),
                     _fmt_number(reel.get("snapshot_age_hours"), 1),
                     _fmt_number(latest_diagnostics.get("snapshot_age_hours"), 1),
                     _fmt_number(metrics.get("base_views")),

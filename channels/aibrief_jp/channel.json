@@ -24,8 +24,47 @@
       ],
       "skip_days": [],
       "jitter_minutes": 7,
+      "caption_style": "grounded_editorial",
       "caption_context": "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
       "caption_cta": "気になったら保存して、あとで見返してください。",
+      "hashtag_limit": 5,
+      "prefer_topic_hashtags": true,
+      "required_hashtags": [
+        "#AIブリーフ"
+      ],
+      "hashtags": [
+        "#AIニュース",
+        "#生成AI",
+        "#AI開発",
+        "#エンジニア",
+        "#AIブリーフ"
+      ]
+    },
+    "facebook_reels": {
+      "enabled": true,
+      "page_id": "1127222207148630",
+      "mirror_instagram_queue": true,
+      "mirror_start_at": "2026-07-24T20:58:00+09:00",
+      "media_filename": "reel.mp4",
+      "timezone": "Asia/Tokyo",
+      "publish_time": "09:00",
+      "interval_hours": 24,
+      "slots": [
+        "09:00",
+        "13:00",
+        "18:00",
+        "21:00"
+      ],
+      "skip_days": [],
+      "jitter_minutes": 7,
+      "caption_style": "grounded_editorial",
+      "caption_context": "AI開発の現場で何が起きているのか、短いクリップで紹介します。",
+      "caption_cta": "気になったら保存して、あとで見返してください。",
+      "hashtag_limit": 5,
+      "prefer_topic_hashtags": true,
+      "required_hashtags": [
+        "#AIブリーフ"
+      ],
       "hashtags": [
         "#AIニュース",
         "#生成AI",
