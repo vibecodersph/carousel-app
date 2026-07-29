@@ -1373,6 +1373,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertEqual(row["status"], reel_ledger.STATUS_SCHEDULED)
                 self.assertEqual(row["source_video"], "VID123")
                 self.assertEqual(row["scheduled_at"], "2026-06-24T13:00:00+09:00")
+                self.assertEqual(row["trial_reel"], 0)
                 self.assertTrue(Path(row["manifest_path"]).is_file())
 
     def test_scan_and_plan_outputs_is_noop_without_output_clip_dirs(self) -> None:
@@ -1591,7 +1592,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 db=db,
                 limit=None,
                 dry_run=False,
-                metrics="views,total_views,likes,total_likes,comments,total_comments,saved,total_interactions",
+                metrics=(
+                    "views,total_views,likes,total_likes,comments,total_comments,"
+                    "saved,total_interactions,reposts"
+                ),
                 access_token="",
                 graph_api_version="v23.0",
                 graph_api_root="https://graph.instagram.com",
@@ -1613,6 +1617,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                         {"name": "total_comments", "values": [{"value": 3}]},
                         {"name": "saved", "values": [{"value": 44}]},
                         {"name": "total_interactions", "values": [{"value": 88}]},
+                        {"name": "reposts", "values": [{"value": 6}]},
                     ]
                 },
             ):
@@ -1628,6 +1633,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertEqual(row["comments"], 2)
                 self.assertEqual(row["total_comments"], 3)
                 self.assertEqual(row["saved"], 44)
+                self.assertEqual(row["reposts"], 6)
 
     def test_facebook_reel_insight_metrics_normalize_nested_actions(self) -> None:
         payload = {
@@ -1663,11 +1669,16 @@ class ReelLedgerPlanningTests(unittest.TestCase):
 
         self.assertEqual(metrics["views"], 240)
         self.assertEqual(metrics["reach"], 180)
-        self.assertEqual(metrics["likes"], 9)
+        self.assertEqual(metrics["likes"], 7)
+        self.assertEqual(metrics["facebook_total_reactions"], 9)
         self.assertEqual(metrics["comments"], 3)
         self.assertEqual(metrics["shares"], 4)
         self.assertEqual(metrics["total_interactions"], 16)
         self.assertEqual(metrics["fb_reels_replay_count"], 30)
+        self.assertEqual(
+            metrics["post_video_likes_by_reaction_type"],
+            {"LIKE": 7, "LOVE": 2},
+        )
 
     def test_facebook_reel_insight_metrics_keep_missing_distinct_from_zero(self) -> None:
         missing = reel_scheduler.facebook_reel_insight_metrics(
@@ -1710,45 +1721,127 @@ class ReelLedgerPlanningTests(unittest.TestCase):
         self.assertEqual(explicit_zero["shares"], 0)
         self.assertEqual(explicit_zero["total_interactions"], 0)
 
-    def test_facebook_video_insights_use_video_edge_and_lifetime_period(self) -> None:
-        with patch.object(
-            reel_scheduler,
-            "fetch_insights",
-            return_value={"data": []},
-        ) as fetch:
+    def test_facebook_reaction_map_keeps_like_and_total_reactions_distinct(
+        self,
+    ) -> None:
+        metrics = reel_scheduler.facebook_reel_insight_metrics(
+            {
+                "data": [
+                    {"name": "likes", "values": [{"value": 99}]},
+                    {
+                        "name": "post_video_likes_by_reaction_type",
+                        "values": [
+                            {
+                                "value": {
+                                    "LIKE": 4,
+                                    "LOVE": 3,
+                                    "HAHA": 2,
+                                }
+                            }
+                        ],
+                    },
+                    {"name": "comments", "values": [{"value": 2}]},
+                    {"name": "shares", "values": [{"value": 1}]},
+                    {
+                        "name": "post_video_retention_graph",
+                        "values": [{"value": {"0": 1.0, "3": 0.42}}],
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(metrics["likes"], 4)
+        self.assertEqual(metrics["facebook_total_reactions"], 9)
+        self.assertEqual(metrics["total_interactions"], 12)
+        self.assertEqual(
+            metrics["post_video_retention_graph"],
+            {"0": 1.0, "3": 0.42},
+        )
+
+    def test_facebook_video_insights_normalize_direct_video_fields(self) -> None:
+        with patch(
+            "instagram_publish.graph_request",
+            return_value={
+                "id": "fb-video-1",
+                "views": 12,
+                "likes": {"summary": {"total_count": 3}},
+                "comments": {"summary": {"total_count": 2}},
+            },
+        ):
             payload = reel_scheduler.fetch_facebook_video_insights(
                 video_id="fb-video-1",
-                metrics=["fb_reels_total_plays"],
+                metrics=["views", "likes", "comments"],
                 access_token="page-token",
                 graph_version="v25.0",
                 graph_api_root="https://graph.facebook.com",
             )
 
-        self.assertEqual(payload, {"data": []})
-        fetch.assert_called_once_with(
-            media_id="fb-video-1",
-            metrics=["fb_reels_total_plays"],
-            access_token="page-token",
-            graph_version="v25.0",
-            graph_api_root="https://graph.facebook.com",
-            edge="video_insights",
-            api_name="Facebook",
-            period="lifetime",
+        self.assertEqual(
+            payload,
+            {
+                "data": [
+                    {"name": "views", "values": [{"value": 12}]},
+                    {"name": "likes", "values": [{"value": 3}]},
+                    {"name": "comments", "values": [{"value": 2}]},
+                ]
+            },
         )
 
     def test_facebook_video_insights_make_expected_graph_request(self) -> None:
         with patch(
             "instagram_publish.graph_request",
-            return_value={"data": []},
+            return_value={"id": "fb-video-1", "views": 12},
         ) as request:
             reel_scheduler.fetch_facebook_video_insights(
                 video_id="fb-video-1",
-                metrics=["fb_reels_total_plays"],
+                metrics=["views", "likes", "comments"],
                 access_token="page-token",
                 graph_version="v25.0",
                 graph_api_root="https://graph.facebook.com",
             )
 
+        request.assert_called_once_with(
+            "fb-video-1",
+            api_name="Facebook",
+            access_token="page-token",
+            graph_version="v25.0",
+            graph_api_root="https://graph.facebook.com",
+            params={
+                "fields": (
+                    "views,"
+                    "likes.limit(0).summary(true),"
+                    "comments.limit(0).summary(true)"
+                ),
+            },
+            method="GET",
+            timeout=30,
+        )
+
+    def test_facebook_video_insight_edge_uses_v25_video_insights(self) -> None:
+        rich_payload = {
+            "data": [
+                {
+                    "name": "blue_reels_play_count",
+                    "values": [{"value": 15}],
+                }
+            ]
+        }
+        with patch(
+            "instagram_publish.graph_request",
+            return_value=rich_payload,
+        ) as request:
+            payload = reel_scheduler.fetch_facebook_video_insight_edge(
+                video_id="fb-video-1",
+                metrics=[
+                    "blue_reels_play_count",
+                    "post_video_avg_time_watched",
+                ],
+                access_token="page-token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+
+        self.assertEqual(payload, rich_payload)
         request.assert_called_once_with(
             "fb-video-1/video_insights",
             api_name="Facebook",
@@ -1756,17 +1849,258 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             graph_version="v25.0",
             graph_api_root="https://graph.facebook.com",
             params={
-                "metric": "fb_reels_total_plays",
+                "metric": (
+                    "blue_reels_play_count,"
+                    "post_video_avg_time_watched"
+                ),
                 "period": "lifetime",
             },
             method="GET",
             timeout=30,
         )
 
+    def test_facebook_video_insights_probe_is_single_metric_and_redacts_token(
+        self,
+    ) -> None:
+        with patch.object(
+            reel_scheduler,
+            "fetch_facebook_video_insight_edge",
+            side_effect=SystemExit(
+                "Facebook Graph API error 403 "
+                "https://graph.facebook.com/video_insights?"
+                "access_token=page-token"
+            ),
+        ) as fetch:
+            available, warning = reel_scheduler.probe_facebook_video_insights(
+                video_id="fb-video-1",
+                access_token="page-token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+
+        self.assertFalse(available)
+        self.assertNotIn("page-token", str(warning))
+        self.assertIn("[REDACTED]", str(warning))
+        self.assertEqual(
+            fetch.call_args.kwargs["metrics"],
+            [reel_scheduler.FACEBOOK_VIDEO_INSIGHT_PROBE_METRIC],
+        )
+
+    def test_facebook_video_insights_reads_verified_share_count_from_page_post(
+        self,
+    ) -> None:
+        with patch(
+            "instagram_publish.graph_request",
+            side_effect=[
+                {
+                    "id": "fb-video-1",
+                    "views": 12,
+                    "post_id": "page-post-1",
+                },
+                {
+                    "id": "page-1_page-post-1",
+                    "shares": {"count": 2},
+                },
+            ],
+        ) as request:
+            payload = reel_scheduler.fetch_facebook_video_insights(
+                video_id="fb-video-1",
+                metrics=["views", "shares"],
+                access_token="page-token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+                page_id="page-1",
+            )
+
+        self.assertEqual(
+            payload,
+            {
+                "data": [
+                    {"name": "views", "values": [{"value": 12}]},
+                    {
+                        "name": "facebook_post_id",
+                        "values": [{"value": "page-post-1"}],
+                    },
+                    {"name": "shares", "values": [{"value": 2}]},
+                ]
+            },
+        )
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(
+            request.call_args_list[0].kwargs["params"],
+            {"fields": "views,post_id"},
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            "page-1_page-post-1",
+        )
+        self.assertEqual(
+            request.call_args_list[1].kwargs["params"],
+            {"fields": "shares"},
+        )
+
+    def test_facebook_missing_page_post_share_count_remains_unavailable(
+        self,
+    ) -> None:
+        with patch(
+            "instagram_publish.graph_request",
+            side_effect=[
+                {
+                    "id": "fb-video-1",
+                    "views": 12,
+                    "post_id": "page-post-1",
+                },
+                {"id": "page-1_page-post-1"},
+            ],
+        ):
+            payload = reel_scheduler.fetch_facebook_video_insights(
+                video_id="fb-video-1",
+                metrics=["views", "shares"],
+                access_token="page-token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+                page_id="page-1",
+            )
+
+        metrics = reel_scheduler.facebook_reel_insight_metrics(payload)
+        self.assertEqual(metrics["views"], 12)
+        self.assertNotIn("shares", metrics)
+        self.assertNotIn("total_interactions", metrics)
+
+    def test_facebook_rich_insights_merge_with_direct_fallback_and_provenance(
+        self,
+    ) -> None:
+        direct = {
+            "data": [
+                {"name": "views", "values": [{"value": 20}]},
+                {"name": "likes", "values": [{"value": 8}]},
+                {"name": "comments", "values": [{"value": 1}]},
+                {"name": "shares", "values": [{"value": 2}]},
+            ]
+        }
+        rich = {
+            "data": [
+                {
+                    "name": "fb_reels_total_plays",
+                    "values": [{"value": 24}],
+                },
+                {
+                    "name": "post_video_likes_by_reaction_type",
+                    "values": [{"value": {"LIKE": 5, "LOVE": 3}}],
+                },
+                {
+                    "name": "post_video_avg_time_watched",
+                    "values": [{"value": 4200}],
+                },
+            ]
+        }
+        with patch.object(
+            reel_scheduler,
+            "fetch_facebook_direct_insights_resilient",
+            return_value=(direct, []),
+        ) as direct_fetch, patch.object(
+            reel_scheduler,
+            "fetch_facebook_video_insight_edge_resilient",
+            return_value=(rich, []),
+        ) as rich_fetch:
+            payload, warnings = reel_scheduler.fetch_facebook_insights_resilient(
+                video_id="fb-video-1",
+                metrics=[
+                    "views",
+                    "likes",
+                    "comments",
+                    "shares",
+                    "fb_reels_total_plays",
+                    "post_video_likes_by_reaction_type",
+                    "post_video_avg_time_watched",
+                ],
+                access_token="page-token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+                page_id="page-1",
+                rich_insights_available=True,
+            )
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            direct_fetch.call_args.kwargs["metrics"],
+            ["views", "likes", "comments", "shares"],
+        )
+        self.assertEqual(
+            rich_fetch.call_args.kwargs["metrics"],
+            [
+                "fb_reels_total_plays",
+                "post_video_likes_by_reaction_type",
+                "post_video_avg_time_watched",
+            ],
+        )
+        self.assertEqual(payload["metric_provenance"]["views"], "video_object")
+        self.assertEqual(payload["metric_provenance"]["shares"], "page_post")
+        self.assertEqual(
+            payload["metric_provenance"]["post_video_avg_time_watched"],
+            "video_insights",
+        )
+        metrics = reel_scheduler.facebook_reel_insight_metrics(payload)
+        self.assertEqual(metrics["views"], 20)
+        self.assertEqual(metrics["likes"], 5)
+        self.assertEqual(metrics["facebook_total_reactions"], 8)
+        self.assertEqual(metrics["ig_reels_avg_watch_time"], 4200)
+        self.assertEqual(metrics["total_interactions"], 11)
+
+    def test_facebook_rich_metric_failure_isolated_after_combined_request(
+        self,
+    ) -> None:
+        play_payload = {
+            "data": [
+                {
+                    "name": "fb_reels_total_plays",
+                    "values": [{"value": 24}],
+                }
+            ]
+        }
+        with patch.object(
+            reel_scheduler,
+            "fetch_facebook_video_insight_edge",
+            side_effect=[
+                SystemExit("combined request failed"),
+                play_payload,
+                SystemExit("retention unavailable"),
+            ],
+        ) as fetch:
+            payload, warnings = (
+                reel_scheduler.fetch_facebook_video_insight_edge_resilient(
+                    video_id="fb-video-1",
+                    metrics=[
+                        "fb_reels_total_plays",
+                        "post_video_retention_graph",
+                    ],
+                    access_token="page-token",
+                    graph_version="v25.0",
+                    graph_api_root="https://graph.facebook.com",
+                )
+            )
+
+        self.assertEqual(
+            [call.kwargs["metrics"] for call in fetch.call_args_list],
+            [
+                ["fb_reels_total_plays", "post_video_retention_graph"],
+                ["fb_reels_total_plays"],
+                ["post_video_retention_graph"],
+            ],
+        )
+        self.assertEqual(
+            reel_scheduler.insight_payload_values(payload)["fb_reels_total_plays"],
+            24,
+        )
+        self.assertEqual(
+            warnings,
+            ["post_video_retention_graph: retention unavailable"],
+        )
+
     def test_facebook_optional_metric_failure_preserves_core_snapshot(self) -> None:
         core_payload = {
             "data": [
-                {"name": "fb_reels_total_plays", "values": [{"value": 12}]},
+                {"name": "views", "values": [{"value": 12}]},
             ]
         }
         with patch.object(
@@ -1781,7 +2115,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             payload, warnings = reel_scheduler.fetch_facebook_insights_resilient(
                 video_id="fb-video-1",
                 metrics=[
-                    "fb_reels_total_plays",
+                    "views",
                     "future_metric",
                 ],
                 access_token="page-token",
@@ -1792,8 +2126,8 @@ class ReelLedgerPlanningTests(unittest.TestCase):
         self.assertEqual(
             [call.kwargs["metrics"] for call in fetch.call_args_list],
             [
-                ["fb_reels_total_plays", "future_metric"],
-                ["fb_reels_total_plays"],
+                ["views", "future_metric"],
+                ["views"],
                 ["future_metric"],
             ],
         )
@@ -1837,16 +2171,9 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             )
             payload = {
                 "data": [
-                    {"name": "fb_reels_total_plays", "values": [{"value": 240}]},
-                    {"name": "post_total_media_view_unique", "values": [{"value": 180}]},
-                    {
-                        "name": "post_video_likes_by_reaction_type",
-                        "values": [{"value": {"LIKE": 7, "LOVE": 2}}],
-                    },
-                    {
-                        "name": "post_video_social_actions",
-                        "values": [{"value": {"COMMENT": 3, "SHARE": 4}}],
-                    },
+                    {"name": "views", "values": [{"value": 240}]},
+                    {"name": "likes", "values": [{"value": 9}]},
+                    {"name": "comments", "values": [{"value": 3}]},
                 ]
             }
 
@@ -1861,6 +2188,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 return_value=("page-token", "test:page"),
             ), patch.object(
                 reel_scheduler,
+                "probe_facebook_video_insights",
+                return_value=(True, None),
+            ), patch.object(
+                reel_scheduler,
                 "fetch_facebook_insights_resilient",
                 return_value=(payload, []),
             ) as fetch:
@@ -1869,6 +2200,7 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             fetch.assert_called_once()
             self.assertEqual(fetch.call_args.kwargs["video_id"], "video-2")
+            self.assertTrue(fetch.call_args.kwargs["rich_insights_available"])
             self.assertEqual(
                 fetch.call_args.kwargs["metrics"],
                 list(reel_scheduler.FACEBOOK_INSIGHT_REQUEST_METRIC_KEYS),
@@ -1878,9 +2210,104 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["media_id"], "video-2")
             self.assertEqual(rows[0]["views"], 240)
-            self.assertEqual(rows[0]["reach"], 180)
             self.assertEqual(rows[0]["likes"], 9)
-            self.assertIn("fb_reels_total_plays", rows[0]["raw"])
+            self.assertEqual(rows[0]["comments"], 3)
+            self.assertIsNone(rows[0]["reach"])
+            self.assertIn('"name": "views"', rows[0]["raw"])
+
+    def test_sync_facebook_probes_rich_permission_once_then_uses_direct_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "facebook.db"
+            with reel_ledger.connect(db) as conn:
+                for content_hash, media_id in (
+                    ("fb-one", "video-1"),
+                    ("fb-two", "video-2"),
+                ):
+                    reel_ledger.upsert_imported(
+                        conn,
+                        content_hash=content_hash,
+                        channel_id="aibrief_jp",
+                        lang="ja",
+                        clip_dir="/clip",
+                        media_path="/clip/reel.mp4",
+                        status=reel_ledger.STATUS_PUBLISHED,
+                        published_at="2026-07-27T00:00:00+00:00",
+                        media_id=media_id,
+                    )
+            args = argparse.Namespace(
+                platform="facebook",
+                channel="aibrief_jp",
+                db=db,
+                limit=None,
+                media_id=None,
+                dry_run=False,
+                metrics="",
+                access_token="",
+                graph_api_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+            payload = {
+                "data": [
+                    {"name": "views", "values": [{"value": 24}]},
+                    {"name": "likes", "values": [{"value": 2}]},
+                    {"name": "comments", "values": [{"value": 1}]},
+                ],
+                "metric_provenance": {
+                    "views": "video_object",
+                    "likes": "video_object",
+                    "comments": "video_object",
+                },
+            }
+
+            with patch("facebook_publish.load_env_file"), patch(
+                "facebook_publish.resolve_facebook_page_id",
+                return_value=("page-1", "test"),
+            ), patch(
+                "facebook_publish.resolve_facebook_access_token",
+                return_value=("user-token", "test"),
+            ), patch(
+                "facebook_publish.resolve_page_access_token_for_publish",
+                return_value=("page-token", "test:page"),
+            ), patch.object(
+                reel_scheduler,
+                "probe_facebook_video_insights",
+                return_value=(
+                    False,
+                    "Facebook Graph API error 403: missing read_insights",
+                ),
+            ) as probe, patch.object(
+                reel_scheduler,
+                "fetch_facebook_insights_resilient",
+                return_value=(payload, []),
+            ) as fetch, patch("builtins.print") as output:
+                rc = reel_scheduler.sync_insights_command(args)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(probe.call_count, 1)
+            self.assertEqual(fetch.call_count, 2)
+            self.assertTrue(
+                all(
+                    call.kwargs["rich_insights_available"] is False
+                    for call in fetch.call_args_list
+                )
+            )
+            messages = [
+                " ".join(str(part) for part in call.args)
+                for call in output.call_args_list
+            ]
+            permission_warnings = [
+                message
+                for message in messages
+                if "Facebook video_insights unavailable" in message
+            ]
+            self.assertEqual(len(permission_warnings), 1)
+            self.assertIn("read_insights", permission_warnings[0])
+            self.assertNotIn(
+                "optional Facebook metric unavailable",
+                "\n".join(messages),
+            )
 
     def test_sync_facebook_insights_does_not_record_missing_core(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1926,6 +2353,10 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 return_value=("page-token", "test:page"),
             ), patch.object(
                 reel_scheduler,
+                "probe_facebook_video_insights",
+                return_value=(True, None),
+            ), patch.object(
+                reel_scheduler,
                 "fetch_facebook_insights_resilient",
                 return_value=(payload, []),
             ):
@@ -1964,6 +2395,11 @@ class ReelLedgerPlanningTests(unittest.TestCase):
         self.assertNotIn(
             "clips_replays_count", reel_scheduler.INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS
         )
+        self.assertIn("reposts", reel_scheduler.INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS)
+        self.assertIn(
+            "reposts", reel_scheduler.INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS
+        )
+        self.assertIn("reposts", reel_scheduler.INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS)
         self.assertIn("follows", reel_scheduler.INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS)
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "reels.db"
@@ -2022,6 +2458,41 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 self.assertEqual(row["ig_reels_avg_watch_time"], 4321.5)
                 self.assertIsNone(row["reels_skip_rate"])
                 self.assertIn("reels_skip_rate", row["raw"])
+
+    def test_reposts_failure_does_not_suppress_core_insights(self) -> None:
+        graph_error = SystemExit(
+            "Instagram Graph API error 400: reposts unavailable for this media"
+        )
+        with patch.object(
+            reel_scheduler,
+            "fetch_insights",
+            side_effect=[
+                graph_error,
+                {"data": [{"name": "views", "values": [{"value": 1200}]}]},
+                graph_error,
+                graph_error,
+            ],
+        ) as fetch:
+            payload, warnings = reel_scheduler.fetch_instagram_insights_resilient(
+                media_id="178900100",
+                metrics=["views", "reposts"],
+                access_token="token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+
+        self.assertEqual(reel_scheduler.parse_insight_metrics(payload), {"views": 1200})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("reposts", warnings[0])
+        self.assertEqual(
+            [call.kwargs["metrics"] for call in fetch.call_args_list],
+            [
+                ["views", "reposts"],
+                ["views"],
+                ["reposts"],
+                ["reposts"],
+            ],
+        )
 
     def test_sync_insights_skips_one_graph_error_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -105,14 +105,42 @@ Extract lifetime values from `insights.raw_api_payload.data` by metric name:
 - **Instagram likes:** `likes`
 - **Meta all-surface likes:** `total_likes`
 - **Engagement:** `saved`, `shares`, `comments`, and `total_interactions`
+- **Reposts:** `reposts`; keep separate from shares and total interactions
 - **Retention diagnostics:** `ig_reels_avg_watch_time`,
   `ig_reels_video_view_total_time`, and `reels_skip_rate`
 - **Cross-surface diagnostics:** `facebook_views` and `crossposted_views`
 
-The current Media Insights endpoint rejects `follows` for this Reel product
-type and does not recognize the legacy `clips_replays_count` metric name. Their
-nullable columns remain available for compatibility, but the scheduled default
-request omits them. Never substitute zero for an unsupported metric.
+The current Media Insights endpoint rejects `follows` for the `REELS` media
+product type and does not recognize the legacy `clips_replays_count` metric
+name. Their nullable Reel columns remain available for compatibility, but the
+scheduled default request omits them. Never substitute zero for an unsupported
+metric.
+
+`reels_skip_rate` is already a percentage of initial views that skipped within
+the first three seconds. Do not multiply it by 100 or infer a skip count.
+`total_interactions` is Meta's net aggregate of likes, saves, comments, and
+shares after reversals/deletions; it does not include reposts. Its dashboard
+rate is the transparent `total_interactions / Instagram reach`, not a custom
+engagement score.
+
+The same sync now records account-level growth separately:
+
+- `account_insight_snapshots.followers_count` is a point-in-time account stock;
+- `account_follow_flows.follows` and `.unfollows` are flows for one explicit
+  completed UTC day; and
+- `account_follow_flows.reach` is account reach for that same exact interval.
+- `account_follow_flows.reel_reach` and its follower/non-follower fields are
+  account-day REEL-filtered reach from `media_product_type,follow_type`
+  breakdowns. Reel views, likes, comments, saves, shares, and total
+  interactions are stored from the independent `media_product_type` request.
+
+These fields can describe account growth and observational follower efficiency.
+Daily Reel reach includes every Reel viewed that day, not only Reels published
+that day. The fields cannot identify which Reel caused a follow, must not be
+joined into a Reel's `follows` field, and must not be used for per-post or
+per-series causal claims.
+Intervals inside Meta's configured 48-hour revision window remain
+preliminary.
 
 Never calculate interactions by adding displayed likes, saves, and shares,
 because those fields may mix surface scopes.

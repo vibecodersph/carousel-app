@@ -293,12 +293,43 @@ class ReelCheckpointTests(unittest.TestCase):
         self.assertIn("Experiment ID: `TRIAL-001`", text)
         self.assertIn("Asset family: `aibrief_jp:source:clip-1`", text)
 
-    def test_default_lookback_covers_72_hour_checkpoint(self) -> None:
+    def test_7_day_file_uses_exact_window_and_compares_with_72_hours(self) -> None:
+        self.insert_reel()
+        self.insert_snapshot(age=72.5, metrics=complete_metrics(views=240, reach=190))
+        self.insert_snapshot(age=170, metrics=complete_metrics(views=400, reach=300))
+        self.insert_snapshot(age=195, metrics=complete_metrics(views=999, reach=900))
+
+        rc = self.run_main(
+            "--no-sync",
+            "--checkpoint",
+            "7d",
+            "--as-of",
+            (self.published + timedelta(hours=200)).isoformat(),
+        )
+
+        self.assertEqual(rc, 0)
+        path = (
+            self.root
+            / "out"
+            / "aibrief_jp_reel_learning"
+            / "2026-07-14"
+            / "0900_abcdef123456"
+            / "7d.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Actual observed age: **170.00h**", text)
+        self.assertIn("| Instagram views | 400 | +160 |", text)
+        self.assertNotIn("999", text)
+        self.assertIn("Compared with: +72h at 72.50h", text)
+        self.assertIn("Mature read:", text)
+
+    def test_default_lookback_covers_7_day_checkpoint(self) -> None:
         parser = checkpoints.build_parser()
         args = parser.parse_args([])
 
-        self.assertGreaterEqual(args.lookback_hours, 100)
+        self.assertGreaterEqual(args.lookback_hours, 192)
         self.assertIn("72h", checkpoints.CHECKPOINT_BY_KEY)
+        self.assertIn("7d", checkpoints.CHECKPOINT_BY_KEY)
 
     def test_past_window_writes_missed_without_substituting_late_snapshot(self) -> None:
         self.insert_reel()

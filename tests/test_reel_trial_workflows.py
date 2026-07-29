@@ -327,6 +327,314 @@ class TrialWorkflowTests(unittest.TestCase):
                     expected_scheduled_at="2026-08-02T13:00:00+09:00",
                 )
 
+    def test_additive_published_variant_keeps_regular_queue_and_is_idempotent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            scheduled_at = "2026-08-05T19:00:00+09:00"
+            with reel_ledger.connect(db) as conn:
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="add-parent",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    title="Additive baseline hook",
+                    published_at="2026-07-20T04:00:00+00:00",
+                    media_id="178900011",
+                )
+                regular, regular_manifest = self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="regular-queue",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="Regular Reel stays put",
+                    scheduled_at="2026-08-05T18:00:00+09:00",
+                    source_video="source-b",
+                )
+            media = root / "additive-variant.mp4"
+            media.write_bytes(b"distinct-additive-rerender")
+            call = {
+                "db_path": db,
+                "channel_id": CHANNEL_ID,
+                "parent_content_hash": "add-parent",
+                "media_path": media,
+                "experiment_id": "TRIAL-ADD-001",
+                "variant_hook": "Sharper additive hook",
+                "scheduled_at": scheduled_at,
+                "expected_scheduled_at": scheduled_at,
+                "asset_family_id": None,
+                "changed_variables": None,
+                "graduation_strategy": "MANUAL",
+                "out_dir": root / "trial-manifests",
+                "caption_mode": "preserve-parent",
+                "now": datetime.fromisoformat("2026-08-01T00:00:00+00:00"),
+            }
+
+            preview = reel_scheduler.add_trial_from_published(
+                **call,
+                apply=False,
+            )
+            self.assertEqual(preview["mode"], "dry-run")
+            self.assertTrue(preview["additive"])
+            self.assertIsNone(preview["displaced_content_hash"])
+            variant_hash = reel_ledger.hash_file(media)
+            with reel_ledger.connect(db) as conn:
+                self.assertIsNone(
+                    reel_ledger.get_reel(conn, variant_hash, CHANNEL_ID)
+                )
+                unchanged = reel_ledger.get_reel(
+                    conn,
+                    "regular-queue",
+                    CHANNEL_ID,
+                )
+            self.assertEqual(unchanged["scheduled_at"], regular["scheduled_at"])
+
+            applied = reel_scheduler.add_trial_from_published(
+                **call,
+                apply=True,
+            )
+            self.assertEqual(applied["mode"], "apply")
+            with reel_ledger.connect(db) as conn:
+                variant = reel_ledger.get_reel(conn, variant_hash, CHANNEL_ID)
+                unchanged = reel_ledger.get_reel(
+                    conn,
+                    "regular-queue",
+                    CHANNEL_ID,
+                )
+                experiment = reel_ledger.get_trial_experiment(
+                    conn,
+                    "TRIAL-ADD-001",
+                )
+            self.assertEqual(variant["status"], reel_ledger.STATUS_SCHEDULED)
+            self.assertEqual(variant["scheduled_at"], scheduled_at)
+            self.assertEqual(variant["trial_reel"], 1)
+            self.assertEqual(
+                variant["caption"],
+                "Additive baseline hook\n\nCaption body",
+            )
+            self.assertEqual(unchanged["status"], reel_ledger.STATUS_SCHEDULED)
+            self.assertEqual(unchanged["scheduled_at"], regular["scheduled_at"])
+            self.assertEqual(
+                Path(unchanged["manifest_path"]),
+                regular_manifest,
+            )
+            self.assertIsNone(experiment["displaced_content_hash"])
+            self.assertEqual(
+                json.loads(experiment["changed_variables_json"]),
+                ["overlay_hook"],
+            )
+            manifest = reel_scheduler.read_json(Path(variant["manifest_path"]))
+            self.assertTrue(manifest["instagram_trial_reel"]["enabled"])
+            self.assertEqual(
+                manifest["trial_experiment"]["experiment_id"],
+                "TRIAL-ADD-001",
+            )
+            self.assertEqual(
+                manifest["instagram_caption"],
+                "Additive baseline hook\n\nCaption body",
+            )
+
+            repeated_call = dict(call)
+            repeated_call["now"] = datetime.fromisoformat(
+                "2026-08-06T00:00:00+00:00"
+            )
+            repeated = reel_scheduler.add_trial_from_published(
+                **repeated_call,
+                apply=True,
+            )
+            self.assertEqual(repeated["mode"], "already-applied")
+            self.assertTrue(repeated["idempotent"])
+
+            with reel_ledger.connect(db) as conn:
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="second-add-parent",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    title="Second additive parent",
+                    published_at="2026-07-21T04:00:00+00:00",
+                    media_id="178900011-b",
+                    source_video="source-c",
+                )
+            permanent_call = {
+                **call,
+                "scheduled_at": "2026-08-08T19:00:00+09:00",
+                "expected_scheduled_at": "2026-08-08T19:00:00+09:00",
+                "now": datetime.fromisoformat("2026-08-06T00:00:00+00:00"),
+                "apply": False,
+            }
+            different_media = root / "different-additive-variant.mp4"
+            different_media.write_bytes(b"different-additive-rerender")
+            with self.assertRaisesRegex(
+                SystemExit,
+                "Published parent is already linked",
+            ):
+                reel_scheduler.add_trial_from_published(
+                    **{
+                        **permanent_call,
+                        "media_path": different_media,
+                        "experiment_id": "TRIAL-ADD-PARENT-REUSE",
+                        "asset_family_id": "different-family",
+                    }
+                )
+            with self.assertRaisesRegex(
+                SystemExit,
+                "media is already linked to Trial",
+            ):
+                reel_scheduler.add_trial_from_published(
+                    **{
+                        **permanent_call,
+                        "parent_content_hash": "second-add-parent",
+                        "experiment_id": "TRIAL-ADD-CONTENT-REUSE",
+                        "asset_family_id": "another-family",
+                    }
+                )
+
+    def test_additive_published_variant_rejects_slot_drift_past_and_collision(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            scheduled_at = "2026-08-05T19:00:00+09:00"
+            with reel_ledger.connect(db) as conn:
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="add-parent",
+                    status=reel_ledger.STATUS_PUBLISHED,
+                    title="Baseline",
+                    media_id="178900012",
+                )
+            media = root / "additive-variant.mp4"
+            media.write_bytes(b"additive-variant")
+            call = {
+                "db_path": db,
+                "channel_id": CHANNEL_ID,
+                "parent_content_hash": "add-parent",
+                "media_path": media,
+                "experiment_id": "TRIAL-ADD-GUARDS",
+                "variant_hook": "Variant",
+                "scheduled_at": scheduled_at,
+                "asset_family_id": None,
+                "changed_variables": None,
+                "graduation_strategy": "MANUAL",
+                "out_dir": root / "trial-manifests",
+                "apply": False,
+            }
+            with self.assertRaisesRegex(SystemExit, "timeslot changed"):
+                reel_scheduler.add_trial_from_published(
+                    **call,
+                    expected_scheduled_at="2026-08-06T19:00:00+09:00",
+                    now=datetime.fromisoformat("2026-08-01T00:00:00+00:00"),
+                )
+            with self.assertRaisesRegex(SystemExit, "must be in the future"):
+                reel_scheduler.add_trial_from_published(
+                    **call,
+                    expected_scheduled_at=scheduled_at,
+                    now=datetime.fromisoformat("2026-08-06T00:00:00+00:00"),
+                )
+            with reel_ledger.connect(db) as conn:
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="occupied",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="Already at 19:00",
+                    scheduled_at=scheduled_at,
+                    source_video="source-b",
+                )
+            with self.assertRaisesRegex(SystemExit, "already occupied"):
+                reel_scheduler.add_trial_from_published(
+                    **call,
+                    expected_scheduled_at=scheduled_at,
+                    now=datetime.fromisoformat("2026-08-01T00:00:00+00:00"),
+                )
+
+    def test_additive_family_cooldown_is_half_open_and_symmetric(self) -> None:
+        existing_at = "2026-08-05T19:00:00+09:00"
+        cases = (
+            ("2026-08-02T19:00:00+09:00", False),
+            ("2026-08-08T19:00:00+09:00", False),
+            ("2026-08-02T19:00:01+09:00", True),
+            ("2026-08-08T18:59:59+09:00", True),
+        )
+        for candidate_at, overlaps in cases:
+            with self.subTest(candidate_at=candidate_at, overlaps=overlaps):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    db = root / "reels.db"
+                    with reel_ledger.connect(db) as conn:
+                        self.make_reel(
+                            conn,
+                            root=root,
+                            content_hash="candidate-parent",
+                            status=reel_ledger.STATUS_PUBLISHED,
+                            title="Candidate baseline",
+                            media_id="178900013",
+                            source_video="candidate-source",
+                        )
+                        self.make_reel(
+                            conn,
+                            root=root,
+                            content_hash="existing-trial-content",
+                            status=reel_ledger.STATUS_SCHEDULED,
+                            title="Existing cross-lane Trial",
+                            scheduled_at=existing_at,
+                            source_video="shared-family",
+                        )
+                        reel_ledger.upsert_trial_experiment(
+                            conn,
+                            experiment_id="EXISTING-CROSS-LANE-FAMILY",
+                            content_hash="existing-trial-content",
+                            channel_id=CHANNEL_ID,
+                            case_type=(
+                                reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION
+                            ),
+                            parent_content_hash=None,
+                            parent_media_id=None,
+                            asset_family_id="shared-family/legacy-clip",
+                            baseline_hook="Existing baseline",
+                            variant_hook="Existing variant",
+                            changed_variables_json='["distribution_mode"]',
+                            state=reel_ledger.TRIAL_STATE_SCHEDULED,
+                            scheduled_at=existing_at,
+                        )
+                    media = root / "candidate-variant.mp4"
+                    media.write_bytes(b"candidate-variant")
+                    call = {
+                        "db_path": db,
+                        "channel_id": CHANNEL_ID,
+                        "parent_content_hash": "candidate-parent",
+                        "media_path": media,
+                        "experiment_id": "TRIAL-ADD-FAMILY-CANDIDATE",
+                        "variant_hook": "Candidate variant",
+                        "scheduled_at": candidate_at,
+                        "expected_scheduled_at": candidate_at,
+                        "asset_family_id": "shared-family",
+                        "changed_variables": None,
+                        "graduation_strategy": "MANUAL",
+                        "out_dir": root / "trial-manifests",
+                        "caption_mode": "preserve-parent",
+                        "now": datetime.fromisoformat(
+                            "2026-08-01T00:00:00+00:00"
+                        ),
+                        "apply": False,
+                    }
+                    if overlaps:
+                        with self.assertRaisesRegex(
+                            SystemExit,
+                            "overlapping 72-hour observation window",
+                        ):
+                            reel_scheduler.add_trial_from_published(**call)
+                    else:
+                        preview = reel_scheduler.add_trial_from_published(
+                            **call
+                        )
+                        self.assertEqual(preview["mode"], "dry-run")
+
     def test_scheduled_conversion_keeps_slot_and_reflow_cannot_move_or_demote_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -409,6 +717,148 @@ class TrialWorkflowTests(unittest.TestCase):
                     graduation_strategy="MANUAL",
                     apply=False,
                     expected_scheduled_at="2026-08-03T18:00:00+09:00",
+                )
+
+    def test_retire_unpublished_scheduled_conversions_preserves_published_trials(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                _, queued_manifest = self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="queued-conversion",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="Queued hook",
+                    scheduled_at="2026-08-03T13:00:00+09:00",
+                    source_video="source-a",
+                )
+                _, published_manifest = self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="published-conversion",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="Published hook",
+                    scheduled_at="2026-08-04T13:00:00+09:00",
+                    source_video="source-b",
+                )
+            for content_hash, experiment_id in (
+                ("queued-conversion", "TRIAL-QUEUED"),
+                ("published-conversion", "TRIAL-PUBLISHED"),
+            ):
+                reel_scheduler.convert_scheduled_reel_to_trial(
+                    db_path=db,
+                    channel_id=CHANNEL_ID,
+                    content_hash=content_hash,
+                    experiment_id=experiment_id,
+                    hook=None,
+                    asset_family_id=None,
+                    changed_variables=None,
+                    graduation_strategy="MANUAL",
+                    apply=True,
+                )
+            with reel_ledger.connect(db) as conn:
+                reel_ledger.set_status(
+                    conn,
+                    "published-conversion",
+                    CHANNEL_ID,
+                    reel_ledger.STATUS_PUBLISHED,
+                    published_at="2026-08-04T04:00:00+00:00",
+                    media_id="178900004",
+                )
+
+            retired = (
+                reel_scheduler.retire_unpublished_scheduled_trial_conversions(
+                    db_path=db,
+                    channel_id=CHANNEL_ID,
+                    apply=True,
+                )
+            )
+
+            self.assertEqual(
+                [item["content_hash"] for item in retired],
+                ["queued-conversion"],
+            )
+            with reel_ledger.connect(db) as conn:
+                queued = reel_ledger.get_reel(
+                    conn, "queued-conversion", CHANNEL_ID
+                )
+                published = reel_ledger.get_reel(
+                    conn, "published-conversion", CHANNEL_ID
+                )
+                queued_experiment = reel_ledger.get_trial_experiment(
+                    conn, "TRIAL-QUEUED"
+                )
+                published_experiment = reel_ledger.get_trial_experiment(
+                    conn, "TRIAL-PUBLISHED"
+                )
+            self.assertEqual(queued["trial_reel"], 0)
+            self.assertIsNone(queued["trial_graduation_strategy"])
+            self.assertIsNone(queued_experiment)
+            queued_data = reel_scheduler.read_json(queued_manifest)
+            self.assertEqual(queued_data["source_type"], "scheduled_reel")
+            self.assertNotIn("instagram_trial_reel", queued_data)
+            self.assertNotIn("trial_experiment", queued_data)
+            self.assertEqual(published["trial_reel"], 1)
+            self.assertIsNotNone(published_experiment)
+            self.assertIn(
+                "instagram_trial_reel",
+                reel_scheduler.read_json(published_manifest),
+            )
+
+    def test_scheduled_conversion_rejects_second_conversion_on_same_date(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = root / "reels.db"
+            with reel_ledger.connect(db) as conn:
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="first",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="First hook",
+                    scheduled_at="2026-08-03T09:00:00+09:00",
+                    source_video="source-a",
+                )
+                self.make_reel(
+                    conn,
+                    root=root,
+                    content_hash="second",
+                    status=reel_ledger.STATUS_SCHEDULED,
+                    title="Second hook",
+                    scheduled_at="2026-08-03T18:00:00+09:00",
+                    source_video="source-b",
+                )
+            reel_scheduler.convert_scheduled_reel_to_trial(
+                db_path=db,
+                channel_id=CHANNEL_ID,
+                content_hash="first",
+                experiment_id="TRIAL-FIRST",
+                hook=None,
+                asset_family_id=None,
+                changed_variables=None,
+                graduation_strategy="MANUAL",
+                apply=True,
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "scheduled-conversion Trial already exists",
+            ):
+                reel_scheduler.convert_scheduled_reel_to_trial(
+                    db_path=db,
+                    channel_id=CHANNEL_ID,
+                    content_hash="second",
+                    experiment_id="TRIAL-SECOND",
+                    hook=None,
+                    asset_family_id=None,
+                    changed_variables=None,
+                    graduation_strategy="MANUAL",
+                    apply=False,
                 )
 
     def test_trial_experiment_state_follows_ledger_publish_lifecycle(self) -> None:

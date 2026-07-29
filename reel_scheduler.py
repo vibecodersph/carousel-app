@@ -25,7 +25,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reel_ledger
@@ -41,6 +41,18 @@ DEFAULT_PUBLISH_TIME = "09:00"
 DEFAULT_QUEUE_UI_HOST = "127.0.0.1"
 DEFAULT_QUEUE_UI_PORT = 8765
 INSIGHT_DNS_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS = 90
+DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS = 3
+MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS = 90
+INSTAGRAM_ACCOUNT_REEL_CONTENT_METRICS = (
+    "reach",
+    "views",
+    "likes",
+    "comments",
+    "saves",
+    "shares",
+    "total_interactions",
+)
 SCHEDULE_VERSION = 1
 DEFAULT_TRIAL_GRADUATION_STRATEGY = "MANUAL"
 TRIAL_GRADUATION_STRATEGIES = {"MANUAL", "SS_PERFORMANCE"}
@@ -48,6 +60,7 @@ TRIAL_CAPTION_MODES = {"preserve-parent", "rebuild"}
 TRIAL_DECISIONS = {"graduate", "stop"}
 TRIAL_DECISION_MIN_AGE_HOURS = 72.0
 TRIAL_DECISION_CHECKPOINT_MAX_AGE_HOURS = 76.0
+TRIAL_FAMILY_OBSERVATION_HOURS = 72.0
 TRIAL_DECISION_CORE_METRICS = (
     "views",
     "reach",
@@ -71,6 +84,15 @@ class ScheduledSlot:
     scheduled_at: datetime
     trial_reel: bool
     trial_graduation_strategy: str = ""
+
+
+@dataclass(frozen=True)
+class AccountFollowWindow:
+    """One explicit, non-overlapping UTC day requested from Account Insights."""
+
+    day: date
+    since: datetime
+    until: datetime
 
 
 # reel-app multi-channel layout: one clip folder ships a file per channel, where
@@ -1591,6 +1613,80 @@ def row_asset_family_id(row: Any) -> str:
     return source or clip_name or str(row_value(row, "content_hash") or "")
 
 
+def normalized_trial_family_id(value: Any) -> str:
+    family = str(value or "").strip()
+    if not family:
+        return ""
+    # Legacy Trial rows used ``source_video/clip_name`` while the daily
+    # selector stores the source-level family. Cooldowns operate at source
+    # level across both representations and both Trial lane types.
+    return family.rsplit("/", 1)[0] if "/" in family else family
+
+
+def trial_family_overlap(
+    conn: sqlite3.Connection,
+    *,
+    channel_id: str,
+    asset_family_id: str,
+    candidate_launch: datetime,
+) -> Any | None:
+    """Return the first same-family Trial whose 72h window overlaps candidate.
+
+    Observation intervals are half-open, so launches exactly 72 hours apart
+    are allowed in either direction. Missing launch metadata fails closed.
+    """
+    normalized_family = normalized_trial_family_id(asset_family_id)
+    window = timedelta(hours=TRIAL_FAMILY_OBSERVATION_HOURS)
+    experiments = conn.execute(
+        """
+        SELECT t.experiment_id, t.asset_family_id,
+               t.published_at, t.scheduled_at,
+               r.published_at AS reel_published_at,
+               r.scheduled_at AS reel_scheduled_at
+        FROM trial_experiments AS t
+        LEFT JOIN reels AS r
+          ON r.content_hash=t.content_hash AND r.channel_id=t.channel_id
+        WHERE t.channel_id=?
+        ORDER BY t.created_at, t.experiment_id
+        """,
+        (channel_id,),
+    ).fetchall()
+    for experiment in experiments:
+        if (
+            normalized_trial_family_id(experiment["asset_family_id"])
+            != normalized_family
+        ):
+            continue
+        existing_launch: datetime | None = None
+        for key in (
+            "published_at",
+            "scheduled_at",
+            "reel_published_at",
+            "reel_scheduled_at",
+        ):
+            raw = str(experiment[key] or "").strip()
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is not None:
+                existing_launch = parsed
+                break
+        if existing_launch is None:
+            raise SystemExit(
+                "Existing same-family Trial has no parseable launch time: "
+                f"{experiment['experiment_id']!r}"
+            )
+        if (
+            existing_launch < candidate_launch + window
+            and candidate_launch < existing_launch + window
+        ):
+            return experiment
+    return None
+
+
 def row_hook(row: Any) -> str:
     title = re.sub(r"\s+", " ", str(row_value(row, "title") or "")).strip()
     if title:
@@ -1914,6 +2010,358 @@ def queue_trial_from_published(
         return preview
 
 
+def add_trial_from_published(
+    *,
+    db_path: Path,
+    channel_id: str,
+    parent_content_hash: str,
+    media_path: Path,
+    experiment_id: str,
+    variant_hook: str,
+    scheduled_at: str,
+    expected_scheduled_at: str,
+    asset_family_id: str | None,
+    changed_variables: list[str] | None,
+    graduation_strategy: str,
+    out_dir: Path,
+    apply: bool,
+    caption_mode: str = "preserve-parent",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Add a published-parent Trial at an explicit slot without displacing a Reel."""
+    channel_id = channel_id.strip()
+    experiment_id = experiment_id.strip()
+    variant_hook = re.sub(r"\s+", " ", variant_hook).strip()
+    requested_at = str(scheduled_at or "").strip()
+    reviewed_at = str(expected_scheduled_at or "").strip()
+    if not channel_id or not experiment_id or not variant_hook:
+        raise SystemExit("--channel, --experiment-id, and --hook are required")
+    if not requested_at or not reviewed_at:
+        raise SystemExit("--scheduled-at and --expected-scheduled-at are required")
+    if requested_at != reviewed_at:
+        raise SystemExit(
+            "Additive Trial timeslot changed after selection: "
+            f"expected {reviewed_at!r}, requested {requested_at!r}"
+        )
+    try:
+        scheduled = datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit(
+            "--scheduled-at must be an ISO 8601 timestamp with a timezone offset"
+        ) from exc
+    if scheduled.tzinfo is None:
+        raise SystemExit("--scheduled-at must include a timezone offset")
+    if scheduled.microsecond:
+        raise SystemExit("--scheduled-at must not include fractional seconds")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise SystemExit("Current time must include a timezone offset")
+    scheduled_at_iso = scheduled.isoformat()
+    if caption_mode not in TRIAL_CAPTION_MODES:
+        raise SystemExit(
+            f"Invalid Trial caption mode {caption_mode!r}; "
+            f"choose from {sorted(TRIAL_CAPTION_MODES)}"
+        )
+    resolved_media = media_path.expanduser().resolve()
+    if not resolved_media.is_file():
+        raise SystemExit(f"Rerendered Trial media does not exist: {resolved_media}")
+    content_hash = reel_ledger.hash_file(resolved_media)
+    strategy = normalized_trial_strategy(graduation_strategy)
+    changed_json = trial_changed_variables_json(
+        changed_variables,
+        defaults=(
+            ("overlay_hook",)
+            if caption_mode == "preserve-parent"
+            else ("overlay_hook", "caption")
+        ),
+    )
+    if caption_mode == "preserve-parent" and "caption" in json.loads(changed_json):
+        raise SystemExit(
+            "--changed-variable caption conflicts with --caption-mode preserve-parent"
+        )
+    if caption_mode == "rebuild" and "caption" not in json.loads(changed_json):
+        raise SystemExit(
+            "--caption-mode rebuild requires --changed-variable caption"
+        )
+
+    with reel_ledger.connect(db_path) as conn:
+        parent = require_reel(
+            conn,
+            content_hash=parent_content_hash,
+            channel_id=channel_id,
+            role="Parent",
+        )
+        if str(parent["status"]) != reel_ledger.STATUS_PUBLISHED or not str(
+            parent["media_id"] or ""
+        ).strip():
+            raise SystemExit("Parent reel must be successfully published with a media_id")
+        if content_hash == str(parent["content_hash"]):
+            raise SystemExit("Rerendered Trial media must have a distinct content hash")
+        parent_caption = str(parent["caption"] or "")
+        if caption_mode == "preserve-parent" and not parent_caption.strip():
+            raise SystemExit(
+                "Parent reel has no ledger caption to preserve; "
+                "use --caption-mode rebuild only after reviewing the expanded treatment"
+            )
+        family_id = (asset_family_id or row_asset_family_id(parent)).strip()
+        if not family_id:
+            raise SystemExit("Trial asset family id must not be empty")
+        baseline_hook = row_hook(parent)
+        metadata = trial_manifest_metadata(
+            experiment_id=experiment_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or ""),
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+        )
+        preview = {
+            "action": "add_trial_from_published",
+            "mode": "apply" if apply else "dry-run",
+            "additive": True,
+            "experiment_id": experiment_id,
+            "channel_id": channel_id,
+            "content_hash": content_hash,
+            "parent_content_hash": str(parent["content_hash"]),
+            "displaced_content_hash": None,
+            "scheduled_at": scheduled_at_iso,
+            "media_path": str(resolved_media),
+            "graduation_strategy": strategy,
+            "caption_mode": caption_mode,
+            "trial_experiment": metadata,
+        }
+
+        existing_experiment = reel_ledger.get_trial_experiment(conn, experiment_id)
+        linked_experiment = reel_ledger.trial_experiment_for_reel(
+            conn,
+            content_hash,
+            channel_id,
+        )
+        if existing_experiment is not None:
+            exact_fields = {
+                "content_hash": content_hash,
+                "channel_id": channel_id,
+                "case_type": reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+                "parent_content_hash": str(parent["content_hash"]),
+                "parent_media_id": str(parent["media_id"] or ""),
+                "asset_family_id": family_id,
+                "baseline_hook": baseline_hook,
+                "variant_hook": variant_hook,
+                "changed_variables_json": changed_json,
+                "scheduled_at": scheduled_at_iso,
+            }
+            mismatches = [
+                key
+                for key, expected in exact_fields.items()
+                if str(existing_experiment[key] or "") != str(expected or "")
+            ]
+            if (
+                mismatches
+                or str(existing_experiment["displaced_content_hash"] or "")
+            ):
+                detail = ", ".join(mismatches) or "displaced_content_hash"
+                raise SystemExit(
+                    f"Trial experiment id already exists with different {detail}: "
+                    f"{experiment_id}"
+                )
+            existing_reel = reel_ledger.get_reel(conn, content_hash, channel_id)
+            if (
+                existing_reel is None
+                or not row_trial_enabled(existing_reel)
+                or str(existing_reel["scheduled_at"] or "") != scheduled_at_iso
+                or str(existing_reel["trial_graduation_strategy"] or "") != strategy
+            ):
+                raise SystemExit(
+                    "Existing additive Trial experiment has inconsistent ledger state"
+                )
+            existing_manifest = Path(str(existing_reel["manifest_path"] or ""))
+            if not existing_manifest.is_file():
+                raise SystemExit(
+                    "Existing additive Trial experiment has no readable manifest"
+                )
+            existing_manifest_data = read_json(existing_manifest)
+            manifest_experiment = (
+                existing_manifest_data.get("trial_experiment")
+                if isinstance(existing_manifest_data, dict)
+                else None
+            )
+            if (
+                not isinstance(manifest_experiment, dict)
+                or manifest_experiment != metadata
+                or str(existing_manifest_data.get("scheduled_at") or "")
+                != scheduled_at_iso
+                or not bool(
+                    (
+                        existing_manifest_data.get("instagram_trial_reel")
+                        if isinstance(existing_manifest_data, dict)
+                        else {}
+                    ).get("enabled")
+                )
+                or str(
+                    (
+                        existing_manifest_data.get("instagram_trial_reel")
+                        if isinstance(existing_manifest_data, dict)
+                        else {}
+                    ).get("graduation_strategy")
+                    or ""
+                )
+                != strategy
+                or (
+                    existing_manifest_data.get("reel_ledger")
+                    if isinstance(existing_manifest_data, dict)
+                    else None
+                )
+                != {
+                    "content_hash": content_hash,
+                    "channel_id": channel_id,
+                }
+            ):
+                raise SystemExit(
+                    "Existing additive Trial experiment manifest is inconsistent"
+                )
+            if (
+                caption_mode == "preserve-parent"
+                and (
+                    str(existing_reel["caption"] or "") != parent_caption
+                    or str(existing_manifest_data.get("instagram_caption") or "")
+                    != parent_caption
+                )
+            ):
+                raise SystemExit(
+                    "Existing additive Trial no longer preserves the parent caption"
+                )
+            preview["mode"] = "already-applied"
+            preview["idempotent"] = True
+            preview["manifest_path"] = str(existing_manifest)
+            return preview
+        if scheduled <= current:
+            raise SystemExit("--scheduled-at must be in the future")
+        if linked_experiment is not None:
+            raise SystemExit(
+                f"Rerendered media is already linked to Trial "
+                f"{linked_experiment['experiment_id']!r}"
+            )
+
+        family_experiment = trial_family_overlap(
+            conn,
+            channel_id=channel_id,
+            asset_family_id=family_id,
+            candidate_launch=scheduled,
+        )
+        if family_experiment is not None:
+            raise SystemExit(
+                f"Asset family {family_id!r} has an overlapping 72-hour "
+                "observation window with Trial "
+                f"{family_experiment['experiment_id']!r}"
+            )
+        parent_experiment = conn.execute(
+            "SELECT experiment_id FROM trial_experiments "
+            "WHERE channel_id=? AND parent_content_hash=? LIMIT 1",
+            (channel_id, str(parent["content_hash"])),
+        ).fetchone()
+        if parent_experiment is not None:
+            raise SystemExit(
+                f"Published parent is already linked to Trial "
+                f"{parent_experiment['experiment_id']!r}"
+            )
+        existing = reel_ledger.get_reel(conn, content_hash, channel_id)
+        if existing is not None and (
+            str(existing["status"]) != reel_ledger.STATUS_NEW
+            or str(existing["scheduled_at"] or "").strip()
+            or row_trial_enabled(existing)
+        ):
+            raise SystemExit(
+                "Rerendered Trial media is already scheduled or published in this channel"
+            )
+        collision = conn.execute(
+            "SELECT content_hash FROM reels WHERE channel_id=? AND scheduled_at=? "
+            "AND status IN (?, ?, ?) AND content_hash<>? LIMIT 1",
+            (
+                channel_id,
+                scheduled_at_iso,
+                reel_ledger.STATUS_SCHEDULED,
+                reel_ledger.STATUS_PREVIEWED,
+                reel_ledger.STATUS_PUBLISHING,
+                content_hash,
+            ),
+        ).fetchone()
+        if collision is not None:
+            raise SystemExit(
+                "Additive Trial timeslot is already occupied by "
+                f"{collision['content_hash']}"
+            )
+        if not apply:
+            return preview
+
+        reel_ledger.upsert_discovered(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            lang=str(parent["lang"] or "") or None,
+            clip_dir=str(parent["clip_dir"]),
+            media_path=resolved_media,
+            source_video=str(parent["source_video"] or "") or None,
+            title=variant_hook,
+        )
+        trial_row = require_reel(
+            conn,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            role="Rerendered Trial",
+        )
+        manifest_path, caption, title = write_ledger_manifest(
+            row=trial_row,
+            channel=load_channel(channel_id),
+            scheduled_at=scheduled,
+            out_dir=out_dir,
+            trial_reel=True,
+            trial_graduation_strategy=strategy,
+        )
+        update_manifest_for_trial(
+            manifest_path,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            scheduled_at=scheduled_at_iso,
+            graduation_strategy=strategy,
+            experiment_metadata=metadata,
+        )
+        if caption_mode == "preserve-parent":
+            caption = parent_caption
+            replace_manifest_caption(manifest_path, caption)
+        reel_ledger.upsert_trial_experiment(
+            conn,
+            experiment_id=experiment_id,
+            content_hash=content_hash,
+            channel_id=channel_id,
+            case_type=reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT,
+            parent_content_hash=str(parent["content_hash"]),
+            parent_media_id=str(parent["media_id"] or "") or None,
+            asset_family_id=family_id,
+            baseline_hook=baseline_hook or None,
+            variant_hook=variant_hook,
+            changed_variables_json=changed_json,
+            state=reel_ledger.TRIAL_STATE_SCHEDULED,
+            scheduled_at=scheduled_at_iso,
+        )
+        reel_ledger.set_status(
+            conn,
+            content_hash,
+            channel_id,
+            reel_ledger.STATUS_SCHEDULED,
+            scheduled_at=scheduled_at_iso,
+            manifest_path=str(manifest_path),
+            caption=caption,
+            title=title,
+            trial_reel=1,
+            trial_graduation_strategy=strategy,
+            last_error=None,
+        )
+        preview["manifest_path"] = str(manifest_path)
+        return preview
+
+
 def convert_scheduled_reel_to_trial(
     *,
     db_path: Path,
@@ -1963,6 +2411,53 @@ def convert_scheduled_reel_to_trial(
         if not variant_hook:
             raise SystemExit("--hook is required when the queued row has no title")
         family_id = (asset_family_id or row_asset_family_id(row)).strip()
+        scheduled_moment = parse_datetime(scheduled_at, DEFAULT_TIMEZONE)
+        family_experiment = trial_family_overlap(
+            conn,
+            channel_id=channel_id,
+            asset_family_id=family_id,
+            candidate_launch=scheduled_moment,
+        )
+        if family_experiment is not None:
+            raise SystemExit(
+                f"Asset family {family_id!r} has an overlapping 72-hour "
+                "observation window with Trial "
+                f"{family_experiment['experiment_id']!r}"
+            )
+        settings = reel_settings(load_channel(channel_id), "instagram_reels")
+        timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+        target_date = scheduled_moment.astimezone(
+            timezone_for(timezone_name)
+        ).date()
+        existing_conversions = conn.execute(
+            """
+            SELECT t.experiment_id, t.scheduled_at, r.scheduled_at AS reel_scheduled_at
+            FROM trial_experiments AS t
+            LEFT JOIN reels AS r
+              ON r.content_hash=t.content_hash AND r.channel_id=t.channel_id
+            WHERE t.channel_id=? AND t.case_type=?
+            """,
+            (
+                channel_id,
+                reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
+            ),
+        ).fetchall()
+        for existing_conversion in existing_conversions:
+            existing_at = parse_row_datetime(
+                existing_conversion["scheduled_at"]
+                or existing_conversion["reel_scheduled_at"],
+                timezone_name,
+            )
+            if (
+                existing_at is not None
+                and existing_at.astimezone(timezone_for(timezone_name)).date()
+                == target_date
+            ):
+                raise SystemExit(
+                    "A scheduled-conversion Trial already exists on "
+                    f"{target_date.isoformat()}: "
+                    f"{existing_conversion['experiment_id']!r}"
+                )
         metadata = trial_manifest_metadata(
             experiment_id=experiment_id,
             case_type=reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
@@ -2019,6 +2514,83 @@ def convert_scheduled_reel_to_trial(
             experiment_metadata=metadata,
         )
         return preview
+
+
+def retire_unpublished_scheduled_trial_conversions(
+    *,
+    db_path: Path,
+    channel_id: str,
+    apply: bool,
+) -> list[dict[str, str]]:
+    """Return unpublished scheduled-conversion experiments to regular Reels."""
+    with reel_ledger.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.*, t.experiment_id
+            FROM reels AS r
+            JOIN trial_experiments AS t
+              ON t.content_hash=r.content_hash AND t.channel_id=r.channel_id
+            WHERE r.channel_id=?
+              AND r.trial_reel=1
+              AND r.status IN (?, ?)
+              AND r.published_at IS NULL
+              AND r.media_id IS NULL
+              AND t.case_type=?
+            ORDER BY r.scheduled_at, r.content_hash
+            """,
+            (
+                channel_id,
+                reel_ledger.STATUS_SCHEDULED,
+                reel_ledger.STATUS_PREVIEWED,
+                reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
+            ),
+        ).fetchall()
+        previews = [
+            {
+                "content_hash": str(row["content_hash"]),
+                "experiment_id": str(row["experiment_id"]),
+                "scheduled_at": str(row["scheduled_at"] or ""),
+                "manifest_path": str(row["manifest_path"] or ""),
+            }
+            for row in rows
+        ]
+        if not apply:
+            return previews
+
+        manifests: list[tuple[Path, dict[str, Any]]] = []
+        for row in rows:
+            manifest_path = Path(str(row["manifest_path"] or ""))
+            if not manifest_path.is_file():
+                raise SystemExit(
+                    "Scheduled-conversion manifest does not exist: "
+                    f"{manifest_path}"
+                )
+            manifest = read_json(manifest_path)
+            if not isinstance(manifest, dict):
+                raise SystemExit(
+                    "Scheduled-conversion manifest must contain an object: "
+                    f"{manifest_path}"
+                )
+            manifests.append((manifest_path, manifest))
+
+        now = utc_now()
+        for row, (manifest_path, manifest) in zip(rows, manifests):
+            manifest.pop("instagram_trial_reel", None)
+            manifest.pop("trial_experiment", None)
+            if manifest.get("source_type") == "trial_reel_scheduled_conversion":
+                manifest["source_type"] = "scheduled_reel"
+            write_json(manifest_path, manifest)
+            conn.execute(
+                "UPDATE reels SET trial_reel=0, trial_graduation_strategy=NULL, "
+                "last_error=NULL, updated_at=? "
+                "WHERE content_hash=? AND channel_id=?",
+                (now, row["content_hash"], channel_id),
+            )
+            conn.execute(
+                "DELETE FROM trial_experiments WHERE experiment_id=?",
+                (row["experiment_id"],),
+            )
+        return previews
 
 
 def register_published_trial(
@@ -3347,8 +3919,11 @@ def scan_and_reshuffle_outputs(
             "start_at": start_at_text or planned_result["append_start"],
         }
 
+    selection_now = now or datetime.now(timezone.utc)
+    if selection_now.tzinfo is None:
+        selection_now = selection_now.replace(tzinfo=timezone_for(DEFAULT_TIMEZONE))
     if start_at_text or after_text:
-        current = now or datetime.now(timezone_for(DEFAULT_TIMEZONE))
+        current = selection_now
         reflow_start = (
             start_at_text
             or current.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
@@ -3871,6 +4446,9 @@ def make_queue_ui_handler(
                             access_token="",
                             graph_api_version="",
                             graph_api_root="",
+                            account_insights=True,
+                            account_follow_backfill_days=DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS,
+                            account_follow_refetch_days=DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS,
                         )
                     )
                 except SystemExit as exc:
@@ -4542,6 +5120,9 @@ def facebook_reel_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize Facebook Reel metrics while retaining platform-native keys."""
     raw_values = insight_payload_values(payload)
     metrics: dict[str, Any] = {}
+    direct_views = numeric_metric_value(raw_values.get("views"))
+    if direct_views is not None:
+        metrics["views"] = direct_views
     for name in (
         "fb_reels_total_plays",
         "blue_reels_play_count",
@@ -4557,18 +5138,41 @@ def facebook_reel_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         if value is not None:
             metrics[name] = value
 
+    direct_likes = numeric_metric_value(raw_values.get("likes"))
     reactions_raw = raw_values.get("post_video_likes_by_reaction_type")
-    reactions = (
+    reaction_like = facebook_social_action(reactions_raw, "like")
+    total_reactions = (
         nested_numeric_total(reactions_raw)
         if isinstance(reactions_raw, dict)
         else numeric_metric_value(reactions_raw)
     )
+    # When the rich reaction map exists, only its exact LIKE bucket is a like.
+    # LOVE/HAHA/WOW/SAD/ANGRY remain reactions and must not be mislabeled.
+    likes = reaction_like if isinstance(reactions_raw, dict) else direct_likes
+    if isinstance(reactions_raw, dict):
+        metrics["post_video_likes_by_reaction_type"] = reactions_raw
+    if total_reactions is not None:
+        metrics["facebook_total_reactions"] = total_reactions
+
     social = raw_values.get("post_video_social_actions")
-    comments = facebook_social_action(social, "comment", "comments")
-    shares = facebook_social_action(social, "share", "shares")
+    if isinstance(social, dict):
+        metrics["post_video_social_actions"] = social
+    comments = numeric_metric_value(raw_values.get("comments"))
+    if comments is None:
+        comments = facebook_social_action(social, "comment", "comments")
+    direct_shares = numeric_metric_value(raw_values.get("shares"))
+    rich_shares = facebook_social_action(social, "share", "shares")
+    shares = rich_shares if rich_shares is not None else direct_shares
+    retention_graph = raw_values.get("post_video_retention_graph")
+    if retention_graph is not None:
+        metrics["post_video_retention_graph"] = retention_graph
 
     aliases = {
-        "views": metrics.get("fb_reels_total_plays"),
+        "views": (
+            metrics.get("views")
+            if metrics.get("views") is not None
+            else metrics.get("fb_reels_total_plays")
+        ),
         "reach": next(
             (
                 metrics.get(name)
@@ -4581,7 +5185,7 @@ def facebook_reel_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             None,
         ),
-        "likes": reactions,
+        "likes": likes,
         "comments": comments,
         "shares": shares,
         "ig_reels_avg_watch_time": metrics.get("post_video_avg_time_watched"),
@@ -4592,9 +5196,18 @@ def facebook_reel_insight_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     for name, value in aliases.items():
         if value is not None:
             metrics[name] = value
-    if all(metrics.get(name) is not None for name in ("likes", "comments", "shares")):
+    interaction_reactions = (
+        total_reactions if total_reactions is not None else metrics.get("likes")
+    )
+    if (
+        interaction_reactions is not None
+        and metrics.get("comments") is not None
+        and metrics.get("shares") is not None
+    ):
         metrics["total_interactions"] = numeric_metric_value(
-            float(metrics["likes"]) + float(metrics["comments"]) + float(metrics["shares"])
+            float(interaction_reactions)
+            + float(metrics["comments"])
+            + float(metrics["shares"])
         )
     return metrics
 
@@ -4653,6 +5266,483 @@ def fetch_insights(
     raise AssertionError("unreachable")
 
 
+GRAPH_SECRET_QUERY_KEYS = {
+    "access_token",
+    "appsecret_proof",
+    "authorization",
+    "client_secret",
+    "token",
+}
+GRAPH_PAGING_SECRET_KEYS = {"after", "before", "next", "previous"}
+
+
+def redact_graph_text(value: str, *secrets: str) -> str:
+    """Remove credentials from Graph error text and embedded request URLs."""
+    redacted = str(value)
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return re.sub(
+        r"(?i)(access_token|appsecret_proof|authorization|client_secret|token)=([^&\s]+)",
+        r"\1=[REDACTED]",
+        redacted,
+    )
+
+
+def _sanitize_graph_url(value: str, secrets: tuple[str, ...]) -> str:
+    redacted = redact_graph_text(value, *secrets)
+    try:
+        parsed = urlsplit(redacted)
+    except ValueError:
+        return redacted
+    if not parsed.scheme or not parsed.netloc or not parsed.query:
+        return redacted
+    query = [
+        (
+            key,
+            "[REDACTED]" if key.casefold() in GRAPH_SECRET_QUERY_KEYS else item_value,
+        )
+        for key, item_value in parse_qsl(parsed.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
+
+
+def sanitize_graph_payload(
+    value: Any,
+    *,
+    secrets: tuple[str, ...] = (),
+    _inside_paging: bool = False,
+) -> Any:
+    """Return a JSON-safe Graph payload with tokens and paging cursors removed."""
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for raw_key, nested in value.items():
+            key = str(raw_key)
+            folded = key.casefold()
+            inside_paging = _inside_paging or folded in {"paging", "cursors"}
+            if folded in GRAPH_SECRET_QUERY_KEYS or (
+                _inside_paging and folded in GRAPH_PAGING_SECRET_KEYS
+            ):
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = sanitize_graph_payload(
+                    nested,
+                    secrets=secrets,
+                    _inside_paging=inside_paging,
+                )
+        return sanitized
+    if isinstance(value, list):
+        return [
+            sanitize_graph_payload(
+                item,
+                secrets=secrets,
+                _inside_paging=_inside_paging,
+            )
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _sanitize_graph_url(value, secrets)
+    return value
+
+
+def account_follow_windows(
+    *,
+    as_of: datetime | None = None,
+    backfill_days: int = DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS,
+    refetch_days: int = DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS,
+    existing_days: set[str] | set[date] | tuple[str, ...] = (),
+) -> list[AccountFollowWindow]:
+    """Select missing UTC days plus recent completed days that may still settle.
+
+    Every window is ``[00:00Z, 00:00Z next day)``. The current partial UTC day
+    is deliberately excluded, and no request spans or overlaps another day.
+    """
+    if not 0 <= backfill_days <= MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS:
+        raise ValueError(
+            f"backfill_days must be between 0 and {MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}"
+        )
+    if not 0 <= refetch_days <= MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS:
+        raise ValueError(
+            f"refetch_days must be between 0 and {MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}"
+        )
+    reference = as_of or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    else:
+        reference = reference.astimezone(timezone.utc)
+    today = reference.date()
+    first_day = today - timedelta(days=backfill_days)
+    recent_cutoff = today - timedelta(days=min(refetch_days, backfill_days))
+    normalized_existing = {
+        item.isoformat() if isinstance(item, date) else str(item)
+        for item in existing_days
+    }
+    windows: list[AccountFollowWindow] = []
+    for offset in range(backfill_days):
+        day = first_day + timedelta(days=offset)
+        if day.isoformat() in normalized_existing and day < recent_cutoff:
+            continue
+        since = datetime.combine(day, time.min, tzinfo=timezone.utc)
+        windows.append(
+            AccountFollowWindow(
+                day=day,
+                since=since,
+                until=since + timedelta(days=1),
+            )
+        )
+    return windows
+
+
+def parse_instagram_account_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    """Parse account stock fields without converting missing values to zero."""
+    parsed: dict[str, Any] = {
+        "username": (
+            str(payload.get("username")).strip()
+            if isinstance(payload.get("username"), str)
+            and str(payload.get("username")).strip()
+            else None
+        )
+    }
+    for field in ("followers_count", "media_count"):
+        value = payload.get(field)
+        parsed[field] = (
+            int(value)
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and float(value).is_integer()
+            else None
+        )
+    if parsed["followers_count"] is None and parsed["media_count"] is None:
+        raise ValueError("account response did not contain numeric followers_count or media_count")
+    return parsed
+
+
+def _account_insight_item(payload: dict[str, Any], metric: str) -> dict[str, Any] | None:
+    data = payload.get("data") if isinstance(payload.get("data"), list) else []
+    return next(
+        (
+            item
+            for item in data
+            if isinstance(item, dict) and str(item.get("name") or "") == metric
+        ),
+        None,
+    )
+
+
+def parse_account_total_metric(
+    payload: dict[str, Any],
+    metric: str,
+) -> int | float | None:
+    """Parse a numeric Account Insights total while preserving unavailable."""
+    item = _account_insight_item(payload, metric)
+    if item is None:
+        return None
+    total_value = item.get("total_value")
+    value = total_value.get("value") if isinstance(total_value, dict) else None
+    if value is None:
+        values = item.get("values") if isinstance(item.get("values"), list) else []
+        latest = values[-1] if values and isinstance(values[-1], dict) else {}
+        value = latest.get("value")
+    return numeric_metric_value(value)
+
+
+def _account_breakdown_metric_values(
+    payload: dict[str, Any],
+    metric: str,
+    dimension_keys: tuple[str, ...],
+) -> dict[tuple[str, ...], int | float]:
+    """Return only explicit numeric rows from one Account Insights breakdown."""
+    item = _account_insight_item(payload, metric)
+    total_value = item.get("total_value") if isinstance(item, dict) else None
+    if not isinstance(total_value, dict):
+        return {}
+    breakdowns = (
+        total_value.get("breakdowns")
+        if isinstance(total_value.get("breakdowns"), list)
+        else []
+    )
+    parsed: dict[tuple[str, ...], int | float] = {}
+    for breakdown in breakdowns:
+        if not isinstance(breakdown, dict):
+            continue
+        raw_keys = breakdown.get("dimension_keys")
+        keys = (
+            tuple(str(value) for value in raw_keys)
+            if isinstance(raw_keys, list)
+            else ()
+        )
+        if set(keys) != set(dimension_keys) or len(keys) != len(dimension_keys):
+            continue
+        results = (
+            breakdown.get("results")
+            if isinstance(breakdown.get("results"), list)
+            else []
+        )
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            dimensions = result.get("dimension_values")
+            if not isinstance(dimensions, list) or len(dimensions) != len(keys):
+                continue
+            keyed_dimensions = {
+                key: str(value).strip().upper()
+                for key, value in zip(keys, dimensions)
+            }
+            normalized_dimensions = tuple(
+                keyed_dimensions.get(key, "") for key in dimension_keys
+            )
+            numeric = numeric_metric_value(result.get("value"))
+            if all(normalized_dimensions) and numeric is not None:
+                parsed[normalized_dimensions] = numeric
+    return parsed
+
+
+def parse_account_reel_content_breakdown(
+    payload: dict[str, Any],
+) -> dict[str, int | float | None]:
+    """Parse explicit REEL rows from the ``media_product_type`` breakdown."""
+    fields = {
+        "reach": "reel_reach",
+        "views": "reel_views",
+        "likes": "reel_likes",
+        "comments": "reel_comments",
+        "saves": "reel_saves",
+        "shares": "reel_shares",
+        "total_interactions": "reel_total_interactions",
+    }
+    return {
+        field: _account_breakdown_metric_values(
+            payload,
+            metric,
+            ("media_product_type",),
+        ).get(("REEL",))
+        for metric, field in fields.items()
+    }
+
+
+def parse_account_reel_audience_breakdown(
+    payload: dict[str, Any],
+) -> dict[str, int | float | None]:
+    """Parse REEL follower/non-follower reach without assuming additivity."""
+    values = _account_breakdown_metric_values(
+        payload,
+        "reach",
+        ("media_product_type", "follow_type"),
+    )
+    return {
+        "reel_non_follower_reach": values.get(("REEL", "NON_FOLLOWER")),
+        "reel_follower_reach": values.get(("REEL", "FOLLOWER")),
+    }
+
+
+def parse_follows_and_unfollows(
+    payload: dict[str, Any],
+) -> dict[str, int | float | None]:
+    """Parse Meta's ``follow_type`` breakdown into account-level flow totals."""
+    totals: dict[str, int | float | None] = {
+        "follows": None,
+        "unfollows": None,
+        "unknown": None,
+    }
+    item = _account_insight_item(payload, "follows_and_unfollows")
+    total_value = item.get("total_value") if isinstance(item, dict) else None
+    if not isinstance(total_value, dict):
+        return totals
+
+    keyed_values: list[tuple[str, Any]] = []
+    direct = total_value.get("value")
+    if isinstance(direct, dict):
+        keyed_values.extend((str(key), value) for key, value in direct.items())
+    breakdowns = (
+        total_value.get("breakdowns")
+        if isinstance(total_value.get("breakdowns"), list)
+        else []
+    )
+    for breakdown in breakdowns:
+        if not isinstance(breakdown, dict):
+            continue
+        results = (
+            breakdown.get("results")
+            if isinstance(breakdown.get("results"), list)
+            else []
+        )
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            dimensions = result.get("dimension_values")
+            label = dimensions[0] if isinstance(dimensions, list) and dimensions else ""
+            keyed_values.append((str(label), result.get("value")))
+
+    aliases = {
+        "FOLLOWER": "follows",
+        "FOLLOW": "follows",
+        "FOLLOWS": "follows",
+        "NON_FOLLOWER": "unfollows",
+        "UNFOLLOWER": "unfollows",
+        "UNFOLLOW": "unfollows",
+        "UNFOLLOWS": "unfollows",
+        "UNKNOWN": "unknown",
+    }
+    for raw_label, raw_value in keyed_values:
+        target = aliases.get(raw_label.strip().upper())
+        numeric = numeric_metric_value(raw_value)
+        if target is None or numeric is None:
+            continue
+        previous = totals[target]
+        totals[target] = numeric_metric_value(
+            float(previous or 0) + float(numeric)
+        )
+    return totals
+
+
+def fetch_instagram_account_identity(
+    *,
+    ig_user_id: str,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Fetch current account follower/media stock with credentials stripped."""
+    import instagram_publish
+
+    payload = instagram_publish.graph_request(
+        ig_user_id,
+        api_name="Instagram",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={"fields": "username,followers_count,media_count"},
+        method="GET",
+        timeout=30,
+    )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
+def fetch_instagram_account_flow(
+    *,
+    ig_user_id: str,
+    window: AccountFollowWindow,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Fetch one exact UTC day's follow/unfollow account flow."""
+    import instagram_publish
+
+    payload = instagram_publish.graph_request(
+        f"{ig_user_id}/insights",
+        api_name="Instagram",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={
+            "metric": "follows_and_unfollows",
+            "period": "day",
+            "metric_type": "total_value",
+            "breakdown": "follow_type",
+            "since": int(window.since.timestamp()),
+            "until": int(window.until.timestamp()),
+        },
+        method="GET",
+        timeout=30,
+    )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
+def fetch_instagram_account_reach(
+    *,
+    ig_user_id: str,
+    window: AccountFollowWindow,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Fetch verified account-level reach for one exact UTC day."""
+    import instagram_publish
+
+    payload = instagram_publish.graph_request(
+        f"{ig_user_id}/insights",
+        api_name="Instagram",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={
+            "metric": "reach",
+            "period": "day",
+            "metric_type": "total_value",
+            "since": int(window.since.timestamp()),
+            "until": int(window.until.timestamp()),
+        },
+        method="GET",
+        timeout=30,
+    )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
+def fetch_instagram_account_reel_content_breakdown(
+    *,
+    ig_user_id: str,
+    window: AccountFollowWindow,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Fetch exact-day Reel metrics split from other account content."""
+    import instagram_publish
+
+    payload = instagram_publish.graph_request(
+        f"{ig_user_id}/insights",
+        api_name="Instagram",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={
+            "metric": ",".join(INSTAGRAM_ACCOUNT_REEL_CONTENT_METRICS),
+            "period": "day",
+            "metric_type": "total_value",
+            "breakdown": "media_product_type",
+            "since": int(window.since.timestamp()),
+            "until": int(window.until.timestamp()),
+        },
+        method="GET",
+        timeout=30,
+    )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
+def fetch_instagram_account_reel_audience_breakdown(
+    *,
+    ig_user_id: str,
+    window: AccountFollowWindow,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Fetch exact-day Reel reach split by follower relationship."""
+    import instagram_publish
+
+    payload = instagram_publish.graph_request(
+        f"{ig_user_id}/insights",
+        api_name="Instagram",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={
+            "metric": "reach",
+            "period": "day",
+            "metric_type": "total_value",
+            "breakdown": "media_product_type,follow_type",
+            "since": int(window.since.timestamp()),
+            "until": int(window.until.timestamp()),
+        },
+        method="GET",
+        timeout=30,
+    )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
 def fetch_facebook_video_insights(
     *,
     video_id: str,
@@ -4660,8 +5750,87 @@ def fetch_facebook_video_insights(
     access_token: str,
     graph_version: str,
     graph_api_root: str,
+    page_id: str = "",
 ) -> dict[str, Any]:
-    return fetch_insights(
+    """Read fallback Facebook Video and associated Page-post fields.
+
+    These fields remain useful when the richer ``video_insights`` edge is not
+    authorized. Return them in the established insight payload shape so
+    historical snapshots and downstream normalization remain compatible.
+    """
+    import instagram_publish
+
+    field_expressions = {
+        "views": "views",
+        "likes": "likes.limit(0).summary(true)",
+        "comments": "comments.limit(0).summary(true)",
+    }
+    video_metrics = [metric for metric in metrics if metric != "shares"]
+    requested_fields = [
+        field_expressions.get(metric, metric) for metric in video_metrics
+    ]
+    if "shares" in metrics and page_id and "post_id" not in requested_fields:
+        requested_fields.append("post_id")
+    response = instagram_publish.graph_request(
+        video_id,
+        api_name="Facebook",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={"fields": ",".join(requested_fields)},
+        method="GET",
+        timeout=30,
+    )
+    data: list[dict[str, Any]] = []
+    for metric in video_metrics:
+        value = response.get(metric)
+        if metric in {"likes", "comments"}:
+            summary = value.get("summary") if isinstance(value, dict) else None
+            value = summary.get("total_count") if isinstance(summary, dict) else None
+        if value is not None:
+            data.append({"name": metric, "values": [{"value": value}]})
+    post_id = str(response.get("post_id") or "").strip()
+    if post_id:
+        data.append(
+            {
+                "name": "facebook_post_id",
+                "values": [{"value": post_id}],
+            }
+        )
+    if "shares" in metrics and page_id and post_id:
+        post_response = instagram_publish.graph_request(
+            f"{page_id}_{post_id}",
+            api_name="Facebook",
+            access_token=access_token,
+            graph_version=graph_version,
+            graph_api_root=graph_api_root,
+            params={"fields": "shares"},
+            method="GET",
+            timeout=30,
+        )
+        shares = post_response.get("shares")
+        share_count = shares.get("count") if isinstance(shares, dict) else None
+        share_value = numeric_metric_value(share_count)
+        if share_value is not None:
+            data.append(
+                {
+                    "name": "shares",
+                    "values": [{"value": share_value}],
+                }
+            )
+    return {"data": data}
+
+
+def fetch_facebook_video_insight_edge(
+    *,
+    video_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    """Read documented Facebook Reel metrics from ``/{video}/video_insights``."""
+    payload = fetch_insights(
         media_id=video_id,
         metrics=metrics,
         access_token=access_token,
@@ -4671,6 +5840,28 @@ def fetch_facebook_video_insights(
         api_name="Facebook",
         period="lifetime",
     )
+    return sanitize_graph_payload(payload, secrets=(access_token,))
+
+
+def probe_facebook_video_insights(
+    *,
+    video_id: str,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> tuple[bool, str | None]:
+    """Probe one stable metric once before a sync attempts the rich edge."""
+    try:
+        fetch_facebook_video_insight_edge(
+            video_id=video_id,
+            metrics=[FACEBOOK_VIDEO_INSIGHT_PROBE_METRIC],
+            access_token=access_token,
+            graph_version=graph_version,
+            graph_api_root=graph_api_root,
+        )
+    except SystemExit as exc:
+        return False, redact_graph_text(str(exc), access_token)
+    return True, None
 
 
 def merge_insight_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4689,6 +5880,96 @@ def merge_insight_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
                 seen.add(name)
             merged["data"].append(item)
     return merged
+
+
+def merge_facebook_insight_sources(
+    *,
+    direct_payload: dict[str, Any],
+    rich_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge Facebook sources and retain the Graph edge for every raw metric."""
+    sourced_items: list[dict[str, Any]] = []
+    metric_provenance: dict[str, str] = {}
+    source_specs = (
+        ("video_object", direct_payload),
+        ("video_insights", rich_payload),
+    )
+    seen: set[str] = set()
+    for source, payload in source_specs:
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), list) else []
+        for raw_item in data:
+            if not isinstance(raw_item, dict):
+                continue
+            name = str(raw_item.get("name") or "")
+            if name and name in seen:
+                continue
+            item = dict(raw_item)
+            item["_provenance"] = {
+                "platform": "facebook",
+                "graph_edge": (
+                    "page_post"
+                    if source == "video_object" and name == "shares"
+                    else source
+                ),
+            }
+            sourced_items.append(item)
+            if name:
+                seen.add(name)
+                metric_provenance[name] = str(item["_provenance"]["graph_edge"])
+    return {
+        "data": sourced_items,
+        "metric_provenance": metric_provenance,
+    }
+
+
+def fetch_facebook_video_insight_edge_resilient(
+    *,
+    video_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Read rich Facebook metrics, isolating media-specific metric failures."""
+    if not metrics:
+        return {"data": []}, []
+    try:
+        return (
+            fetch_facebook_video_insight_edge(
+                video_id=video_id,
+                metrics=metrics,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            ),
+            [],
+        )
+    except SystemExit:
+        pass
+
+    payloads: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for metric in metrics:
+        try:
+            payloads.append(
+                fetch_facebook_video_insight_edge(
+                    video_id=video_id,
+                    metrics=[metric],
+                    access_token=access_token,
+                    graph_version=graph_version,
+                    graph_api_root=graph_api_root,
+                )
+            )
+        except SystemExit as exc:
+            warnings.append(
+                f"{metric}: {redact_graph_text(str(exc), access_token)}"
+            )
+    merged = merge_insight_payloads(payloads)
+    if warnings:
+        merged["optional_metric_errors"] = warnings
+    return merged, warnings
 
 
 def fetch_instagram_insights_resilient(
@@ -4769,15 +6050,16 @@ def fetch_instagram_insights_resilient(
     return merged, warnings
 
 
-def fetch_facebook_insights_resilient(
+def fetch_facebook_direct_insights_resilient(
     *,
     video_id: str,
     metrics: list[str],
     access_token: str,
     graph_version: str,
     graph_api_root: str,
+    page_id: str = "",
 ) -> tuple[dict[str, Any], list[str]]:
-    """Fetch the required Facebook play count and isolate optional metrics."""
+    """Fetch direct Video/Page-post fields and isolate optional failures."""
     try:
         return (
             fetch_facebook_video_insights(
@@ -4786,6 +6068,7 @@ def fetch_facebook_insights_resilient(
                 access_token=access_token,
                 graph_version=graph_version,
                 graph_api_root=graph_api_root,
+                page_id=page_id,
             ),
             [],
         )
@@ -4810,6 +6093,7 @@ def fetch_facebook_insights_resilient(
                 access_token=access_token,
                 graph_version=graph_version,
                 graph_api_root=graph_api_root,
+                page_id=page_id,
             )
         )
 
@@ -4823,11 +6107,66 @@ def fetch_facebook_insights_resilient(
                     access_token=access_token,
                     graph_version=graph_version,
                     graph_api_root=graph_api_root,
+                    page_id=page_id,
                 )
             )
         except SystemExit as exc:
-            warnings.append(f"{metric}: {exc}")
+            warnings.append(
+                f"{metric}: {redact_graph_text(str(exc), access_token)}"
+            )
     merged = merge_insight_payloads(payloads)
+    if warnings:
+        merged["optional_metric_errors"] = warnings
+    return merged, warnings
+
+
+def fetch_facebook_insights_resilient(
+    *,
+    video_id: str,
+    metrics: list[str],
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+    page_id: str = "",
+    rich_insights_available: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
+    """Merge authorized rich Reel insights with direct-field fallbacks."""
+    direct_metrics = [
+        metric for metric in metrics
+        if metric not in FACEBOOK_VIDEO_INSIGHT_METRIC_KEYS
+    ]
+    rich_metrics = [
+        metric for metric in metrics
+        if metric in FACEBOOK_VIDEO_INSIGHT_METRIC_KEYS
+    ]
+    direct_payload: dict[str, Any] = {"data": []}
+    direct_warnings: list[str] = []
+    if direct_metrics:
+        direct_payload, direct_warnings = fetch_facebook_direct_insights_resilient(
+            video_id=video_id,
+            metrics=direct_metrics,
+            access_token=access_token,
+            graph_version=graph_version,
+            graph_api_root=graph_api_root,
+            page_id=page_id,
+        )
+
+    rich_payload: dict[str, Any] | None = None
+    rich_warnings: list[str] = []
+    if rich_insights_available and rich_metrics:
+        rich_payload, rich_warnings = fetch_facebook_video_insight_edge_resilient(
+            video_id=video_id,
+            metrics=rich_metrics,
+            access_token=access_token,
+            graph_version=graph_version,
+            graph_api_root=graph_api_root,
+        )
+
+    warnings = [*direct_warnings, *rich_warnings]
+    merged = merge_facebook_insight_sources(
+        direct_payload=direct_payload,
+        rich_payload=rich_payload,
+    )
     if warnings:
         merged["optional_metric_errors"] = warnings
     return merged, warnings
@@ -4847,6 +6186,7 @@ INSIGHT_METRIC_KEYS = (
     "ig_reels_video_view_total_time",
     "ig_reels_avg_watch_time",
     "reels_skip_rate",
+    "reposts",
     "clips_replays_count",
     "facebook_views",
     "crossposted_views",
@@ -4868,6 +6208,7 @@ INSTAGRAM_OPTIONAL_INSIGHT_METRIC_KEYS = (
     "ig_reels_video_view_total_time",
     "ig_reels_avg_watch_time",
     "reels_skip_rate",
+    "reposts",
     "clips_replays_count",
     "facebook_views",
     "crossposted_views",
@@ -4877,6 +6218,7 @@ INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS = (
     "ig_reels_video_view_total_time",
     "ig_reels_avg_watch_time",
     "reels_skip_rate",
+    "reposts",
     "facebook_views",
     "crossposted_views",
 )
@@ -4884,21 +6226,29 @@ INSTAGRAM_INSIGHT_REQUEST_METRIC_KEYS = (
     *INSTAGRAM_CORE_INSIGHT_METRIC_KEYS,
     *INSTAGRAM_DEFAULT_OPTIONAL_INSIGHT_METRIC_KEYS,
 )
-FACEBOOK_CORE_INSIGHT_METRIC_KEYS = ("fb_reels_total_plays",)
+FACEBOOK_CORE_INSIGHT_METRIC_KEYS = ("views",)
 FACEBOOK_OPTIONAL_INSIGHT_METRIC_KEYS = (
+    "likes",
+    "comments",
+    "shares",
+)
+FACEBOOK_VIDEO_INSIGHT_METRIC_KEYS = (
     "blue_reels_play_count",
     "fb_reels_replay_count",
+    "fb_reels_total_plays",
     "post_total_media_view_unique",
-    "total_video_impressions_unique",
     "post_video_avg_time_watched",
     "post_video_followers",
-    "post_video_view_time",
     "post_video_likes_by_reaction_type",
+    "post_video_retention_graph",
     "post_video_social_actions",
+    "post_video_view_time",
 )
+FACEBOOK_VIDEO_INSIGHT_PROBE_METRIC = "blue_reels_play_count"
 FACEBOOK_INSIGHT_REQUEST_METRIC_KEYS = (
     *FACEBOOK_CORE_INSIGHT_METRIC_KEYS,
     *FACEBOOK_OPTIONAL_INSIGHT_METRIC_KEYS,
+    *FACEBOOK_VIDEO_INSIGHT_METRIC_KEYS,
 )
 DEFAULT_REPORT_SYNC_ACTION_URL = (
     f"http://{DEFAULT_QUEUE_UI_HOST}:{DEFAULT_QUEUE_UI_PORT}/sync-insights"
@@ -5963,6 +7313,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply after inspecting the default dry-run output",
     )
 
+    add_trial_from_published_parser = subparsers.add_parser(
+        "trial-add-from-published",
+        help="Add a rerendered Trial of a published Reel at an explicit future slot",
+    )
+    add_trial_from_published_parser.add_argument(
+        "--channel",
+        required=True,
+        help="Instagram channel id",
+    )
+    add_trial_from_published_parser.add_argument(
+        "--parent-content-hash",
+        required=True,
+    )
+    add_trial_from_published_parser.add_argument(
+        "--media-path",
+        type=Path,
+        required=True,
+    )
+    add_trial_from_published_parser.add_argument("--experiment-id", required=True)
+    add_trial_from_published_parser.add_argument(
+        "--hook",
+        required=True,
+        help="Hook rendered into the variant",
+    )
+    add_trial_from_published_parser.add_argument(
+        "--scheduled-at",
+        required=True,
+        help="Exact additive future slot as ISO 8601 with a timezone offset",
+    )
+    add_trial_from_published_parser.add_argument(
+        "--expected-scheduled-at",
+        required=True,
+        help="Reviewed exact slot; must match --scheduled-at",
+    )
+    add_trial_from_published_parser.add_argument("--asset-family-id")
+    add_trial_from_published_parser.add_argument(
+        "--changed-variable",
+        action="append",
+        dest="changed_variables",
+        help=(
+            "Changed surface; repeat as needed "
+            "(default: overlay_hook when preserving the parent caption)"
+        ),
+    )
+    add_trial_from_published_parser.add_argument(
+        "--caption-mode",
+        choices=sorted(TRIAL_CAPTION_MODES),
+        default="preserve-parent",
+        help=(
+            "Preserve the published parent's exact caption for a hook-only test "
+            "(default), or rebuild it around the variant hook"
+        ),
+    )
+    add_trial_from_published_parser.add_argument(
+        "--graduation-strategy",
+        choices=sorted(TRIAL_GRADUATION_STRATEGIES),
+        default=DEFAULT_TRIAL_GRADUATION_STRATEGY,
+    )
+    add_trial_from_published_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT / "trial_experiments",
+        help="Folder for the generated ledger manifest",
+    )
+    add_trial_from_published_parser.add_argument("--db", type=Path, default=None)
+    add_trial_from_published_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
     convert_trial = subparsers.add_parser(
         "trial-convert-scheduled",
         help="Convert one exact scheduled Instagram Reel to Trial in the same timeslot",
@@ -6225,6 +7646,33 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--access-token", default="", help="Override platform access token")
     sync.add_argument("--graph-api-version", default="")
     sync.add_argument("--graph-api-root", default="")
+    sync.set_defaults(account_insights=True)
+    sync.add_argument(
+        "--no-account-insights",
+        dest="account_insights",
+        action="store_false",
+        help="Skip Instagram account follower stock, daily flow, and account-reach snapshots",
+    )
+    sync.add_argument(
+        "--account-follow-backfill-days",
+        type=int,
+        default=DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS,
+        help=(
+            "Backfill missing completed UTC-day account observations "
+            f"(0-{MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}; default: "
+            f"{DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS})"
+        ),
+    )
+    sync.add_argument(
+        "--account-follow-refetch-days",
+        type=int,
+        default=DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS,
+        help=(
+            "Always re-fetch this many recent completed UTC days for delayed "
+            f"account data (0-{MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}; default: "
+            f"{DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS})"
+        ),
+    )
 
     report = subparsers.add_parser("report", help="Render a self-contained HTML report from the ledger")
     report.add_argument(
@@ -6439,6 +7887,31 @@ def trial_from_published_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def trial_add_from_published_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    try:
+        result = add_trial_from_published(
+            db_path=db_path,
+            channel_id=args.channel,
+            parent_content_hash=args.parent_content_hash,
+            media_path=args.media_path,
+            experiment_id=args.experiment_id,
+            variant_hook=args.hook,
+            scheduled_at=args.scheduled_at,
+            expected_scheduled_at=args.expected_scheduled_at,
+            asset_family_id=args.asset_family_id,
+            changed_variables=args.changed_variables,
+            graduation_strategy=args.graduation_strategy,
+            out_dir=args.out_dir,
+            apply=args.apply,
+            caption_mode=args.caption_mode,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print_trial_operation(result, db_path)
+    return 0
+
+
 def trial_convert_scheduled_command(args: argparse.Namespace) -> int:
     db_path = resolve_db(args)
     try:
@@ -6548,7 +8021,6 @@ def queue_outputs_command(args: argparse.Namespace) -> int:
             f"[reel-scheduler] reshuffled queue from {result['start_at']}: "
             f"channels={len(result['reflowed'])} alternated={result['alternated']}"
         )
-
     if not args.no_report:
         report_command(
             argparse.Namespace(
@@ -6862,9 +8334,279 @@ def cleanup_missing_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def graph_login_type(graph_api_root: str) -> str:
+    host = urlparse(graph_api_root).netloc.casefold()
+    return "instagram_login" if host == "graph.instagram.com" else "facebook_login"
+
+
+def sync_instagram_account_insights_for_channel(
+    *,
+    db_path: Path,
+    channel_id: str,
+    ig_user_id: str,
+    access_token: str,
+    token_source: str,
+    graph_version: str,
+    graph_api_root: str,
+    backfill_days: int,
+    refetch_days: int,
+    captured_at: str | None = None,
+) -> dict[str, int]:
+    """Persist account follower stock plus exact-day flow/reach observations.
+
+    The account calls are deliberately independent of media insight calls.
+    Any unavailable account metric remains null, and Graph failures are logged
+    safely without being allowed to abort Reel snapshot collection.
+    """
+    fetched_at = captured_at or utc_now()
+    as_of = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+    provenance = {
+        "ig_user_id": ig_user_id,
+        "graph_api_version": graph_version,
+        "graph_api_root": graph_api_root,
+        "login_type": graph_login_type(graph_api_root),
+        "token_source": token_source,
+    }
+    results = {
+        "account_snapshots": 0,
+        "flow_windows": 0,
+        "account_errors": 0,
+    }
+    account_name = channel_id
+
+    try:
+        identity_payload = fetch_instagram_account_identity(
+            ig_user_id=ig_user_id,
+            access_token=access_token,
+            graph_version=graph_version,
+            graph_api_root=graph_api_root,
+        )
+        identity = parse_instagram_account_identity(identity_payload)
+        account_name = str(identity.get("username") or channel_id)
+        with reel_ledger.connect(db_path) as conn:
+            inserted = reel_ledger.record_account_insight_snapshot(
+                conn,
+                channel_id=channel_id,
+                account=account_name,
+                captured_at=fetched_at,
+                followers_count=identity["followers_count"],
+                media_count=identity["media_count"],
+                raw=json.dumps(
+                    sanitize_graph_payload(
+                        identity_payload,
+                        secrets=(access_token,),
+                    ),
+                    ensure_ascii=False,
+                ),
+                **provenance,
+            )
+        results["account_snapshots"] += int(inserted)
+    except (SystemExit, ValueError) as exc:
+        results["account_errors"] += 1
+        print(
+            f"[reel-scheduler] optional account stock unavailable {channel_id}: "
+            f"{redact_graph_text(str(exc), access_token)}"
+        )
+
+    today = as_of.astimezone(timezone.utc).date()
+    first_day = today - timedelta(days=backfill_days)
+    last_day = today - timedelta(days=1)
+    existing_days: set[str] = set()
+    if backfill_days:
+        with reel_ledger.connect(db_path) as conn:
+            existing_days = set(
+                reel_ledger.account_follow_flow_days(
+                    conn,
+                    channel_id=channel_id,
+                    since_day=first_day.isoformat(),
+                    until_day=last_day.isoformat(),
+                    require_reel_breakdowns=True,
+                )
+            )
+    windows = account_follow_windows(
+        as_of=as_of,
+        backfill_days=backfill_days,
+        refetch_days=refetch_days,
+        existing_days=existing_days,
+    )
+    for window in windows:
+        flow_payload: dict[str, Any] | None = None
+        reach_payload: dict[str, Any] | None = None
+        reel_content_payload: dict[str, Any] | None = None
+        reel_audience_payload: dict[str, Any] | None = None
+        errors: dict[str, str] = {}
+        try:
+            flow_payload = fetch_instagram_account_flow(
+                ig_user_id=ig_user_id,
+                window=window,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        except SystemExit as exc:
+            results["account_errors"] += 1
+            errors["follows_and_unfollows"] = redact_graph_text(str(exc), access_token)
+            print(
+                f"[reel-scheduler] optional account flow unavailable "
+                f"{channel_id} {window.day.isoformat()}: "
+                f"{errors['follows_and_unfollows']}"
+            )
+        try:
+            reach_payload = fetch_instagram_account_reach(
+                ig_user_id=ig_user_id,
+                window=window,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        except SystemExit as exc:
+            results["account_errors"] += 1
+            errors["reach"] = redact_graph_text(str(exc), access_token)
+            print(
+                f"[reel-scheduler] optional account reach unavailable "
+                f"{channel_id} {window.day.isoformat()}: {errors['reach']}"
+            )
+        try:
+            reel_content_payload = fetch_instagram_account_reel_content_breakdown(
+                ig_user_id=ig_user_id,
+                window=window,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        except SystemExit as exc:
+            results["account_errors"] += 1
+            errors["reel_content_breakdown"] = redact_graph_text(
+                str(exc),
+                access_token,
+            )
+            print(
+                f"[reel-scheduler] optional account Reel content breakdown unavailable "
+                f"{channel_id} {window.day.isoformat()}: "
+                f"{errors['reel_content_breakdown']}"
+            )
+        try:
+            reel_audience_payload = fetch_instagram_account_reel_audience_breakdown(
+                ig_user_id=ig_user_id,
+                window=window,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        except SystemExit as exc:
+            results["account_errors"] += 1
+            errors["reel_audience_breakdown"] = redact_graph_text(
+                str(exc),
+                access_token,
+            )
+            print(
+                f"[reel-scheduler] optional account Reel audience breakdown unavailable "
+                f"{channel_id} {window.day.isoformat()}: "
+                f"{errors['reel_audience_breakdown']}"
+            )
+        if (
+            flow_payload is None
+            and reach_payload is None
+            and reel_content_payload is None
+            and reel_audience_payload is None
+        ):
+            continue
+
+        flows = (
+            parse_follows_and_unfollows(flow_payload)
+            if flow_payload is not None
+            else {"follows": None, "unfollows": None, "unknown": None}
+        )
+        reach = (
+            parse_account_total_metric(reach_payload, "reach")
+            if reach_payload is not None
+            else None
+        )
+        reel_content = (
+            parse_account_reel_content_breakdown(reel_content_payload)
+            if reel_content_payload is not None
+            else {
+                "reel_reach": None,
+                "reel_views": None,
+                "reel_likes": None,
+                "reel_comments": None,
+                "reel_saves": None,
+                "reel_shares": None,
+                "reel_total_interactions": None,
+            }
+        )
+        reel_audience = (
+            parse_account_reel_audience_breakdown(reel_audience_payload)
+            if reel_audience_payload is not None
+            else {
+                "reel_non_follower_reach": None,
+                "reel_follower_reach": None,
+            }
+        )
+        raw_bundle = sanitize_graph_payload(
+            {
+                "window": {
+                    "day": window.day.isoformat(),
+                    "since": window.since.isoformat(),
+                    "until": window.until.isoformat(),
+                },
+                "follows_and_unfollows": flow_payload,
+                "reach": reach_payload,
+                "reel_content_breakdown": reel_content_payload,
+                "reel_audience_breakdown": reel_audience_payload,
+                **({"errors": errors} if errors else {}),
+            },
+            secrets=(access_token,),
+        )
+        with reel_ledger.connect(db_path) as conn:
+            inserted = reel_ledger.record_account_follow_flow(
+                conn,
+                channel_id=channel_id,
+                account=account_name,
+                day=window.day.isoformat(),
+                fetched_at=fetched_at,
+                follows=flows["follows"],
+                unfollows=flows["unfollows"],
+                unknown=flows["unknown"],
+                reach=reach,
+                **reel_content,
+                **reel_audience,
+                reel_content_breakdown_fetched=reel_content_payload is not None,
+                reel_audience_breakdown_fetched=reel_audience_payload is not None,
+                raw=json.dumps(raw_bundle, ensure_ascii=False),
+                **provenance,
+            )
+        results["flow_windows"] += int(inserted)
+    return results
+
+
 def sync_insights_command(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be greater than zero")
+    backfill_days = int(
+        getattr(
+            args,
+            "account_follow_backfill_days",
+            DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS,
+        )
+    )
+    refetch_days = int(
+        getattr(
+            args,
+            "account_follow_refetch_days",
+            DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS,
+        )
+    )
+    if not 0 <= backfill_days <= MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS:
+        raise SystemExit(
+            f"--account-follow-backfill-days must be between 0 and "
+            f"{MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}"
+        )
+    if not 0 <= refetch_days <= MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS:
+        raise SystemExit(
+            f"--account-follow-refetch-days must be between 0 and "
+            f"{MAX_ACCOUNT_FOLLOW_BACKFILL_DAYS}"
+        )
     db_path = resolve_db(args)
     platform = resolve_platform(args)
     media_ids = getattr(args, "media_id", None)
@@ -6911,13 +8653,17 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
         print(f"[reel-scheduler] skip {media_id}: exact published media id not found")
     synced = 0
     skipped = len(missing_media_ids)
+    credentials: dict[str, tuple[str, str]] = {}
     for row in rows:
-        manifest = {"channel_id": row["channel_id"]}
-        access_token, token_source = instagram_publish.resolve_instagram_access_token(
-            args.access_token,
-            manifest,
-            ROOT / "reel_scheduler.py",
-        )
+        channel_id = str(row["channel_id"])
+        if channel_id not in credentials:
+            manifest = {"channel_id": channel_id}
+            credentials[channel_id] = instagram_publish.resolve_instagram_access_token(
+                args.access_token,
+                manifest,
+                ROOT / "reel_scheduler.py",
+            )
+        access_token, token_source = credentials[channel_id]
         if not access_token:
             skipped += 1
             print(f"[reel-scheduler] skip {row['media_id']}: no access token for {row['channel_id']}")
@@ -6958,7 +8704,71 @@ def sync_instagram_insights(args: argparse.Namespace, db_path: Path) -> int:
             )
         synced += 1
         print(f"[reel-scheduler] synced {row['channel_id']} {row['media_id']}")
+
+    account_results = {
+        "account_snapshots": 0,
+        "flow_windows": 0,
+        "account_errors": 0,
+    }
+    if bool(getattr(args, "account_insights", False)):
+        account_captured_at = utc_now()
+        for channel_id, (access_token, token_source) in credentials.items():
+            if not access_token:
+                continue
+            manifest = {"channel_id": channel_id}
+            ig_user_id, user_id_source = instagram_publish.resolve_instagram_user_id(
+                "",
+                manifest,
+                ROOT / "reel_scheduler.py",
+            )
+            if not ig_user_id:
+                account_results["account_errors"] += 1
+                print(
+                    f"[reel-scheduler] optional account insights unavailable "
+                    f"{channel_id}: no Instagram user id"
+                )
+                continue
+            if args.dry_run:
+                print(
+                    f"[reel-scheduler] would sync account {channel_id} {ig_user_id} "
+                    f"via {user_id_source}; backfill={getattr(args, 'account_follow_backfill_days', DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS)}d "
+                    f"refetch={getattr(args, 'account_follow_refetch_days', DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS)}d"
+                )
+                continue
+            channel_results = sync_instagram_account_insights_for_channel(
+                db_path=db_path,
+                channel_id=channel_id,
+                ig_user_id=ig_user_id,
+                access_token=access_token,
+                token_source=token_source,
+                graph_version=graph_version,
+                graph_api_root=graph_root,
+                backfill_days=int(
+                    getattr(
+                        args,
+                        "account_follow_backfill_days",
+                        DEFAULT_ACCOUNT_FOLLOW_BACKFILL_DAYS,
+                    )
+                ),
+                refetch_days=int(
+                    getattr(
+                        args,
+                        "account_follow_refetch_days",
+                        DEFAULT_ACCOUNT_FOLLOW_REFETCH_DAYS,
+                    )
+                ),
+                captured_at=account_captured_at,
+            )
+            for name, value in channel_results.items():
+                account_results[name] += value
     print(f"[reel-scheduler] insights synced={synced} skipped={skipped}")
+    if bool(getattr(args, "account_insights", False)):
+        print(
+            "[reel-scheduler] account insights "
+            f"snapshots={account_results['account_snapshots']} "
+            f"daily_windows={account_results['flow_windows']} "
+            f"optional_errors={account_results['account_errors']}"
+        )
     return 0 if skipped == 0 else 1
 
 
@@ -7004,6 +8814,11 @@ def sync_facebook_insights(args: argparse.Namespace, db_path: Path) -> int:
         print(f"[reel-scheduler] skip {media_id}: exact published Facebook video id not found")
 
     credentials: dict[str, tuple[str, str]] = {}
+    page_ids: dict[str, str] = {}
+    rich_insight_capabilities: dict[str, bool] = {}
+    rich_metrics_requested = any(
+        metric in FACEBOOK_VIDEO_INSIGHT_METRIC_KEYS for metric in metrics
+    )
     synced = 0
     skipped = len(missing_media_ids)
     for row in rows:
@@ -7015,6 +8830,7 @@ def sync_facebook_insights(args: argparse.Namespace, db_path: Path) -> int:
                 manifest,
                 ROOT / "reel_scheduler.py",
             )
+            page_ids[channel_id] = page_id
             access_token, token_source = facebook_publish.resolve_facebook_access_token(
                 args.access_token,
                 manifest,
@@ -7054,6 +8870,23 @@ def sync_facebook_insights(args: argparse.Namespace, db_path: Path) -> int:
             )
             synced += 1
             continue
+        if rich_metrics_requested and channel_id not in rich_insight_capabilities:
+            rich_available, rich_error = probe_facebook_video_insights(
+                video_id=str(row["media_id"]),
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_root,
+            )
+            rich_insight_capabilities[channel_id] = rich_available
+            if not rich_available:
+                print(
+                    "[reel-scheduler] Facebook video_insights unavailable for "
+                    f"{channel_id}; continuing with direct Video/Page-post metrics. "
+                    "Re-authorize the Meta app and Page token with read_insights "
+                    "and pages_manage_engagement to collect native plays, unique "
+                    "viewers, watch time, follows, reactions, retention, and social "
+                    f"actions. Probe: {rich_error or 'unknown Graph error'}"
+                )
         try:
             payload, metric_warnings = fetch_facebook_insights_resilient(
                 video_id=str(row["media_id"]),
@@ -7061,6 +8894,11 @@ def sync_facebook_insights(args: argparse.Namespace, db_path: Path) -> int:
                 access_token=access_token,
                 graph_version=graph_version,
                 graph_api_root=graph_root,
+                page_id=page_ids.get(channel_id, ""),
+                rich_insights_available=rich_insight_capabilities.get(
+                    channel_id,
+                    False,
+                ),
             )
         except SystemExit as exc:
             skipped += 1
@@ -7226,6 +9064,8 @@ def main() -> int:
         return plan_ledger_command(args)
     if args.command == "trial-from-published":
         return trial_from_published_command(args)
+    if args.command == "trial-add-from-published":
+        return trial_add_from_published_command(args)
     if args.command == "trial-convert-scheduled":
         return trial_convert_scheduled_command(args)
     if args.command == "register-trial-publish":

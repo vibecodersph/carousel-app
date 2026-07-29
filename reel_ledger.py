@@ -16,15 +16,16 @@ no scheduling policy — callers decide *when* a clip posts. See
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = ROOT / "state" / "reels.db"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 8
 
 # Status lifecycle. ``new`` is discovered-but-unscheduled; the rest mirror the
 # legacy schedule.json vocabulary so imports map cleanly.
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS insights (
   ig_reels_video_view_total_time INTEGER,
   ig_reels_avg_watch_time REAL,
   reels_skip_rate REAL,
+  reposts INTEGER,
   clips_replays_count INTEGER,
   facebook_views INTEGER,
   crossposted_views INTEGER,
@@ -172,6 +174,61 @@ CREATE TABLE IF NOT EXISTS insights (
   FOREIGN KEY (content_hash, channel_id) REFERENCES reels(content_hash, channel_id)
 );
 CREATE INDEX IF NOT EXISTS idx_insights_reel ON insights(content_hash, channel_id, captured_at);
+
+CREATE TABLE IF NOT EXISTS account_insight_snapshots (
+  id                INTEGER PRIMARY KEY,
+  channel_id        TEXT NOT NULL,
+  account           TEXT,
+  ig_user_id        TEXT NOT NULL,
+  fetched_at        TEXT NOT NULL,
+  graph_api_version TEXT,
+  graph_api_root    TEXT,
+  login_type        TEXT,
+  token_source      TEXT,
+  followers_count   INTEGER,
+  media_count       INTEGER,
+  raw               TEXT,
+  observation_key   TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_account_insight_snapshots_channel_fetch
+  ON account_insight_snapshots(channel_id, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_account_insight_snapshots_user_fetch
+  ON account_insight_snapshots(ig_user_id, fetched_at);
+
+CREATE TABLE IF NOT EXISTS account_follow_flows (
+  id                INTEGER PRIMARY KEY,
+  channel_id        TEXT NOT NULL,
+  account           TEXT,
+  ig_user_id        TEXT NOT NULL,
+  observed_since    TEXT NOT NULL,
+  observed_until    TEXT NOT NULL,
+  fetched_at        TEXT NOT NULL,
+  graph_api_version TEXT,
+  graph_api_root    TEXT,
+  login_type        TEXT,
+  token_source      TEXT,
+  follows           INTEGER,
+  unfollows         INTEGER,
+  unknown           INTEGER,
+  reach             INTEGER,
+  reel_reach        INTEGER,
+  reel_non_follower_reach INTEGER,
+  reel_follower_reach INTEGER,
+  reel_views        INTEGER,
+  reel_likes        INTEGER,
+  reel_comments     INTEGER,
+  reel_saves        INTEGER,
+  reel_shares       INTEGER,
+  reel_total_interactions INTEGER,
+  reel_content_breakdown_fetched INTEGER,
+  reel_audience_breakdown_fetched INTEGER,
+  raw               TEXT,
+  observation_key   TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_account_follow_flows_channel_interval
+  ON account_follow_flows(channel_id, observed_since, observed_until, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_account_follow_flows_user_interval
+  ON account_follow_flows(ig_user_id, observed_since, observed_until, fetched_at);
 """
 
 
@@ -227,10 +284,26 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_insight_column(conn, "ig_reels_video_view_total_time", "INTEGER")
     ensure_insight_column(conn, "ig_reels_avg_watch_time", "REAL")
     ensure_insight_column(conn, "reels_skip_rate", "REAL")
+    ensure_insight_column(conn, "reposts", "INTEGER")
     ensure_insight_column(conn, "clips_replays_count", "INTEGER")
     ensure_insight_column(conn, "facebook_views", "INTEGER")
     ensure_insight_column(conn, "crossposted_views", "INTEGER")
     ensure_insight_column(conn, "follows", "INTEGER")
+    ensure_table_column(conn, "account_follow_flows", "reach", "INTEGER")
+    for column in (
+        "reel_reach",
+        "reel_non_follower_reach",
+        "reel_follower_reach",
+        "reel_views",
+        "reel_likes",
+        "reel_comments",
+        "reel_saves",
+        "reel_shares",
+        "reel_total_interactions",
+        "reel_content_breakdown_fetched",
+        "reel_audience_breakdown_fetched",
+    ):
+        ensure_table_column(conn, "account_follow_flows", column, "INTEGER")
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -248,6 +321,21 @@ def ensure_insight_column(conn: sqlite3.Connection, name: str, definition: str) 
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(insights)").fetchall()}
     if name not in columns:
         conn.execute(f"ALTER TABLE insights ADD COLUMN {name} {definition}")
+
+
+def ensure_table_column(
+    conn: sqlite3.Connection,
+    table: str,
+    name: str,
+    definition: str,
+) -> None:
+    """Add one backward-compatible column to a known ledger table."""
+    columns = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if name not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def get_reel(conn: sqlite3.Connection, content_hash: str, channel_id: str) -> sqlite3.Row | None:
@@ -586,26 +674,377 @@ def record_insight(
     metrics: dict[str, Any],
     raw: str | None = None,
     captured_at: str | None = None,
-) -> None:
-    """Append a timestamped insights snapshot for a published reel."""
+) -> bool:
+    """Append a timestamped insights snapshot unless that exact observation exists.
+
+    Returns ``True`` when a row is inserted and ``False`` for an exact duplicate.
+    Observations captured at a different time remain append-only, even when their
+    metric values have not changed.
+    """
+    observed_at = captured_at or utc_now()
+    values = (
+        content_hash, channel_id, media_id, observed_at,
+        metrics.get("views"), metrics.get("total_views"), metrics.get("reach"),
+        metrics.get("likes"), metrics.get("total_likes"), metrics.get("comments"),
+        metrics.get("total_comments"), metrics.get("saved"), metrics.get("shares"),
+        metrics.get("total_interactions"), metrics.get("ig_reels_video_view_total_time"),
+        metrics.get("ig_reels_avg_watch_time"), metrics.get("reels_skip_rate"),
+        metrics.get("reposts"), metrics.get("clips_replays_count"),
+        metrics.get("facebook_views"),
+        metrics.get("crossposted_views"), metrics.get("follows"), raw,
+    )
+    duplicate = conn.execute(
+        "SELECT 1 FROM insights WHERE "
+        "content_hash=? AND channel_id=? AND media_id=? AND captured_at=? "
+        "AND views IS ? AND total_views IS ? AND reach IS ? "
+        "AND likes IS ? AND total_likes IS ? AND comments IS ? "
+        "AND total_comments IS ? AND saved IS ? AND shares IS ? "
+        "AND total_interactions IS ? AND ig_reels_video_view_total_time IS ? "
+        "AND ig_reels_avg_watch_time IS ? AND reels_skip_rate IS ? "
+        "AND reposts IS ? AND clips_replays_count IS ? AND facebook_views IS ? "
+        "AND crossposted_views IS ? AND follows IS ? AND raw IS ? "
+        "LIMIT 1",
+        values,
+    ).fetchone()
+    if duplicate is not None:
+        return False
+
     conn.execute(
         "INSERT INTO insights (content_hash, channel_id, media_id, captured_at, "
         "views, total_views, reach, likes, total_likes, comments, total_comments, "
         "saved, shares, total_interactions, ig_reels_video_view_total_time, "
-        "ig_reels_avg_watch_time, reels_skip_rate, clips_replays_count, "
+        "ig_reels_avg_watch_time, reels_skip_rate, reposts, clips_replays_count, "
         "facebook_views, crossposted_views, follows, raw) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            content_hash, channel_id, media_id, captured_at or utc_now(),
-            metrics.get("views"), metrics.get("total_views"), metrics.get("reach"),
-            metrics.get("likes"), metrics.get("total_likes"), metrics.get("comments"),
-            metrics.get("total_comments"), metrics.get("saved"), metrics.get("shares"),
-            metrics.get("total_interactions"), metrics.get("ig_reels_video_view_total_time"),
-            metrics.get("ig_reels_avg_watch_time"), metrics.get("reels_skip_rate"),
-            metrics.get("clips_replays_count"), metrics.get("facebook_views"),
-            metrics.get("crossposted_views"), metrics.get("follows"), raw,
-        ),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        values,
     )
+    return True
+
+
+def _canonical_utc_timestamp(value: str) -> str:
+    """Normalize an ISO timestamp so equivalent instants deduplicate reliably."""
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _account_observation_key(kind: str, values: Sequence[Any]) -> str:
+    """Content key used by UNIQUE constraints without SQLite NULL ambiguity."""
+    payload = json.dumps(
+        [kind, *values],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _resolved_fetched_at(
+    *,
+    fetched_at: str | None,
+    captured_at: str | None = None,
+) -> str:
+    if fetched_at and captured_at:
+        first = _canonical_utc_timestamp(fetched_at)
+        second = _canonical_utc_timestamp(captured_at)
+        if first != second:
+            raise ValueError("fetched_at and captured_at identify different instants")
+        return first
+    return _canonical_utc_timestamp(fetched_at or captured_at or utc_now())
+
+
+def record_account_insight_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    channel_id: str,
+    ig_user_id: str,
+    followers_count: int | None,
+    media_count: int | None = None,
+    account: str | None = None,
+    graph_api_version: str | None = None,
+    graph_api_root: str | None = None,
+    login_type: str | None = None,
+    token_source: str | None = None,
+    raw: str | None = None,
+    fetched_at: str | None = None,
+    captured_at: str | None = None,
+) -> bool:
+    """Append an account-level follower stock observation.
+
+    ``captured_at`` is accepted as a compatibility alias for ``fetched_at``.
+    The access token itself is deliberately not an argument or schema field;
+    ``token_source`` stores only the non-secret credential provenance label.
+    Returns ``False`` only when every persisted value exactly matches an
+    existing observation. The same counts fetched later remain append-only.
+    """
+    observed_at = _resolved_fetched_at(
+        fetched_at=fetched_at,
+        captured_at=captured_at,
+    )
+    values = (
+        channel_id,
+        account,
+        ig_user_id,
+        observed_at,
+        graph_api_version,
+        graph_api_root,
+        login_type,
+        token_source,
+        followers_count,
+        media_count,
+        raw,
+    )
+    observation_key = _account_observation_key("account_insight_snapshot", values)
+    cursor = conn.execute(
+        "INSERT INTO account_insight_snapshots ("
+        "channel_id, account, ig_user_id, fetched_at, graph_api_version, "
+        "graph_api_root, login_type, token_source, followers_count, media_count, "
+        "raw, observation_key"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(observation_key) DO NOTHING",
+        (*values, observation_key),
+    )
+    return cursor.rowcount == 1
+
+
+def latest_account_insight_snapshot(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    *,
+    ig_user_id: str | None = None,
+) -> sqlite3.Row | None:
+    query = "SELECT * FROM account_insight_snapshots WHERE channel_id=?"
+    params: list[Any] = [channel_id]
+    if ig_user_id is not None:
+        query += " AND ig_user_id=?"
+        params.append(ig_user_id)
+    query += " ORDER BY fetched_at DESC, id DESC LIMIT 1"
+    return conn.execute(query, params).fetchone()
+
+
+def _flow_interval(
+    *,
+    day: str | None,
+    observed_since: str | None,
+    observed_until: str | None,
+) -> tuple[str, str]:
+    if day is not None:
+        if observed_since is not None or observed_until is not None:
+            raise ValueError("pass day or observed_since/observed_until, not both")
+        parsed_day = date.fromisoformat(day)
+        start = datetime.combine(parsed_day, datetime.min.time(), tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        return start.isoformat(), end.isoformat()
+    if observed_since is None or observed_until is None:
+        raise ValueError("daily flow requires day or both observed interval bounds")
+    start = _canonical_utc_timestamp(observed_since)
+    end = _canonical_utc_timestamp(observed_until)
+    if datetime.fromisoformat(end) <= datetime.fromisoformat(start):
+        raise ValueError("observed_until must be later than observed_since")
+    return start, end
+
+
+def record_account_follow_flow(
+    conn: sqlite3.Connection,
+    *,
+    channel_id: str,
+    ig_user_id: str,
+    follows: int | None,
+    unfollows: int | None,
+    unknown: int | None = None,
+    reach: int | None = None,
+    reel_reach: int | None = None,
+    reel_non_follower_reach: int | None = None,
+    reel_follower_reach: int | None = None,
+    reel_views: int | None = None,
+    reel_likes: int | None = None,
+    reel_comments: int | None = None,
+    reel_saves: int | None = None,
+    reel_shares: int | None = None,
+    reel_total_interactions: int | None = None,
+    reel_content_breakdown_fetched: int | bool | None = None,
+    reel_audience_breakdown_fetched: int | bool | None = None,
+    day: str | None = None,
+    observed_since: str | None = None,
+    observed_until: str | None = None,
+    account: str | None = None,
+    graph_api_version: str | None = None,
+    graph_api_root: str | None = None,
+    login_type: str | None = None,
+    token_source: str | None = None,
+    raw: str | None = None,
+    fetched_at: str | None = None,
+) -> bool:
+    """Append one fetched revision of an account follower-flow interval.
+
+    A later re-fetch of the same interval is retained even when Meta revises no
+    values. Only an observation with the exact same interval, fetch timestamp,
+    provenance, values, and raw response is deduplicated.
+    """
+    interval_start, interval_end = _flow_interval(
+        day=day,
+        observed_since=observed_since,
+        observed_until=observed_until,
+    )
+    observed_at = _resolved_fetched_at(fetched_at=fetched_at)
+    values = (
+        channel_id,
+        account,
+        ig_user_id,
+        interval_start,
+        interval_end,
+        observed_at,
+        graph_api_version,
+        graph_api_root,
+        login_type,
+        token_source,
+        follows,
+        unfollows,
+        unknown,
+        reach,
+        reel_reach,
+        reel_non_follower_reach,
+        reel_follower_reach,
+        reel_views,
+        reel_likes,
+        reel_comments,
+        reel_saves,
+        reel_shares,
+        reel_total_interactions,
+        reel_content_breakdown_fetched,
+        reel_audience_breakdown_fetched,
+        raw,
+    )
+    observation_key = _account_observation_key("account_follow_flow", values)
+    cursor = conn.execute(
+        "INSERT INTO account_follow_flows ("
+        "channel_id, account, ig_user_id, observed_since, observed_until, "
+        "fetched_at, graph_api_version, graph_api_root, login_type, token_source, "
+        "follows, unfollows, unknown, reach, reel_reach, "
+        "reel_non_follower_reach, reel_follower_reach, reel_views, reel_likes, "
+        "reel_comments, reel_saves, reel_shares, reel_total_interactions, "
+        "reel_content_breakdown_fetched, reel_audience_breakdown_fetched, "
+        "raw, observation_key"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(observation_key) DO NOTHING",
+        (*values, observation_key),
+    )
+    return cursor.rowcount == 1
+
+
+def account_follow_flows(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    *,
+    since_day: str | None = None,
+    until_day: str | None = None,
+    latest_revisions_only: bool = False,
+) -> list[sqlite3.Row]:
+    """Read follower-flow observations, optionally collapsing each interval.
+
+    Day filters are inclusive. With ``latest_revisions_only=True``, the newest
+    fetched revision is returned for each IG user and observed interval.
+    """
+    predicates = ["f.channel_id=?"]
+    params: list[Any] = [channel_id]
+    if since_day is not None:
+        date.fromisoformat(since_day)
+        predicates.append("substr(f.observed_since, 1, 10) >= ?")
+        params.append(since_day)
+    if until_day is not None:
+        date.fromisoformat(until_day)
+        predicates.append("substr(f.observed_since, 1, 10) <= ?")
+        params.append(until_day)
+    if latest_revisions_only:
+        predicates.append(
+            "f.id = ("
+            "SELECT f2.id FROM account_follow_flows f2 "
+            "WHERE f2.channel_id=f.channel_id "
+            "AND f2.ig_user_id=f.ig_user_id "
+            "AND f2.observed_since=f.observed_since "
+            "AND f2.observed_until=f.observed_until "
+            "ORDER BY f2.fetched_at DESC, f2.id DESC LIMIT 1"
+            ")"
+        )
+    return conn.execute(
+        "SELECT f.* FROM account_follow_flows f WHERE "
+        + " AND ".join(predicates)
+        + " ORDER BY f.observed_since, f.fetched_at, f.id",
+        params,
+    ).fetchall()
+
+
+def latest_account_follow_flows(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    *,
+    since_day: str | None = None,
+    until_day: str | None = None,
+) -> list[sqlite3.Row]:
+    return account_follow_flows(
+        conn,
+        channel_id,
+        since_day=since_day,
+        until_day=until_day,
+        latest_revisions_only=True,
+    )
+
+
+def account_follow_flow_days(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    since_day: str,
+    until_day: str,
+    *,
+    require_reach: bool = False,
+    require_flow: bool = False,
+    require_reel_breakdowns: bool = False,
+) -> set[str]:
+    """Return inclusive UTC day labels having at least one stored observation."""
+    date.fromisoformat(since_day)
+    date.fromisoformat(until_day)
+    reach_clause = " AND reach IS NOT NULL" if require_reach else ""
+    flow_clause = (
+        " AND (follows IS NOT NULL OR unfollows IS NOT NULL OR unknown IS NOT NULL)"
+        if require_flow
+        else ""
+    )
+    reel_breakdown_clause = (
+        " AND account_follow_flows.id = ("
+        "SELECT f2.id FROM account_follow_flows f2 "
+        "WHERE f2.channel_id=account_follow_flows.channel_id "
+        "AND f2.ig_user_id=account_follow_flows.ig_user_id "
+        "AND f2.observed_since=account_follow_flows.observed_since "
+        "AND f2.observed_until=account_follow_flows.observed_until "
+        "ORDER BY f2.fetched_at DESC, f2.id DESC LIMIT 1"
+        ") "
+        "AND reel_content_breakdown_fetched=1 "
+        "AND reel_audience_breakdown_fetched=1"
+        if require_reel_breakdowns
+        else ""
+    )
+    return {
+        str(row["day"])
+        for row in conn.execute(
+            "SELECT DISTINCT substr(observed_since, 1, 10) AS day "
+            "FROM account_follow_flows "
+            "WHERE channel_id=? "
+            "AND substr(observed_since, 1, 10) >= ? "
+            "AND substr(observed_since, 1, 10) <= ?"
+            + reach_clause
+            + flow_clause
+            + reel_breakdown_clause,
+            (channel_id, since_day, until_day),
+        ).fetchall()
+    }
+
+
+# More explicit aliases retained for callers that name the data by domain.
+record_account_follower_snapshot = record_account_insight_snapshot
+record_account_follower_flow = record_account_follow_flow
+latest_account_follower_snapshot = latest_account_insight_snapshot
+account_follower_flows = account_follow_flows
 
 
 def status_counts(conn: sqlite3.Connection, channel_id: str | None = None) -> dict[str, dict[str, int]]:
@@ -813,7 +1252,7 @@ def latest_insight_rows(
           i.captured_at, i.views, i.total_views, i.reach, i.likes, i.total_likes,
           i.comments, i.total_comments, i.saved, i.shares, i.total_interactions,
           i.ig_reels_video_view_total_time, i.ig_reels_avg_watch_time,
-          i.reels_skip_rate, i.clips_replays_count, i.facebook_views,
+          i.reels_skip_rate, i.reposts, i.clips_replays_count, i.facebook_views,
           i.crossposted_views, i.follows, i.raw
         FROM reels r
         LEFT JOIN insights i

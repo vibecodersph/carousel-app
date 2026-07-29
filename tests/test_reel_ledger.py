@@ -130,7 +130,7 @@ class ReelLedgerTests(unittest.TestCase):
                 clip_dir="/c/m", media_path="/c/m/x.mp4",
                 status=reel_ledger.STATUS_PUBLISHED, media_id="178000",
             )
-            reel_ledger.record_insight(
+            inserted = reel_ledger.record_insight(
                 conn, content_hash="m", channel_id="aibrief_jp", media_id="178000",
                 metrics={
                     "views": 1200,
@@ -146,12 +146,14 @@ class ReelLedgerTests(unittest.TestCase):
                     "ig_reels_video_view_total_time": 987654,
                     "ig_reels_avg_watch_time": 4321.5,
                     "reels_skip_rate": 0.375,
+                    "reposts": 6,
                     "clips_replays_count": 321,
                     "facebook_views": 700,
                     "crossposted_views": 1900,
                     "follows": 9,
                 },
             )
+            self.assertTrue(inserted)
             row = conn.execute("SELECT * FROM insights WHERE media_id=?", ("178000",)).fetchone()
             self.assertEqual(row["views"], 1200)
             self.assertEqual(row["total_views"], 2200)
@@ -163,6 +165,7 @@ class ReelLedgerTests(unittest.TestCase):
             self.assertEqual(row["ig_reels_video_view_total_time"], 987654)
             self.assertEqual(row["ig_reels_avg_watch_time"], 4321.5)
             self.assertEqual(row["reels_skip_rate"], 0.375)
+            self.assertEqual(row["reposts"], 6)
             self.assertEqual(row["clips_replays_count"], 321)
             self.assertEqual(row["facebook_views"], 700)
             self.assertEqual(row["crossposted_views"], 1900)
@@ -173,9 +176,101 @@ class ReelLedgerTests(unittest.TestCase):
             self.assertEqual(latest["total_views"], 2200)
             self.assertEqual(latest["ig_reels_avg_watch_time"], 4321.5)
             self.assertEqual(latest["reels_skip_rate"], 0.375)
+            self.assertEqual(latest["reposts"], 6)
             self.assertEqual(latest["facebook_views"], 700)
             self.assertEqual(latest["crossposted_views"], 1900)
             self.assertEqual(latest["follows"], 9)
+
+    def test_record_insight_is_idempotent_only_for_an_exact_observation(self) -> None:
+        metrics = {
+            "views": 1200,
+            "reach": 900,
+            "saved": 40,
+            "shares": 5,
+            "ig_reels_avg_watch_time": 4321.5,
+        }
+        captured_at = "2026-07-20T00:00:00+00:00"
+
+        with reel_ledger.connect(self.db) as conn:
+            reel_ledger.upsert_imported(
+                conn,
+                content_hash="same",
+                channel_id="aibrief_jp",
+                lang="ja",
+                clip_dir="/c/same",
+                media_path="/c/same/x.mp4",
+                status=reel_ledger.STATUS_PUBLISHED,
+                media_id="178001",
+            )
+            self.assertTrue(
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="same",
+                    channel_id="aibrief_jp",
+                    media_id="178001",
+                    metrics=metrics,
+                    raw='{"source":"graph"}',
+                    captured_at=captured_at,
+                )
+            )
+            self.assertFalse(
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="same",
+                    channel_id="aibrief_jp",
+                    media_id="178001",
+                    metrics=dict(metrics),
+                    raw='{"source":"graph"}',
+                    captured_at=captured_at,
+                )
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM insights").fetchone()[0],
+                1,
+            )
+
+            # An unchanged observation at a later fetch remains append-only.
+            self.assertTrue(
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="same",
+                    channel_id="aibrief_jp",
+                    media_id="178001",
+                    metrics=metrics,
+                    raw='{"source":"graph"}',
+                    captured_at="2026-07-20T01:00:00+00:00",
+                )
+            )
+
+            # The same key and timestamp is also distinct when a persisted value
+            # or the raw source payload differs.
+            changed_metrics = dict(metrics, reach=901)
+            self.assertTrue(
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="same",
+                    channel_id="aibrief_jp",
+                    media_id="178001",
+                    metrics=changed_metrics,
+                    raw='{"source":"graph"}',
+                    captured_at=captured_at,
+                )
+            )
+            self.assertTrue(
+                reel_ledger.record_insight(
+                    conn,
+                    content_hash="same",
+                    channel_id="aibrief_jp",
+                    media_id="178001",
+                    metrics=metrics,
+                    raw='{"source":"graph","retry":true}',
+                    captured_at=captured_at,
+                )
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM insights").fetchone()[0],
+                4,
+            )
 
     def test_connect_migrates_existing_insights_table_without_losing_data(self) -> None:
         with sqlite3.connect(self.db) as conn:
@@ -213,10 +308,41 @@ class ReelLedgerTests(unittest.TestCase):
             self.assertEqual(columns["ig_reels_video_view_total_time"], "INTEGER")
             self.assertEqual(columns["ig_reels_avg_watch_time"], "REAL")
             self.assertEqual(columns["reels_skip_rate"], "REAL")
+            self.assertEqual(columns["reposts"], "INTEGER")
             self.assertEqual(columns["clips_replays_count"], "INTEGER")
             self.assertEqual(columns["facebook_views"], "INTEGER")
             self.assertEqual(columns["crossposted_views"], "INTEGER")
             self.assertEqual(columns["follows"], "INTEGER")
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertIn("account_insight_snapshots", tables)
+            self.assertIn("account_follow_flows", tables)
+            flow_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(account_follow_flows)"
+                ).fetchall()
+            }
+            for column in (
+                "reach",
+                "reel_reach",
+                "reel_non_follower_reach",
+                "reel_follower_reach",
+                "reel_views",
+                "reel_likes",
+                "reel_comments",
+                "reel_saves",
+                "reel_shares",
+                "reel_total_interactions",
+                "reel_content_breakdown_fetched",
+                "reel_audience_breakdown_fetched",
+            ):
+                self.assertIn(column, flow_columns)
+            self.assertIn("observation_key", flow_columns)
 
             legacy = conn.execute(
                 "SELECT * FROM insights WHERE media_id='legacy-media'"
@@ -225,11 +351,339 @@ class ReelLedgerTests(unittest.TestCase):
             self.assertEqual(legacy["reach"], 321)
             self.assertEqual(legacy["saved"], 12)
             self.assertIsNone(legacy["total_views"])
+            self.assertIsNone(legacy["reposts"])
             self.assertEqual(legacy["raw"], '{"legacy": true}')
             schema_version = conn.execute(
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
             ).fetchone()[0]
             self.assertEqual(schema_version, str(reel_ledger.SCHEMA_VERSION))
+
+    def test_connect_adds_account_metric_columns_to_legacy_flow_table(self) -> None:
+        with sqlite3.connect(self.db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE account_follow_flows (
+                  id INTEGER PRIMARY KEY,
+                  channel_id TEXT NOT NULL,
+                  account TEXT,
+                  ig_user_id TEXT NOT NULL,
+                  observed_since TEXT NOT NULL,
+                  observed_until TEXT NOT NULL,
+                  fetched_at TEXT NOT NULL,
+                  graph_api_version TEXT,
+                  graph_api_root TEXT,
+                  login_type TEXT,
+                  token_source TEXT,
+                  follows INTEGER,
+                  unfollows INTEGER,
+                  unknown INTEGER,
+                  raw TEXT,
+                  observation_key TEXT NOT NULL UNIQUE
+                );
+                INSERT INTO account_follow_flows (
+                  channel_id, account, ig_user_id, observed_since, observed_until,
+                  fetched_at, follows, unfollows, raw, observation_key
+                ) VALUES (
+                  'aibrief_jp', 'aibrief.jp', '17841411137200252',
+                  '2026-07-20T00:00:00+00:00', '2026-07-21T00:00:00+00:00',
+                  '2026-07-22T00:00:00+00:00', 7, 1, '{"legacy":true}', 'legacy-flow'
+                );
+                """
+            )
+
+        with reel_ledger.connect(self.db) as conn:
+            columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(account_follow_flows)"
+                ).fetchall()
+            }
+            for column in (
+                "reach",
+                "reel_reach",
+                "reel_non_follower_reach",
+                "reel_follower_reach",
+                "reel_views",
+                "reel_likes",
+                "reel_comments",
+                "reel_saves",
+                "reel_shares",
+                "reel_total_interactions",
+                "reel_content_breakdown_fetched",
+                "reel_audience_breakdown_fetched",
+            ):
+                self.assertIn(column, columns)
+            legacy = conn.execute(
+                "SELECT follows, unfollows, reach, reel_reach, "
+                "reel_content_breakdown_fetched, raw "
+                "FROM account_follow_flows WHERE observation_key='legacy-flow'"
+            ).fetchone()
+            self.assertEqual(legacy["follows"], 7)
+            self.assertEqual(legacy["unfollows"], 1)
+            self.assertIsNone(legacy["reach"])
+            self.assertIsNone(legacy["reel_reach"])
+            self.assertIsNone(legacy["reel_content_breakdown_fetched"])
+            self.assertEqual(legacy["raw"], '{"legacy":true}')
+
+    def test_account_insight_snapshots_are_append_only_and_exactly_idempotent(self) -> None:
+        common = {
+            "channel_id": "aibrief_jp",
+            "account": "aibrief.jp",
+            "ig_user_id": "17841411137200252",
+            "followers_count": 220,
+            "media_count": 131,
+            "graph_api_version": "v25.0",
+            "graph_api_root": "https://graph.facebook.com",
+            "login_type": "facebook_login",
+            "token_source": "META_SYSTEM_USER_ACCESS_TOKEN_AIBRIEF_JP",
+            "raw": '{"followers_count":220,"media_count":131}',
+        }
+        with reel_ledger.connect(self.db) as conn:
+            self.assertTrue(
+                reel_ledger.record_account_insight_snapshot(
+                    conn,
+                    **common,
+                    captured_at="2026-07-28T12:00:00Z",
+                )
+            )
+            # Equivalent UTC spellings are the same exact observation.
+            self.assertFalse(
+                reel_ledger.record_account_insight_snapshot(
+                    conn,
+                    **common,
+                    fetched_at="2026-07-28T12:00:00+00:00",
+                )
+            )
+            # An unchanged later fetch is still retained.
+            self.assertTrue(
+                reel_ledger.record_account_insight_snapshot(
+                    conn,
+                    **common,
+                    fetched_at="2026-07-28T13:00:00+00:00",
+                )
+            )
+            # A revision at the same instant is retained when a value changes.
+            revised = dict(common, followers_count=221)
+            self.assertTrue(
+                reel_ledger.record_account_insight_snapshot(
+                    conn,
+                    **revised,
+                    fetched_at="2026-07-28T13:00:00+00:00",
+                )
+            )
+
+            rows = conn.execute(
+                "SELECT * FROM account_insight_snapshots ORDER BY id"
+            ).fetchall()
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]["account"], "aibrief.jp")
+            self.assertEqual(rows[0]["followers_count"], 220)
+            self.assertEqual(rows[0]["media_count"], 131)
+            self.assertEqual(rows[0]["graph_api_version"], "v25.0")
+            self.assertEqual(
+                rows[0]["token_source"],
+                "META_SYSTEM_USER_ACCESS_TOKEN_AIBRIEF_JP",
+            )
+            self.assertNotIn(
+                "access_token",
+                {
+                    str(row[1])
+                    for row in conn.execute(
+                        "PRAGMA table_info(account_insight_snapshots)"
+                    ).fetchall()
+                },
+            )
+            latest = reel_ledger.latest_account_insight_snapshot(
+                conn,
+                "aibrief_jp",
+            )
+            self.assertEqual(latest["followers_count"], 221)
+
+    def test_account_follow_flows_keep_interval_revisions_and_nullable_reach(self) -> None:
+        common = {
+            "channel_id": "aibrief_jp",
+            "account": "aibrief.jp",
+            "ig_user_id": "17841411137200252",
+            "day": "2026-07-27",
+            "follows": 7,
+            "unfollows": 1,
+            "unknown": 0,
+            "graph_api_version": "v25.0",
+            "graph_api_root": "https://graph.facebook.com",
+            "login_type": "facebook_login",
+            "token_source": "channel:aibrief_jp",
+            "raw": '{"follows":7,"unfollows":1}',
+        }
+        with reel_ledger.connect(self.db) as conn:
+            self.assertTrue(
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    **common,
+                    reach=None,
+                    fetched_at="2026-07-28T00:10:00Z",
+                )
+            )
+            self.assertFalse(
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    **common,
+                    reach=None,
+                    fetched_at="2026-07-28T00:10:00+00:00",
+                )
+            )
+            # The same interval can be revised later, including newly available reach.
+            revised = dict(
+                common,
+                follows=8,
+                reach=1800,
+                reel_reach=1700,
+                reel_non_follower_reach=1600,
+                reel_follower_reach=120,
+                reel_views=2200,
+                reel_likes=30,
+                reel_comments=2,
+                reel_saves=20,
+                reel_shares=8,
+                reel_total_interactions=60,
+                reel_content_breakdown_fetched=True,
+                reel_audience_breakdown_fetched=True,
+                raw='{"follows":8,"unfollows":1,"reach":1800,"reel_reach":1700}',
+            )
+            self.assertTrue(
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    **revised,
+                    fetched_at="2026-07-29T00:10:00Z",
+                )
+            )
+
+            all_rows = reel_ledger.account_follow_flows(conn, "aibrief_jp")
+            self.assertEqual(len(all_rows), 2)
+            self.assertEqual(
+                all_rows[0]["observed_since"],
+                "2026-07-27T00:00:00+00:00",
+            )
+            self.assertEqual(
+                all_rows[0]["observed_until"],
+                "2026-07-28T00:00:00+00:00",
+            )
+            self.assertIsNone(all_rows[0]["reach"])
+            self.assertEqual(all_rows[1]["reach"], 1800)
+
+            latest = reel_ledger.latest_account_follow_flows(
+                conn,
+                "aibrief_jp",
+            )
+            self.assertEqual(len(latest), 1)
+            self.assertEqual(latest[0]["follows"], 8)
+            self.assertEqual(latest[0]["unfollows"], 1)
+            self.assertEqual(latest[0]["reach"], 1800)
+            self.assertEqual(latest[0]["reel_reach"], 1700)
+            self.assertEqual(latest[0]["reel_non_follower_reach"], 1600)
+            self.assertEqual(latest[0]["reel_follower_reach"], 120)
+            self.assertEqual(latest[0]["reel_views"], 2200)
+            self.assertEqual(latest[0]["reel_likes"], 30)
+            self.assertEqual(latest[0]["reel_comments"], 2)
+            self.assertEqual(latest[0]["reel_saves"], 20)
+            self.assertEqual(latest[0]["reel_shares"], 8)
+            self.assertEqual(latest[0]["reel_total_interactions"], 60)
+            self.assertEqual(latest[0]["reel_content_breakdown_fetched"], 1)
+            self.assertEqual(latest[0]["reel_audience_breakdown_fetched"], 1)
+
+    def test_account_follow_flow_days_supports_inclusive_range_and_reach_coverage(self) -> None:
+        with reel_ledger.connect(self.db) as conn:
+            reel_ledger.record_account_follow_flow(
+                conn,
+                channel_id="aibrief_jp",
+                ig_user_id="17841411137200252",
+                day="2026-07-24",
+                follows=None,
+                unfollows=None,
+                unknown=None,
+                reach=800,
+                fetched_at="2026-07-24T23:59:00Z",
+            )
+            for day, reach in (
+                ("2026-07-25", 900),
+                ("2026-07-26", None),
+                ("2026-07-27", 1100),
+                ("2026-07-28", 1200),
+            ):
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    channel_id="aibrief_jp",
+                    ig_user_id="17841411137200252",
+                    day=day,
+                    follows=2,
+                    unfollows=0,
+                    reach=reach,
+                    fetched_at=f"{day}T23:59:00Z",
+                )
+            reel_ledger.record_account_follow_flow(
+                conn,
+                channel_id="other",
+                ig_user_id="999",
+                day="2026-07-26",
+                follows=99,
+                unfollows=0,
+                reach=9999,
+                fetched_at="2026-07-26T23:59:00Z",
+            )
+
+            self.assertEqual(
+                reel_ledger.account_follow_flow_days(
+                    conn,
+                    "aibrief_jp",
+                    "2026-07-25",
+                    "2026-07-27",
+                ),
+                {"2026-07-25", "2026-07-26", "2026-07-27"},
+            )
+            self.assertEqual(
+                reel_ledger.account_follow_flow_days(
+                    conn,
+                    "aibrief_jp",
+                    "2026-07-25",
+                    "2026-07-27",
+                    require_reach=True,
+                ),
+                {"2026-07-25", "2026-07-27"},
+            )
+            self.assertEqual(
+                reel_ledger.account_follow_flow_days(
+                    conn,
+                    "aibrief_jp",
+                    "2026-07-24",
+                    "2026-07-27",
+                    require_reach=True,
+                    require_flow=True,
+                ),
+                {"2026-07-25", "2026-07-27"},
+            )
+
+    def test_account_follow_flow_rejects_ambiguous_or_invalid_interval(self) -> None:
+        with reel_ledger.connect(self.db) as conn:
+            with self.assertRaises(ValueError):
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    channel_id="aibrief_jp",
+                    ig_user_id="17841411137200252",
+                    day="2026-07-27",
+                    observed_since="2026-07-27T00:00:00Z",
+                    observed_until="2026-07-28T00:00:00Z",
+                    follows=1,
+                    unfollows=0,
+                )
+            with self.assertRaises(ValueError):
+                reel_ledger.record_account_follow_flow(
+                    conn,
+                    channel_id="aibrief_jp",
+                    ig_user_id="17841411137200252",
+                    observed_since="2026-07-28T00:00:00Z",
+                    observed_until="2026-07-27T00:00:00Z",
+                    follows=1,
+                    unfollows=0,
+                )
 
     def test_hash_file_streams_correct_sha256(self) -> None:
         blob = self.db.parent / "x.bin"

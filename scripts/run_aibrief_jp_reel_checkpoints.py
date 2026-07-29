@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture immutable +1h, +3h, +24h, and +72h analyses for AI Brief JP Reels.
+"""Capture immutable +1h, +3h, +24h, +72h, and +7d analyses for AI Brief JP Reels.
 
 The runner is intentionally narrow:
 
@@ -128,13 +128,27 @@ CHECKPOINTS = (
             "Keep every Reel launched as Trial outside the regular baseline."
         ),
     ),
+    Checkpoint(
+        key="7d",
+        label="+7d",
+        target_hours=168.0,
+        minimum_hours=168.0,
+        maximum_hours=192.0,
+        stage="MATURE_7D",
+        next_step=(
+            "Use this as mature descriptive evidence. Require several comparable "
+            "posts before treating a pattern as repeatable."
+        ),
+    ),
 )
 CHECKPOINT_BY_KEY = {checkpoint.key: checkpoint for checkpoint in CHECKPOINTS}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Record per-Reel aibrief_jp analyses at +1h, +3h, +24h, and +72h"
+        description=(
+            "Record per-Reel aibrief_jp analyses at +1h, +3h, +24h, +72h, and +7d"
+        )
     )
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--db", type=Path, default=None)
@@ -164,8 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lookback-hours",
         type=float,
-        default=120.0,
-        help="Inspect Reels published within this many hours (default: 120)",
+        default=240.0,
+        help="Inspect Reels published within this many hours (default: 240)",
     )
     parser.add_argument(
         "--as-of",
@@ -570,6 +584,10 @@ def previous_checkpoint_key(checkpoint: Checkpoint, available: Mapping[str, sqli
             return "03h"
         if "01h" in available:
             return "01h"
+    if checkpoint.key == "7d":
+        for key in ("72h", "24h", "03h", "01h"):
+            if key in available:
+                return key
     return None
 
 
@@ -631,7 +649,12 @@ def observation_lines(
         )
     )
 
-    if checkpoint.key == "72h":
+    if checkpoint.key == "7d":
+        hypothesis = (
+            "Mature read: use this result as descriptive evidence, but require "
+            "several comparable posts before treating a format or series as repeatable."
+        )
+    elif checkpoint.key == "72h":
         hypothesis = (
             "Decision checkpoint: compare a Trial only with the Trial cohort and its "
             "registered parent. Do not add a Reel launched as Trial to the regular baseline, "

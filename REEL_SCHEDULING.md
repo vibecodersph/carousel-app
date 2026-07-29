@@ -117,8 +117,13 @@ uv run python reel_scheduler.py report --out out/reel_report.html
 
 ### Trial Reel Workflows
 
-Trial Reels use the existing Instagram schedule; they do not add extra posting
-slots. Candidate selection is a separate, read-only step:
+Trial Reels are reserved for re-hooked variants of reels that were already
+published. New reels and ordinary queue reshuffles stay regular; the scheduler
+does not randomly or automatically convert them to Trials.
+
+The published-parent rerender is a separate evidence, render, and QA workflow
+at `19:00 JST`. The selector is available as a read-only audit and planning
+step:
 
 ```sh
 uv run python scripts/select_aibrief_jp_trial_candidates.py \
@@ -127,20 +132,31 @@ uv run python scripts/select_aibrief_jp_trial_candidates.py \
   --markdown-out out/trial_candidates/2026-07-27.md
 ```
 
-The selector alternates the two Trial lanes across the `09/13/18/21` slots,
-allows at most two Trials per JST week and two nonterminal experiments, requires
-48 hours between launches, and never mutates the queue. Published rerender
-parents come only from mature 72–96h Instagram winner evidence. Scheduled
-conversions use a deterministic hash lottery among the next three
-operationally eligible posts in the prescribed slot; title semantics and
-reel-app scores are not used to predict performance.
+The workflow requires enough lead time for hook authoring, rerendering, and
+review. Exact Trial Reel content hashes and published-parent hashes are one-time
+only. Source-family reuse is subject to the 72-hour observation-window
+cooldown.
 
-Both execution commands below are dry runs unless `--apply` is supplied.
+Published-parent evidence is ranked in strict tier order, and a lower tier
+never outranks a higher one:
 
-**Case 1 — rerender a successful post with a new hook.** Render the variant MP4
-first, then replace one exact scheduled row. The Trial takes that row's
-`scheduled_at` value, while the displaced row returns to the unscheduled `new`
-pool.
+- Tier A: a winner from the mature 72–96-hour evidence window.
+- Tier B: when no 72–96-hour snapshot exists, a core-valid +24-hour snapshot
+  with positive audience-fit evidence.
+- Tier C: when no 72–96-hour snapshot exists, a winner from the near
+  96–144-hour window.
+- Tier D: a core-valid 72–96-hour `NO_WINNER` snapshot that still clears the
+  explicit saves/shares, skip-rate, or average-watch guardrail; when no strict
+  snapshot exists, the same explicit diagnostic thresholds may use the
+  core-valid +24-hour checkpoint.
+
+The selector never mutates the queue and never emits `--apply`. The execution
+commands below are dry runs unless `--apply` is supplied.
+
+**Rerender a successful post with a new hook.** Render the variant MP4
+first. The legacy replacement command below makes the Trial take one exact
+queued row's `scheduled_at` value, while the displaced row returns to the
+unscheduled `new` pool.
 
 ```sh
 uv run python reel_scheduler.py trial-from-published \
@@ -157,30 +173,44 @@ uv run python reel_scheduler.py trial-from-published \
 #   --apply
 ```
 
-**Case 2 — convert a scheduled post in place.** The media, caption, and exact
-timeslot stay unchanged; only its Instagram distribution mode becomes Trial.
+For the daily additive published-parent lane, use an explicit reviewed future
+time instead. This adds a Trial row and leaves every regular queued row
+unchanged:
 
 ```sh
-uv run python reel_scheduler.py trial-convert-scheduled \
+uv run python reel_scheduler.py trial-add-from-published \
   --channel aibrief_jp \
-  --content-hash <scheduled-row-hash> \
-  --experiment-id TRIAL-002 \
-  --expected-scheduled-at '<selected exact ISO timeslot>'
+  --parent-content-hash <published-winner-hash> \
+  --media-path <rerendered-variant.mp4> \
+  --experiment-id TRIAL-ADD-001 \
+  --hook '<new rendered hook>' \
+  --scheduled-at '2026-08-05T19:00:00+09:00' \
+  --expected-scheduled-at '2026-08-05T19:00:00+09:00' \
+  --caption-mode preserve-parent
 
 # Review the JSON preview, then repeat with:
 #   --apply
 ```
 
-The default graduation strategy is `MANUAL`. Each conversion writes an
-experiment record with its case, asset family, baseline/variant hook, changed
-variables, parent, and lifecycle state. Queue reflow and source alternation
-leave Trial rows in their assigned slots. Trial-launched rows are also excluded
+Both timestamps are required and must match exactly, which makes a stale
+selector recommendation fail closed. The time must include a timezone offset,
+have no fractional seconds, be in the future, and not already be occupied by
+another queued row. The rerender must have a distinct media hash, the parent
+must be published with a media id, and neither its parent nor asset family may
+already belong to another Trial. Repeating the exact applied command is a
+verified no-op; reusing its experiment id with changed inputs is rejected.
+
+The default graduation strategy is `MANUAL`. Each re-hooked variant writes an
+experiment record with its asset family, baseline/variant hook, changed
+variables, parent, and lifecycle state. Trial-launched variants are excluded
 from the regular-reel analytics baseline and from Facebook queue mirroring.
 Their immutable checkpoints are recorded at +1h, +3h, +24h, and +72h.
 The default published-rerender caption mode preserves the parent caption
 exactly, so the rendered overlay hook is the only changed content surface.
 `--expected-scheduled-at` makes execution fail if queue reflow moved the
-selected row after its recommendation packet was generated.
+selected row after its recommendation packet was generated, or if an additive
+slot no longer matches its reviewed recommendation. Both published-rerender
+paths remain dry-run-first and are excluded from Facebook queue mirroring.
 
 **Record the terminal decision.** After reviewing the +72h checkpoint, record
 either `graduate` or `stop` with an operator-written reason. The command is a
@@ -365,7 +395,7 @@ so each channel publishes with its own credentials.
 | `plan-ledger <clips_dir>` | Run `scan`, round-robin new unscheduled source folders, assign `scheduled_at` by filling open per-channel slots, and write manifests/captions under `out/reel_schedules/ledger/`. Existing scheduled/published rows are preserved. | 3–4/day planning |
 | `run-due [--channel X]` | With no schedule path, publish due ledger rows, store `media_id` + permalink, and claim rows before publishing. With a schedule path, run legacy jobs and mirror status into the ledger. | publishing |
 | `status [--channel X]` | Print counts (new/scheduled/published/failed) + the next 7 days. | "which clips are scheduled/published" |
-| `sync-insights [--channel X]` | For each `published` row with a `media_id`, pull Graph insights and append a timestamped snapshot. | stats |
+| `sync-insights [--channel X]` | For each `published` row with a `media_id`, pull Graph insights and append a timestamped snapshot. Instagram also snapshots account follower stock once per channel and refreshes missing/recent daily follower-flow intervals unless `--no-account-insights` is set. | stats |
 | `report --out report.html` | Render the ledger to one self-contained HTML file plus `*.insights.json` and `*.insights.md` exports. | dashboard + LLM review |
 | `insights-md [json_path]` | Convert an existing insights JSON export into a readable Markdown table. | LLM review |
 | `import-schedules` | One-time: walk existing `out/reel_schedules/*/schedule.json`, hash each media file, and seed the ledger so previewed/published history is not lost. Collapses the duplicate `…_attributed` schedule via the dedup key. | migration |
@@ -376,25 +406,40 @@ The published media id is captured in each **real** publish report
 (`result.published.id` in `instagram_publish.json`; dry-run reports have an empty
 `result`, so only live publishes are stats-eligible). `sync-insights` reads it
 and calls Graph
-`GET /{media-id}/insights?metric=views,total_views,reach,likes,total_likes,comments,total_comments,saved,shares,total_interactions`,
-storing a snapshot per run so trends are visible.
+for the core fields
+`views,total_views,reach,likes,total_likes,comments,total_comments,saved,shares,total_interactions`.
+It requests total/average watch time, three-second skip rate, reposts, and
+cross-surface views through a resilient optional path so one unavailable field
+cannot suppress the core snapshot. Every successful run appends an observation
+so trends remain visible.
 
 **API caveats (verified against current Meta docs):**
 
-- The access token needs **`instagram_business_manage_insights`** (paired with
-  `instagram_business_basic`) for the Instagram Login / business-login path this
-  project uses — *not* `instagram_manage_insights`, which belongs to the older
-  Facebook-Login product.
+- The current `aibrief_jp` runtime resolves Graph API **v25.0** on
+  `graph.facebook.com`, the Facebook Login path. That path uses
+  `instagram_basic`, `instagram_manage_insights`, and
+  `pages_read_engagement`. An Instagram Login token instead uses
+  `graph.instagram.com`, `instagram_business_basic`, and
+  `instagram_business_manage_insights`. Use the permissions that match the
+  configured host and token type.
 - Metric names changed in Meta's 2025 consolidation: use **`views`** (not
   `plays`) for playback count, and the saves field is **`saved`** (not `saves`).
   **`impressions` is deprecated** and not requestable from API v22.0+ — leave it
   out. `reach`, `likes`, `comments`, `shares`, `total_interactions` remain valid;
-  reels-specific extras like `ig_reels_avg_watch_time` and `reposts` are
-  available if wanted.
+  reels-specific extras include total/average watch time, `reels_skip_rate`,
+  and `reposts`. Reposts are requested separately from shares and are absent
+  from Meta's documented `total_interactions` definition.
 - The report stores **`total_views`**, **`total_likes`**, and
   **`total_comments`** into the visible `views`/`likes`/`comments` columns when
   Meta returns them. This better matches the Instagram app on older/crossposted
   reels while still falling back to the base metrics when the totals are absent.
+- Account-level `followers_count`, daily `follows_and_unfollows`, and matching
+  daily account reach are available and stored append-only. The account sync
+  also requests `media_product_type=REEL` daily activity and the
+  `media_product_type,follow_type` reach cross-breakdown in independent optional
+  calls. Media-level `follows` is not supported for the `REELS` product type in
+  v25. Account flow must never be copied into a Reel row or described as post
+  attribution.
 - Verify with a single `/insights` call before relying on live numbers.
 
 ### Dashboard

@@ -10,6 +10,7 @@ immutable Markdown analysis at each checkpoint:
 - `03h.v2.md`: first core-valid snapshot from +3.0 through +4.5 hours.
 - `24h.v2.md`: first core-valid snapshot from +24.0 through +28.0 hours.
 - `72h.v2.md`: first core-valid snapshot from +72.0 through +76.0 hours.
+- `7d.v2.md`: first core-valid snapshot from +168.0 through +192.0 hours.
 
 Each platform prints its actual observed age from its own `published_at`. A
 later lifetime total is never relabeled as an earlier checkpoint.
@@ -36,20 +37,21 @@ out/aibrief_jp_reel_learning/
       03h.v2.md
       24h.v2.md
       72h.v2.md
+      7d.v2.md
 ```
 
 The directory identity is anchored to the first actual platform publication;
 snapshot selection and age calculations still use each platform's own clock.
-Existing legacy `01h.md`, `03h.md`, `24h.md`, and `72h.md` files are never
+Existing legacy `01h.md`, `03h.md`, `24h.md`, `72h.md`, and `7d.md` files are never
 overwritten.
 
 The report keeps Instagram and Facebook metrics in separate panels. For
 independent uploads it may show a clearly labeled sum of non-unique platform
 play events only when both counts exist. It never sums reach. For legacy
 crossposts, `crossposted_views` is already the aggregate and is never added to
-Instagram views. At +3h, +24h, and +72h, each platform includes deltas from its
-own previous available frozen checkpoint. The default 120-hour lookback is
-long enough to find a Reel throughout the +72h window.
+Instagram views. At +3h, +24h, +72h, and +7d, each platform includes deltas
+from its own previous available frozen checkpoint. The default 240-hour
+lookback is long enough to find a Reel throughout the +7d window.
 
 Each file also records whether the Reel launched as regular or Trial, its
 current Trial cohort, and its phase at capture. When a matching
@@ -101,15 +103,18 @@ shares `state/reels.db`, `state/facebook.db`, the scheduler lock, and the
 Use this advanced recurrence rule in Asia/Tokyo time:
 
 ```text
-RRULE:FREQ=DAILY;BYHOUR=0,9,10,12,13,14,15,16,18,19,21,22;BYMINUTE=30;BYSECOND=0
+RRULE:FREQ=DAILY;BYHOUR=0,9,10,12,13,14,15,16,18,19,20,21,22;BYMINUTE=30;BYSECOND=0
 ```
 
-The twelve runs cover all unique checkpoint times for the regular 09:00,
-13:00, 18:00, and 21:00 posting slots. The 15:30 run also covers the +3h
-window for manually published or jittered late-morning Trials such as
-`PILOT-000`. The runs revisit the same clock times three days later for +72h.
-The actual `published_at`, never the nominal slot, decides whether a checkpoint
-is due.
+The thirteen runs cover all unique checkpoint times for the regular 09:00,
+13:00, 18:00, and 21:00 posting slots plus the daily 19:00 published-parent
+Trial lane. The 20:30 run captures that lane's +1h window, while 22:30,
+19:30 on the next day, and 19:30 three days later cover +3h, +24h, and +72h.
+The same platform-specific publication clock makes the corresponding daily
+run seven days later eligible for +7d.
+The 15:30 run also covers the +3h window for manually published or jittered
+late-morning Trials such as `PILOT-000`. The actual `published_at`, never the
+nominal slot, decides whether a checkpoint is due.
 
 ### Task prompt
 
@@ -130,7 +135,7 @@ DNS/network sandboxing, retry the same exact command once with escalated
 network permission. Do not change arguments, do not use `--no-sync` to mask
 the failure, and do not fabricate checkpoints from later snapshots.
 
-If the command records files, report each path, its +1h, +3h, +24h, or +72h
+If the command records files, report each path, its +1h, +3h, +24h, +72h, or +7d
 checkpoint, its distribution mode, and each platform checkpoint status:
 RECORDED, MISSED_CHECKPOINT, NOT_PUBLISHED, or MEDIA_ID_MISSING. If the runner
 is waiting on a DUE or NOT_STARTED platform, report that briefly. If nothing is
@@ -139,10 +144,16 @@ scheduler lock prevents the run, report the exact error and do not fabricate a
 checkpoint from a later snapshot.
 ```
 
-The Scheduled task needs Instagram Insights access plus Facebook Page Video
-Insights access. The Facebook Page token must be allowed to read insights for
-the Page (including the appropriate `read_insights` grant and Page task);
-publishing access alone is not sufficient.
+The Scheduled task needs Instagram Insights access plus Facebook Page Reel
+engagement access. Facebook Graph API v25 reads the Reel's direct Video
+`views`, `likes`, and `comments` fields with `pages_read_engagement`, plus
+associated Page-post `shares.count` when returned. The documented
+`/{video-id}/video_insights` Reel edge additionally requires `read_insights`
+and Page engagement permissions. The collector probes that edge once per
+channel and uses richer plays, unique viewers, watch time, attributed follows,
+reactions, retention, and social actions when authorized; otherwise it prints
+one actionable warning and continues with the direct fallback. Publishing
+access alone is not sufficient.
 
 ## Interpretation rules
 
@@ -152,6 +163,8 @@ publishing access alone is not sufficient.
   +72-hour decision checkpoint.
 - `DECISION_READY_72H` (+72h): make a manual Trial graduate/stop decision and
   preserve the launch cohort for later analytics.
+- `MATURE_7D` (+7d): review the mature trajectory without replacing the
+  fixed +72h Trial decision.
 - Raw counts stay beside engagement rates. A high rate on small reach is not a
   broad-audience win.
 - Average watch divided by estimated duration is a diagnostic ratio, not a
