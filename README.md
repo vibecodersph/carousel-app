@@ -495,7 +495,9 @@ uv run python reel_scheduler.py report --out out/reel_report.html
 
 `queue-outputs` scans each `<VIDEO_ID>/clips/` folder under a reel-app outputs
 root, schedules new rows into the ledger, and can reshuffle the unpublished
-queue after appending. `queue-ui` serves a local review page at
+queue after appending. New and reshuffled reels remain regular reels; Trial
+Reels are reserved for re-hooked variants of previously published reels.
+`queue-ui` serves a local review page at
 `http://127.0.0.1:8765/` with unschedule actions and a **Reshuffle Queue**
 button that runs the same output scan, append, and reshuffle flow without
 copying the long `queue-outputs --mode reshuffle` command. It uses the default
@@ -509,6 +511,42 @@ when available, matched from the reel's YouTube source id, plus the latest
 Instagram metrics. When `queue-ui` is running, the report's **Update Instagram
 Insights** button fetches fresh Graph API insights and regenerates all report
 artifacts.
+
+The additive Moneyball layer reads the Instagram ledger without changing these
+reports and adds an independent Facebook-native lane from `state/facebook.db`.
+The two platforms keep their own media IDs, publication clocks, snapshots, and
+denominators; matching content hashes can provide navigation but never fuse
+the metrics. Sync each platform explicitly, then generate the reports:
+
+```sh
+uv run python reel_scheduler.py sync-insights \
+  --platform instagram --channel aibrief_jp
+uv run python reel_scheduler.py sync-insights \
+  --platform facebook --channel aibrief_jp
+uv run python scripts/run_moneyball_analytics.py --channel aibrief_jp
+```
+
+This generates a self-contained visual dashboard at
+`out/reel_report.moneyball.html` alongside the JSON, Markdown, CSV, and data
+audit outputs, plus `out/reel_report.moneyball.facebook.csv`. The dashboard
+includes sortable, direct-link per-Reel tables for Instagram and Facebook.
+Facebook currently uses Graph API v25 direct Video views/likes/comments plus
+Page Post shares when returned; unavailable shares remain unknown, not zero.
+The richer `video_insights` edge requires `read_insights` and Page permissions
+that the current token does not have, so Facebook reach, saves,
+post-attributed follows/profile visits, watch time, returning viewers, and a
+direct three-second skip rate remain unavailable rather than being inferred.
+Instagram reach rates and Facebook view rates are always labeled and ranked
+separately.
+
+The prospective `aibrief_jp` checkpoint recorder now collects +1h, +3h, +24h,
++72h, and +7d observations for each native platform ID. The +7d window
+(168–192 hours) improves future maturity coverage; it does not reconstruct
+missing historical windows from lifetime totals.
+
+Setup, annotation schema, rule configuration, output paths, and current API
+limitations are documented in
+[`docs/MONEYBALL_ANALYTICS.md`](docs/MONEYBALL_ANALYTICS.md).
 
 Cadence is controlled by each channel's `publishing.instagram_reels.slots` in
 `channels/<id>/channel.json`. The LaunchAgent in

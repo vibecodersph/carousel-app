@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "annotations": [
+    {
+      "media_id": "EXAMPLE_CONTROL_MEDIA_ID",
+      "content_hash": null,
+      "account": "aibrief_jp",
+      "series": "one_minute_ai_workflows",
+      "content_goal": "utility",
+      "topic": "meeting_notes",
+      "source": "manual_editorial_plan",
+      "hook_style": "pain_point_question",
+      "hook_text": "Still rewriting meeting notes by hand?",
+      "format": "screen_recording",
+      "visual_style": "screen_capture_with_subtitles",
+      "caption_style": "step_by_step",
+      "cta": "Save this workflow",
+      "production_minutes": 42,
+      "manual_effort_minutes": 28,
+      "direct_cost_jpy": 0,
+      "experiment_id": "hook_question_vs_result_2026_08_01",
+      "experiment_variant": "control",
+      "changed_variable": "hook_style",
+      "hypothesis": "A result-first hook will improve watch depth at the same maturity window.",
+      "metadata_source": "manual",
+      "metadata_confidence": "high"
+    },
+    {
+      "media_id": "EXAMPLE_VARIANT_MEDIA_ID",
+      "content_hash": null,
+      "account": "aibrief_jp",
+      "series": "one_minute_ai_workflows",
+      "content_goal": "utility",
+      "topic": "meeting_notes",
+      "source": "manual_editorial_plan",
+      "hook_style": "result_first",
+      "hook_text": "Turn a meeting into action items in 30 seconds.",
+      "format": "screen_recording",
+      "visual_style": "screen_capture_with_subtitles",
+      "caption_style": "step_by_step",
+      "cta": "Save this workflow",
+      "production_minutes": 39,
+      "manual_effort_minutes": 26,
+      "direct_cost_jpy": 0,
+      "experiment_id": "hook_question_vs_result_2026_08_01",
+      "experiment_variant": "result_first",
+      "changed_variable": "hook_style",
+      "hypothesis": "A result-first hook will improve watch depth at the same maturity window.",
+      "metadata_source": "manual",
+      "metadata_confidence": "high"
+    }
+  ]
+}

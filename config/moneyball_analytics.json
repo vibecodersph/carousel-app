@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "metric_semantics": {
+    "plays_semantics_verified": false,
+    "note": "Do not derive average watch time from views. Set true only after the stored plays field is verified for this API product."
+  },
+  "maturity_windows": {
+    "2h": {
+      "label": "approximately 2 hours",
+      "target_hours": 2.0,
+      "max_hours_after_target": 2.5
+    },
+    "24h": {
+      "label": "approximately 24 hours",
+      "target_hours": 24.0,
+      "max_hours_after_target": 4.0
+    },
+    "72h": {
+      "label": "approximately 72 hours",
+      "target_hours": 72.0,
+      "max_hours_after_target": 24.0
+    },
+    "7d": {
+      "label": "approximately 7 days",
+      "target_hours": 168.0,
+      "max_hours_after_target": 24.0
+    }
+  },
+  "duration_buckets": [
+    {
+      "id": "0_15_seconds",
+      "label": "0–15 seconds",
+      "min_seconds": 0.0,
+      "min_inclusive": true,
+      "max_seconds": 15.0,
+      "max_inclusive": true
+    },
+    {
+      "id": "16_25_seconds",
+      "label": "16–25 seconds",
+      "min_seconds": 15.0,
+      "min_inclusive": false,
+      "max_seconds": 25.0,
+      "max_inclusive": true
+    },
+    {
+      "id": "26_45_seconds",
+      "label": "26–45 seconds",
+      "min_seconds": 25.0,
+      "min_inclusive": false,
+      "max_seconds": 45.0,
+      "max_inclusive": true
+    },
+    {
+      "id": "over_45_seconds",
+      "label": "over 45 seconds",
+      "min_seconds": 45.0,
+      "min_inclusive": false,
+      "max_seconds": null,
+      "max_inclusive": false
+    }
+  ],
+  "statistics": {
+    "percentile_method": "linear_interpolation",
+    "minimum_posts_for_percentiles": 4,
+    "minimum_posts_for_distribution": 4,
+    "minimum_positive_denominator": 1.0,
+    "decision_window_priority": [
+      "7d",
+      "72h",
+      "24h",
+      "2h"
+    ]
+  },
+  "classifications": {
+    "hidden_gem": {
+      "minimum_comparable_posts": 4,
+      "reach_percentile_max_exclusive": 0.5,
+      "follow_conversion_percentile_min": 0.75,
+      "follows_per_production_hour_percentile_min": 0.75,
+      "outcome_logic": "any",
+      "require_adequate_denominator": true
+    },
+    "vanity_winner": {
+      "minimum_comparable_posts": 4,
+      "reach_percentile_min": 0.75,
+      "follow_conversion_percentile_max_exclusive": 0.5,
+      "intent_actions_per_1000_reach_percentile_max_exclusive": 0.5,
+      "rule_logic": "all",
+      "require_adequate_denominator": true
+    },
+    "workhorse": {
+      "minimum_comparable_posts": 5,
+      "recent_post_count": 5,
+      "minimum_recent_above_both_medians": 3,
+      "required_metrics": [
+        "follow_conversion",
+        "follows_per_production_hour"
+      ],
+      "production_time_coverage_required": 1.0
+    },
+    "expensive_star": {
+      "minimum_comparable_posts": 4,
+      "total_outcome_percentile_min": 0.75,
+      "follows_per_production_hour_percentile_max_exclusive": 0.5,
+      "production_time_to_account_median_min": 1.25,
+      "qualifying_total_outcomes": [
+        "follows",
+        "reach",
+        "intent_actions"
+      ],
+      "total_outcome_logic": "any"
+    },
+    "underperformer": {
+      "minimum_comparable_posts": 5,
+      "follow_conversion_percentile_max_exclusive": 0.5,
+      "intent_actions_per_1000_reach_percentile_max_exclusive": 0.5,
+      "follows_per_production_hour_percentile_max_exclusive": 0.5,
+      "secondary_metric_top_percentile": 0.75,
+      "primary_metric_logic": "all",
+      "exclude_when_any_secondary_metric_is_top_quartile": true
+    }
+  },
+  "funnel_diagnostics": {
+    "minimum_comparable_posts": 3,
+    "packaging_won_content_lost": {
+      "reach_to_cohort_median_min": 1.0,
+      "watch_depth_to_cohort_median_max_exclusive": 1.0
+    },
+    "strong_content_weak_initial_distribution": {
+      "reach_to_cohort_median_max_exclusive": 1.0,
+      "watch_depth_to_cohort_median_min": 1.0,
+      "intent_component_to_cohort_median_min": 1.0,
+      "intent_component_logic": "any"
+    },
+    "useful_but_account_identity_weak": {
+      "intent_actions_to_cohort_median_min": 1.0,
+      "profile_visits_to_cohort_median_max_exclusive": 1.0,
+      "follow_conversion_to_cohort_median_max_exclusive": 1.0,
+      "requires_profile_visits": true
+    },
+    "profile_promise_mismatch": {
+      "profile_visits_to_cohort_median_min": 1.0,
+      "profile_visit_to_follow_rate_to_cohort_median_max_exclusive": 1.0,
+      "requires_profile_visits_and_follows": true
+    },
+    "strong_acquisition_unknown_retention": {
+      "follow_conversion_to_cohort_median_min": 1.0,
+      "requires_returning_viewers_unavailable": true
+    },
+    "strong_result_too_expensive": {
+      "total_outcome_to_cohort_median_min": 1.0,
+      "qualifying_total_outcomes": [
+        "follows",
+        "intent_actions"
+      ],
+      "total_outcome_logic": "any",
+      "follows_per_production_hour_to_cohort_median_max_exclusive": 1.0
+    }
+  },
+  "series_recommendations": {
+    "primary_maturity_window": "72h",
+    "minimum_comparable_posts": 5,
+    "recent_post_count": 5,
+    "required_metric_coverage_ratio": 1.0,
+    "scale": {
+      "minimum_recent_above_both_medians": 3
+    },
+    "pause": {
+      "minimum_recent_below_both_medians": 4,
+      "secondary_metric_top_percentile": 0.75,
+      "minimum_recent_top_secondary_for_consistency": 3
+    },
+    "revise": {
+      "minimum_recent_with_same_split_funnel": 3,
+      "strong_stage_to_median_min": 1.0,
+      "weak_stage_to_median_max_exclusive": 1.0
+    },
+    "hold": {
+      "use_when_adequate_data_and_no_other_rule_matches": true
+    }
+  },
+  "experiments": {
+    "require_same_experiment_id": true,
+    "require_exactly_one_changed_variable": true,
+    "require_same_maturity_window": true,
+    "claim_statistical_significance": false
+  },
+  "account_growth": {
+    "expected_daily_interval_hours": 24.0,
+    "daily_interval_tolerance_hours": 2.0,
+    "preliminary_hours_after_interval_end": 48.0,
+    "stale_after_hours": 48.0,
+    "minimum_finalized_daily_intervals_for_trend": 7,
+    "trend_lookback_intervals": 14
+  }
+}
