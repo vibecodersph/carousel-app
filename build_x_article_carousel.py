@@ -37,7 +37,6 @@ from build_article_carousel import (
     render_carousel_from_article,
     split_sentences,
 )
-from build_x_carousel import DEFAULT_ACCOUNT_NAME
 from channel import load_channel
 from fetch_tweet_data import (
     compact_number,

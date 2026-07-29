@@ -41,13 +41,9 @@ from build_article_carousel import (
     clamp_words,
     clean_article_text,
     compact_headline,
-    count_words,
-    normalize_space,
     split_sentences,
 )
 from build_x_carousel import (
-    SLIDE_H,
-    SLIDE_W,
     build_title_enrichment,
     cover_poster_path,
     dot_markup,

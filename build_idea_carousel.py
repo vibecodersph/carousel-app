@@ -281,20 +281,6 @@ def dict_value(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def first_string(values: object) -> str:
-    if not isinstance(values, list):
-        return ""
-    for value in values:
-        text = string_value(value)
-        if text:
-            return text
-    return ""
-
-
-def brief_image_url(image: dict[str, Any]) -> str:
-    return string_value(image.get("sourceImageUrl")) or first_string(image.get("sourceImageUrls"))
-
-
 def brief_image_urls(image: dict[str, Any]) -> list[str]:
     raw_values: list[object] = []
     source_url = string_value(image.get("sourceImageUrl"))
@@ -322,42 +308,6 @@ def brief_source_image_queue(cover_slide: dict[str, Any], story_slides: list[dic
                 seen.add(url)
                 queue.append(url)
     return queue
-
-
-def brief_description_sections(brief: dict[str, Any]) -> dict[str, str]:
-    raw = string_value(brief.get("instagramDescription"))
-    paragraphs = [
-        normalize_space(part)
-        for part in re.split(r"\n\s*\n+", raw)
-        if normalize_space(part)
-    ]
-    hook = string_value(brief.get("hook"))
-    if paragraphs and hook and paragraphs[0].lower() == hook.lower():
-        paragraphs = paragraphs[1:]
-
-    sections = {
-        "claim": "",
-        "why": "",
-        "evidence": "",
-        "content_angle": "",
-        "publish_note": "",
-    }
-    free_parts: list[str] = []
-    for paragraph in paragraphs:
-        lower = paragraph.lower()
-        if lower.startswith("evidence base:"):
-            sections["evidence"] = paragraph
-        elif lower.startswith("content angle:"):
-            sections["content_angle"] = re.sub(r"^content angle:\s*", "", paragraph, flags=re.I)
-        elif lower.startswith("publish note:"):
-            sections["publish_note"] = re.sub(r"^publish note:\s*", "", paragraph, flags=re.I)
-        elif not paragraph.startswith("#"):
-            free_parts.append(paragraph)
-    if free_parts:
-        sections["claim"] = free_parts[0]
-    if len(free_parts) > 1:
-        sections["why"] = free_parts[1]
-    return sections
 
 
 def has_japanese_text(value: str) -> bool:
@@ -581,79 +531,6 @@ Brief JSON:
     if not qa["passed"]:
         raise SystemExit("localized brief failed QA: " + "; ".join(qa["errors"]))
     return localized, qa
-
-
-def strip_numbered_prefix(value: str) -> str:
-    return re.sub(r"^\s*\d+[.)]\s*", "", normalize_space(value))
-
-
-def brief_item_name(slide: dict[str, Any], index: int) -> str:
-    headline = strip_numbered_prefix(string_value(slide.get("headline")))
-    lower = headline.lower()
-    if "terminal" in lower and "agent" in lower:
-        return "Terminal Agents"
-    if "api traffic" in lower or "interceptor" in lower:
-        return "API Debugging"
-    if "self-hosted" in lower and "workflow" in lower:
-        return "Self-Hosted Workflows"
-    if "local" in lower and "agent" in lower:
-        return "Local Agents"
-    tokens = [
-        token
-        for token in re.split(r"[^A-Za-z0-9+#/-]+", headline)
-        if token and token.lower() not in BRIEF_LABEL_STOP_WORDS
-    ]
-    if not tokens:
-        tokens = [token for token in re.split(r"\s+", headline) if token]
-    if not tokens:
-        return f"Story {index:02d}"
-    return brief_clean_text(" ".join(tokens[:3]), words=4)
-
-
-def brief_copy_from_headline(headline: str) -> tuple[str, str] | None:
-    lower = headline.lower()
-    if "terminal" in lower and "agent" in lower:
-        return (
-            "Terminal agents bring local files, shells, and repo context into the workflow.",
-            "Use local tools with explicit permissions.",
-        )
-    if "api traffic" in lower or "interceptor" in lower:
-        return (
-            "Local interceptors make prompt, tool, and API payload debugging visible before production.",
-            "Debug the invisible agent I/O layer.",
-        )
-    if "self-hosted" in lower and "workflow" in lower:
-        return (
-            "Self-hosted frameworks turn agent demos into repeatable multi-step workflows.",
-            "Make workflows repeatable before adding autonomy.",
-        )
-    if "local-first" in lower and "agent" in lower:
-        return (
-            "Local-first runtimes keep agent execution close to private data and offline environments.",
-            "Keep retrieval close to the data.",
-        )
-    if "model routing" in lower or "routing" in lower:
-        return (
-            "Routing lets builders send simple tasks to cheaper models and save frontier models for hard work.",
-            "Spend premium tokens only where they matter.",
-        )
-    if "token" in lower and "compression" in lower:
-        return (
-            "Compression turns provider sprawl into a cost-control problem builders can measure.",
-            "Measure savings before trusting gateway claims.",
-        )
-    return None
-
-
-def brief_lines_are_generic(lines: list[str]) -> bool:
-    if not lines:
-        return True
-    generic_markers = (
-        "search private docs",
-        "keep retrieval close",
-        "as a small workflow",
-    )
-    return all(any(marker in line.lower() for marker in generic_markers) for line in lines)
 
 
 def brief_body_for_slide(slide: dict[str, Any]) -> str:

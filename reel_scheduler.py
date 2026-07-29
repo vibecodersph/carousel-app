@@ -440,44 +440,6 @@ def occupied_slot_keys(
     return occupied
 
 
-def scheduled_at_matches_clock(
-    scheduled_at: datetime,
-    *,
-    clock: time,
-    timezone_name: str,
-    tolerance_minutes: int,
-) -> bool:
-    tz = timezone_for(timezone_name)
-    local = scheduled_at.astimezone(tz)
-    base = datetime.combine(local.date(), clock, tzinfo=tz)
-    diff = abs((local - base).total_seconds()) / 60
-    return diff <= max(0, tolerance_minutes)
-
-
-def trial_publish_for_slot(
-    channel: Channel,
-    scheduled_at: datetime,
-    *,
-    settings_key: str = "instagram_reels",
-) -> tuple[bool, str]:
-    settings = reel_settings(channel, settings_key)
-    clocks = trial_slot_clocks(settings)
-    if not clocks:
-        return False, ""
-    timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
-    jitter_minutes = int(settings.get("trial_jitter_minutes") or 0)
-    enabled = any(
-        scheduled_at_matches_clock(
-            scheduled_at,
-            clock=clock,
-            timezone_name=timezone_name,
-            tolerance_minutes=jitter_minutes,
-        )
-        for clock in clocks
-    )
-    return (enabled, trial_graduation_strategy(settings) if enabled else "")
-
-
 def row_value(row: Any, key: str) -> Any:
     try:
         return row[key]
@@ -566,32 +528,6 @@ def next_open_slot_assignments(
                     break
         day += timedelta(days=1)
     return assignments
-
-
-def next_open_slots(
-    *,
-    channel: Channel,
-    start_at: datetime,
-    existing_rows: list[Any],
-    count: int,
-    jitter_override: int | None = None,
-    content_hashes: list[str] | None = None,
-    settings_key: str = "instagram_reels",
-    include_start_at: bool = False,
-) -> list[datetime]:
-    return [
-        assignment.scheduled_at
-        for assignment in next_open_slot_assignments(
-            channel=channel,
-            start_at=start_at,
-            existing_rows=existing_rows,
-            count=count,
-            jitter_override=jitter_override,
-            content_hashes=content_hashes,
-            settings_key=settings_key,
-            include_start_at=include_start_at,
-        )
-    ]
 
 
 def safe_job_id(value: str) -> str:
@@ -1093,17 +1029,6 @@ def create_schedule(
     }
     write_json(schedule_path, schedule)
     return schedule_path, schedule
-
-
-def report_permalink(report_path: Path) -> str:
-    if not report_path.exists():
-        return ""
-    report = read_json(report_path)
-    if not isinstance(report, dict):
-        return ""
-    result = report.get("result") if isinstance(report.get("result"), dict) else {}
-    permalink = result.get("permalink") if isinstance(result.get("permalink"), dict) else {}
-    return str(permalink.get("permalink") or "")
 
 
 def report_publish_identity(report_path: Path) -> tuple[str, str]:
@@ -6557,13 +6482,6 @@ def parse_raw_insight_payload(row: Any) -> Any | None:
         return raw
 
 
-def row_value(row: Any, key: str) -> Any | None:
-    try:
-        return row[key]
-    except (KeyError, IndexError, TypeError):
-        return None
-
-
 def latest_insight_metrics(row: Any) -> dict[str, int | float]:
     """Return scope-safe metrics, repairing legacy snapshots from raw JSON.
 
@@ -6815,11 +6733,6 @@ def item_segment(item: dict[str, Any]) -> dict[str, Any]:
     return segment if isinstance(segment, dict) else {}
 
 
-def item_source(item: dict[str, Any]) -> dict[str, Any]:
-    source = item.get("source")
-    return source if isinstance(source, dict) else {}
-
-
 def row_trial_enabled(row: Any) -> bool:
     try:
         return bool(row["trial_reel"])
@@ -6867,11 +6780,6 @@ def item_transcript(item: dict[str, Any]) -> str:
             if isinstance(part, dict) and str(part.get("text") or "").strip()
         )
     return ""
-
-
-def item_transcript_path(item: dict[str, Any]) -> str:
-    segment = item_segment(item)
-    return str(segment.get("reel_transcript_path") or "").strip()
 
 
 def render_insights_markdown(export: dict[str, Any], *, max_transcript_chars: int = 0) -> str:
@@ -8114,20 +8022,6 @@ def discover_output_clip_dirs(outputs_root: Path) -> list[Path]:
         raise SystemExit(f"Outputs folder does not exist: {root}")
     clips_dirs = [path / "clips" for path in root.iterdir() if (path / "clips").is_dir()]
     return sorted(clips_dirs, key=lambda path: path.parent.name)
-
-
-def latest_scheduled_text(db_path: Path, channel_filter: str | None = None) -> str | None:
-    with reel_ledger.connect(db_path) as conn:
-        rows = reel_ledger.rows_with_schedule(conn, channel_filter)
-    moments = [
-        parsed
-        for row in rows
-        if (parsed := parse_row_datetime(row["scheduled_at"], DEFAULT_TIMEZONE)) is not None
-    ]
-    if not moments:
-        return None
-    latest = max(moments, key=lambda moment: moment.astimezone(timezone.utc))
-    return latest.astimezone(timezone_for(DEFAULT_TIMEZONE)).replace(microsecond=0).isoformat()
 
 
 def scan_command(args: argparse.Namespace) -> int:

@@ -152,18 +152,10 @@ function titleLead(title: string): string {
   return normalizeWhitespace(title).split(":")[0] || title;
 }
 
-function hasAny(text: string, patterns: RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 function storyKind(item: SourceItem): StoryKind {
   const tags = sourceTags(item).join(" ").toLowerCase();
   const text = `${item.title} ${item.url} ${tags}`.toLowerCase();
   return /\bletters?\b|andrew ng|how-we-decide-what-courses|courses-to-teach/.test(text) ? "letter" : "story";
-}
-
-function storyKey(item: SourceItem): string {
-  return `${item.title} ${item.body} ${articleText(item)} ${item.url}`.toLowerCase();
 }
 
 function storyMetaKey(item: SourceItem): string {

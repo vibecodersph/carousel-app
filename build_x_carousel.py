@@ -487,29 +487,6 @@ def find_company_entities(posts: list[dict[str, str]], api_key: str | None) -> l
     return [{"name": term, "query": term} for term in candidates[:1]]
 
 
-def find_ceo_entity(company: dict[str, object], api_key: str | None) -> dict[str, object] | None:
-    if not api_key:
-        return None
-    company_name = str(company.get("name", ""))
-    queries = [
-        f"{company_name} CEO",
-        f"{company_name} chief executive officer",
-    ]
-    for query in queries:
-        for item in kg_search(query, api_key, types=("Person",), limit=6):
-            entity = entity_from_kg_item(item)
-            if not entity:
-                continue
-            haystack = " ".join(
-                str(entity.get(field, "")) for field in ("name", "description", "detail")
-            ).lower()
-            if "ceo" in haystack or "chief executive" in haystack or company_name.lower() in haystack:
-                entity["company"] = company_name
-                entity["query"] = query
-                return entity
-    return None
-
-
 def find_topic_entity(topic: str, companies: list[dict[str, object]], api_key: str | None) -> dict[str, object] | None:
     if not api_key:
         return None
@@ -2202,10 +2179,6 @@ def default_title_image_prompt(
             continue
         ceo_bits.append(f"{ceo_name} of {company_name}" if company_name else ceo_name)
     ceo_line = ", ".join(ceo_bits)
-    has_source_profile_image = any(
-        person.get("profile_image_path") or person.get("profile_image_url")
-        for person in source_people
-    )
     palette = brand_colors()
     channel = load_channel()
     is_dark = _is_dark_color(palette["bg"])
@@ -3075,32 +3048,6 @@ def text_motion_headline_lines(title_text: str) -> list[str]:
     return lines
 
 
-def headline_lines_markup(
-    title_text: str,
-    lines: list[str],
-    spans: list[tuple[int, int]],
-) -> str:
-    if not lines:
-        return inline_text_markup_with_spans(title_text, spans)
-    pieces: list[str] = []
-    position = 0
-    for line in lines:
-        start = title_text.find(line, position)
-        if start < 0:
-            start = position
-        end = min(len(title_text), start + len(line))
-        line_spans = [
-            (max(span_start, start) - start, min(span_end, end) - start)
-            for span_start, span_end in spans
-            if span_start < end and span_end > start
-        ]
-        pieces.append(
-            f'<span class="headline-line">{inline_text_markup_with_spans(line, line_spans)}</span>'
-        )
-        position = end
-    return "".join(pieces)
-
-
 def text_motion_line_payload(
     title_text: str,
     lines: list[str],
@@ -3273,7 +3220,6 @@ def cover_text_motion_css() -> str:
 
 
 def cover_text_motion_script(duration_seconds: float) -> str:
-    duration_ms = max(0.1, duration_seconds) * 1000
     return f"""
 <script>
 {TEXT_MOTION_LIBRARY.read_text()}

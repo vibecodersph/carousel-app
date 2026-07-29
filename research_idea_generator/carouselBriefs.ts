@@ -138,7 +138,6 @@ function imagePrompt(card: InsightCard, slide: CarouselBriefSlideDraft, assets: 
 }
 
 function imageFromAsset(
-  card: InsightCard,
   slide: CarouselBriefSlideDraft,
   asset: SourceImageAsset,
   role: CarouselSlideImage["role"],
@@ -183,7 +182,7 @@ function generatedImagePlan(
 function imageForSlide(card: InsightCard, slide: CarouselBriefSlideDraft, assets: SourceImageAsset[]): CarouselSlideImage {
   const role: CarouselSlideImage["role"] = slide.type === "cover" ? "cover" : "supporting";
   if (role === "cover" && assets.length === 1) {
-    return imageFromAsset(card, slide, assets[0], role);
+    return imageFromAsset(slide, assets[0], role);
   }
   if (role === "cover" && assets.length > 1) {
     return generatedImagePlan(

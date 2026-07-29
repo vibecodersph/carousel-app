@@ -97,7 +97,7 @@ ARTICLE_STRONG_TERMS = {
 }
 # Formats that dilute an AI/dev feed: roundups, listicles, deals, sponsored posts.
 # Articles have no engagement metadata, so we lean on content-format judgment the
-# way score_post() leans on likes/replies.
+# way score_post_breakdown() leans on likes/replies.
 LOW_SIGNAL_ARTICLE_PATTERNS = [
     r"\btop \d+\b",
     r"\b\d+ best\b",
@@ -1054,11 +1054,6 @@ def score_post_breakdown(
     if not reasons:
         reasons.append("low public engagement metadata")
     return score, reasons, components
-
-
-def score_post(post: dict[str, Any], config: dict[str, Any]) -> tuple[int, list[str]]:
-    score, reasons, _ = score_post_breakdown(post, config)
-    return score, reasons
 
 
 def build_scout_prompt(config: dict[str, Any], limit: int) -> str:

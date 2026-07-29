@@ -296,7 +296,6 @@ def brand_logo_markup() -> str:
 
 
 def cover_markup(candidate: dict[str, Any]) -> str:
-    hook = esc(candidate["hook"])
     kicker = esc(candidate["kicker"])
     swipe = esc(candidate["swipe"])
     cover_id = candidate["id"]

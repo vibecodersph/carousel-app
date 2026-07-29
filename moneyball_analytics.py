@@ -24,7 +24,6 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import median
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -2823,7 +2822,6 @@ def build_top_rankings(
                         "directional_percentile": directional_percentile,
                     }
                 )
-            rank = numeric(component.get("rank"))
             leaderboard_rank = numeric(component.get("metric_leaderboard_rank"))
             if (
                 leaderboard_rank is not None
@@ -3285,17 +3283,7 @@ def classify_post(
     fph = numeric(metric_value(observation, "follows_per_production_hour"))
     production_hours = numeric(metric_value(observation, "production_hours"))
 
-    reach_dist = baseline_distribution(baseline, "reach")
-    intent_dist = baseline_distribution(
-        baseline, "intent_actions_per_1000_reach"
-    )
-    follow_dist = baseline_distribution(
-        baseline, "follow_conversion", denominator_type=follow_type
-    )
-    fph_dist = baseline_distribution(baseline, "follows_per_production_hour")
     production_dist = baseline_distribution(baseline, "production_hours")
-    follows_dist = baseline_distribution(baseline, "follows")
-    intent_total_dist = baseline_distribution(baseline, "intent_actions")
 
     hidden_config = class_config.get("hidden_gem", {})
     hidden_minimum = int(hidden_config.get("minimum_comparable_posts", 4))
@@ -5704,10 +5692,6 @@ def build_moneyball_report(
         if isinstance(priority_raw, list)
         else list(DECISION_WINDOW_ORDER)
     )
-    post_by_hash = {
-        str(post.get("identity", {}).get("content_hash") or ""): post
-        for post in posts
-    }
     all_classifications: list[dict[str, Any]] = []
     all_diagnostics: list[dict[str, Any]] = []
     stage_summary: dict[str, Counter[str]] = {

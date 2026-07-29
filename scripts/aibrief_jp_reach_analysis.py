@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, median
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 

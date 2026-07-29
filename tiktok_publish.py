@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import os  # noqa: F401  -- tests patch tiktok_publish.os.environ
 import sys
 import time
 import urllib.error
@@ -48,7 +48,6 @@ from typing import Any
 # Reuse Instagram's hardened R2 upload + env/manifest plumbing rather than
 # duplicating it; only the TikTok API surface below is new.
 import instagram_publish as ig
-from channel import load_channel
 from fetch_tweet_data import load_env_file
 
 ROOT = Path(__file__).resolve().parent
