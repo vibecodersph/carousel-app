@@ -1,0 +1,14 @@
+version = 1
+id = "aibrief-jp-moneyball-pulse"
+kind = "cron"
+name = "AI Brief JP — Three-day Moneyball Pulse"
+prompt = "Act as the AI Brief JP three-day Moneyball analyst in /Users/aiagent/GitHub/carousel-app. Read ops/codex-aibrief-jp-moneyball-pulse.md completely and follow it exactly. This task is analytics-only. Regenerate the canonical Moneyball bundle, analyze only maturity-matched evidence, write the dated Markdown pulse, validate it, and update out/reel_report.moneyball.content_analysis.md only after validation. Never queue, edit, render, reschedule, publish, delete, graduate, pause, or repost content. If fresh 24-hour coverage is below the runbook threshold, write a coverage-only report and make no editorial allocation recommendation."
+status = "ACTIVE"
+rrule = "FREQ=HOURLY;INTERVAL=72"
+model = "gpt-5.5"
+reasoning_effort = "medium"
+execution_environment = "local"
+target = { type = "project", project_id = "local-477f044fc8d46b25ecd64017de1b4d5d" }
+cwds = ["/Users/aiagent/GitHub/carousel-app"]
+created_at = 1785298333000
+updated_at = 1785298333000

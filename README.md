@@ -530,10 +530,17 @@ This generates a self-contained visual dashboard at
 `out/reel_report.moneyball.html` alongside the JSON, Markdown, CSV, and data
 audit outputs, plus `out/reel_report.moneyball.facebook.csv`. The dashboard
 includes sortable, direct-link per-Reel tables for Instagram and Facebook.
+It also includes five direct-link Top 10 lists at the configured fixed
+maturity window—interactions/reach, watch depth, lower three-second skip,
+saves/1k reach, and views/reached account—plus an aggregate Top 10 that exposes
+all five equal-weight directional percentiles and labels each Reel's
+top-quartile strengths.
 Facebook currently uses Graph API v25 direct Video views/likes/comments plus
 Page Post shares when returned; unavailable shares remain unknown, not zero.
 The richer `video_insights` edge requires `read_insights` and Page permissions
-that the current token does not have, so Facebook reach, saves,
+that the current token does not have. Meta's current v25 documentation still
+lists this permission; some individual legacy insight metrics, rather than the
+permission, have been deprecated. Consequently, Facebook reach, saves,
 post-attributed follows/profile visits, watch time, returning viewers, and a
 direct three-second skip rate remain unavailable rather than being inferred.
 Instagram reach rates and Facebook view rates are always labeled and ranked
@@ -547,6 +554,18 @@ missing historical windows from lifetime totals.
 Setup, annotation schema, rule configuration, output paths, and current API
 limitations are documented in
 [`docs/MONEYBALL_ANALYTICS.md`](docs/MONEYBALL_ANALYTICS.md).
+
+The recurring editorial interpretation is documented in
+[`ops/codex-aibrief-jp-moneyball-pulse.md`](ops/codex-aibrief-jp-moneyball-pulse.md).
+Its repository automation mirror is configured for every 72 hours, anchored
+to the live task's creation time and intended to start shortly after a regular
+snapshot checkpoint. Live Scheduled task state remains app-managed. The pulse
+treats the newest maturity-complete three-day batch as tactical evidence,
+maintains rolling fixed-24-hour rankings, and archives each Markdown report
+under
+`out/moneyball_content_analysis/aibrief_jp/`. It never changes the publishing
+queue. Fresh editorial conclusions require at least eight valid 24-hour Reels;
+slower allocation decisions remain grounded in 7-day maturity evidence.
 
 Cadence is controlled by each channel's `publishing.instagram_reels.slots` in
 `channels/<id>/channel.json`. The LaunchAgent in

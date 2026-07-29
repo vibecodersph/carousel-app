@@ -72,6 +72,13 @@
       "2h"
     ]
   },
+  "performance_rankings": {
+    "maturity_window": "24h",
+    "limit": 10,
+    "strong_point_percentile_min": 75.0,
+    "require_all_aggregate_metrics": true,
+    "aggregate_method": "unweighted_mean_directional_percentile"
+  },
   "classifications": {
     "hidden_gem": {
       "minimum_comparable_posts": 4,

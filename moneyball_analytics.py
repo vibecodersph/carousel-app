@@ -48,6 +48,54 @@ COHORT_DIMENSIONS = (
     "hook_style",
 )
 
+PERFORMANCE_RANKING_METRICS = (
+    {
+        "key": "total_interactions_per_reach",
+        "metric": "engagement_rate_by_reach",
+        "label": "Total interactions / reach",
+        "short_label": "Interaction rate",
+        "direction": "higher",
+        "format": "percent_ratio",
+        "source": "Meta total_interactions ÷ reach",
+    },
+    {
+        "key": "watch_depth",
+        "metric": "watch_depth",
+        "label": "Watch depth",
+        "short_label": "Watch depth",
+        "direction": "higher",
+        "format": "percent_ratio",
+        "source": "average watch time ÷ Reel duration; uncapped",
+    },
+    {
+        "key": "three_second_skip_rate",
+        "metric": "reels_skip_rate",
+        "label": "3-second skip rate",
+        "short_label": "Low 3s skip",
+        "direction": "lower",
+        "format": "percent_direct",
+        "source": "direct Meta reels_skip_rate; lower is stronger",
+    },
+    {
+        "key": "saves_per_1000_reach",
+        "metric": "saves_per_1000_reach",
+        "label": "Saves / 1,000 reach",
+        "short_label": "Save rate",
+        "direction": "higher",
+        "format": "rate_per_1000",
+        "source": "saved ÷ reach × 1,000",
+    },
+    {
+        "key": "views_per_reached_account",
+        "metric": "views_per_reached_account",
+        "label": "Views / reached account",
+        "short_label": "Views / reached",
+        "direction": "higher",
+        "format": "ratio",
+        "source": "views ÷ reach",
+    },
+)
+
 INSIGHT_COLUMN_TO_CANONICAL = {
     "views": "views",
     "total_views": "total_views",
@@ -2549,6 +2597,315 @@ def observations_for_window(
         observation["content_metadata"] = post.get("content_metadata", {})
         output.append(observation)
     return output
+
+
+def _ranking_supporting_metrics(
+    observation: Mapping[str, Any], metric_key: str
+) -> dict[str, Any]:
+    raw = observation.get("raw_metrics")
+    raw = raw if isinstance(raw, Mapping) else {}
+    derived = observation.get("derived_metrics")
+    derived = derived if isinstance(derived, Mapping) else {}
+    if metric_key == "total_interactions_per_reach":
+        return {
+            "interactions": numeric(raw.get("interactions")),
+            "reach": numeric(raw.get("reach")),
+            "denominator_type": "reach",
+        }
+    if metric_key == "watch_depth":
+        return {
+            "average_watch_time_seconds": numeric(
+                derived.get("average_watch_time_seconds")
+            ),
+            "duration_seconds": numeric(raw.get("duration_seconds")),
+        }
+    if metric_key == "three_second_skip_rate":
+        return {"reels_skip_rate": numeric(raw.get("reels_skip_rate"))}
+    if metric_key == "saves_per_1000_reach":
+        return {
+            "saves": numeric(raw.get("saves")),
+            "reach": numeric(raw.get("reach")),
+            "denominator_type": "reach",
+        }
+    if metric_key == "views_per_reached_account":
+        return {
+            "views": numeric(raw.get("views")),
+            "reach": numeric(raw.get("reach")),
+            "denominator_type": "reach",
+        }
+    return {}
+
+
+def build_top_rankings(
+    posts: Sequence[Mapping[str, Any]],
+    *,
+    platform: str = "instagram",
+    maturity_window: str = "24h",
+    limit: int = 10,
+    strong_percentile_min: float = 75.0,
+    require_all_aggregate_metrics: bool = True,
+) -> dict[str, Any]:
+    """Build age-matched, denominator-safe leaderboards with an auditable aggregate.
+
+    The aggregate is deliberately not an engagement score.  It is the unweighted
+    mean of five directional percentile ranks inside one fixed-maturity cohort.
+    Every component value, rank, and percentile remains visible.
+    """
+    requested_limit = max(1, int(limit))
+    observations = [
+        observation
+        for observation in observations_for_window(posts, maturity_window)
+        if str(observation.get("identity", {}).get("platform") or platform)
+        == platform
+    ]
+    metric_rankings: dict[str, Any] = {}
+    component_rows: dict[str, dict[str, Any]] = defaultdict(dict)
+
+    for specification in PERFORMANCE_RANKING_METRICS:
+        metric_key = str(specification["key"])
+        source_metric = str(specification["metric"])
+        direction = str(specification["direction"])
+        available: list[tuple[dict[str, Any], float]] = []
+        for observation in observations:
+            value = numeric(metric_value(observation, source_metric))
+            if value is None:
+                continue
+            available.append((observation, float(value)))
+
+        available.sort(
+            key=lambda pair: (
+                -pair[1] if direction == "higher" else pair[1],
+                str(pair[0].get("identity", {}).get("media_id") or ""),
+            )
+        )
+        distribution_values = [value for _, value in available]
+        full_rows: list[dict[str, Any]] = []
+        for position, (observation, value) in enumerate(available, start=1):
+            identity = observation.get("identity")
+            identity = identity if isinstance(identity, Mapping) else {}
+            metadata = observation.get("content_metadata")
+            metadata = metadata if isinstance(metadata, Mapping) else {}
+            raw_percentile = percentile_rank(distribution_values, value)
+            directional_percentile = (
+                100.0 - float(raw_percentile)
+                if raw_percentile is not None and direction == "lower"
+                else raw_percentile
+            )
+            media_id = str(identity.get("media_id") or "")
+            row = {
+                "rank": position,
+                "media_id": media_id,
+                "permalink": identity.get("permalink"),
+                "published_at": identity.get("published_at"),
+                "actual_age_hours": numeric(observation.get("actual_age_hours")),
+                "title": (
+                    metadata.get("hook_text")
+                    or identity.get("caption")
+                    or media_id
+                ),
+                "series": metadata.get("series"),
+                "value": value,
+                "directional_percentile": directional_percentile,
+                "supporting_metrics": _ranking_supporting_metrics(
+                    observation, metric_key
+                ),
+            }
+            full_rows.append(row)
+            component_rows[media_id][metric_key] = {
+                "rank": position,
+                "cohort_size": len(available),
+                "value": value,
+                "directional_percentile": directional_percentile,
+                "supporting_metrics": row["supporting_metrics"],
+            }
+
+        metric_rankings[metric_key] = {
+            "label": specification["label"],
+            "short_label": specification["short_label"],
+            "source_metric": source_metric,
+            "source": specification["source"],
+            "direction": direction,
+            "format": specification["format"],
+            "coverage": coverage_entry(len(available), len(observations)),
+            "top_10": full_rows[:requested_limit],
+        }
+
+    required_metric_count = (
+        len(PERFORMANCE_RANKING_METRICS)
+        if require_all_aggregate_metrics
+        else min(3, len(PERFORMANCE_RANKING_METRICS))
+    )
+    complete_media_ids = {
+        media_id
+        for media_id, components in component_rows.items()
+        if len(components) >= required_metric_count
+    }
+    aggregate_components: dict[str, dict[str, Any]] = defaultdict(dict)
+    for specification in PERFORMANCE_RANKING_METRICS:
+        metric_key = str(specification["key"])
+        direction = str(specification["direction"])
+        complete_values = [
+            (
+                media_id,
+                float(component_rows[media_id][metric_key]["value"]),
+            )
+            for media_id in complete_media_ids
+            if metric_key in component_rows[media_id]
+        ]
+        complete_values.sort(
+            key=lambda pair: (
+                -pair[1] if direction == "higher" else pair[1],
+                pair[0],
+            )
+        )
+        values = [value for _, value in complete_values]
+        for aggregate_rank, (media_id, value) in enumerate(
+            complete_values, start=1
+        ):
+            raw_percentile = percentile_rank(values, value)
+            directional_percentile = (
+                100.0 - float(raw_percentile)
+                if raw_percentile is not None and direction == "lower"
+                else raw_percentile
+            )
+            metric_component = component_rows[media_id][metric_key]
+            aggregate_components[media_id][metric_key] = {
+                "rank": aggregate_rank,
+                "cohort_size": len(complete_values),
+                "metric_leaderboard_rank": metric_component["rank"],
+                "metric_leaderboard_cohort_size": metric_component["cohort_size"],
+                "value": value,
+                "directional_percentile": directional_percentile,
+                "supporting_metrics": metric_component["supporting_metrics"],
+            }
+
+    aggregate_candidates: list[dict[str, Any]] = []
+    observation_by_media_id = {
+        str(observation.get("identity", {}).get("media_id") or ""): observation
+        for observation in observations
+    }
+    for media_id, components in aggregate_components.items():
+        if len(components) < required_metric_count:
+            continue
+        percentiles = [
+            numeric(component.get("directional_percentile"))
+            for component in components.values()
+        ]
+        if any(value is None for value in percentiles):
+            continue
+        directional_percentiles = [float(value) for value in percentiles if value is not None]
+        observation = observation_by_media_id.get(media_id, {})
+        identity = observation.get("identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        metadata = observation.get("content_metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        strong_points = []
+        top_10_placements = []
+        for specification in PERFORMANCE_RANKING_METRICS:
+            metric_key = str(specification["key"])
+            component = components.get(metric_key)
+            if not isinstance(component, Mapping):
+                continue
+            directional_percentile = numeric(
+                component.get("directional_percentile")
+            )
+            if (
+                directional_percentile is not None
+                and float(directional_percentile) >= strong_percentile_min
+            ):
+                strong_points.append(
+                    {
+                        "metric": metric_key,
+                        "label": specification["short_label"],
+                        "value": component.get("value"),
+                        "rank": component.get("metric_leaderboard_rank"),
+                        "aggregate_cohort_rank": component.get("rank"),
+                        "directional_percentile": directional_percentile,
+                    }
+                )
+            rank = numeric(component.get("rank"))
+            leaderboard_rank = numeric(component.get("metric_leaderboard_rank"))
+            if (
+                leaderboard_rank is not None
+                and int(leaderboard_rank) <= requested_limit
+            ):
+                top_10_placements.append(
+                    {
+                        "metric": metric_key,
+                        "label": specification["short_label"],
+                        "rank": int(leaderboard_rank),
+                    }
+                )
+
+        aggregate_candidates.append(
+            {
+                "media_id": media_id,
+                "permalink": identity.get("permalink"),
+                "published_at": identity.get("published_at"),
+                "actual_age_hours": numeric(observation.get("actual_age_hours")),
+                "title": (
+                    metadata.get("hook_text")
+                    or identity.get("caption")
+                    or media_id
+                ),
+                "series": metadata.get("series"),
+                "average_directional_percentile": (
+                    sum(directional_percentiles) / len(directional_percentiles)
+                ),
+                "metric_count": len(components),
+                "strength_count": len(strong_points),
+                "top_10_appearance_count": len(top_10_placements),
+                "strong_points": strong_points,
+                "top_10_placements": top_10_placements,
+                "components": {
+                    key: components[key] for key in sorted(components)
+                },
+            }
+        )
+
+    aggregate_candidates.sort(
+        key=lambda row: (
+            -float(row["average_directional_percentile"]),
+            str(row.get("media_id") or ""),
+        )
+    )
+    for position, row in enumerate(aggregate_candidates, start=1):
+        row["rank"] = position
+
+    aggregate_top_10 = aggregate_candidates[:requested_limit]
+    return {
+        "status": "AVAILABLE" if aggregate_top_10 else "INSUFFICIENT_DATA",
+        "platform": platform,
+        "maturity_window": maturity_window,
+        "cohort_size": len(observations),
+        "limit": requested_limit,
+        "coverage": {
+            key: value["coverage"] for key, value in metric_rankings.items()
+        },
+        "methodology": {
+            "comparison": (
+                f"Only {maturity_window} snapshots are compared; actual observation "
+                "age is retained on every row."
+            ),
+            "aggregate_method": (
+                "Unweighted mean of all five directional cohort percentiles. "
+                "Higher is better except 3-second skip rate, where lower is better."
+            ),
+            "aggregate_is_engagement_score": False,
+            "required_metric_count": required_metric_count,
+            "eligible_post_count": len(aggregate_candidates),
+            "strong_point_rule": (
+                f"Directional cohort percentile at or above "
+                f"{strong_percentile_min:.0f}."
+            ),
+            "denominator_rule": (
+                "Reach-based metrics require measured Reel reach. View-denominator "
+                "fallbacks are excluded."
+            ),
+        },
+        "metric_rankings": metric_rankings,
+        "aggregate_top_10": aggregate_top_10,
+    }
 
 
 COHORT_METRICS = (
@@ -5287,6 +5644,38 @@ def build_moneyball_report(
         as_of=effective_as_of,
         instagram_posts=posts,
     )
+    ranking_config = config.get("performance_rankings")
+    ranking_config = (
+        ranking_config if isinstance(ranking_config, Mapping) else {}
+    )
+    ranking_window = str(ranking_config.get("maturity_window") or "24h")
+    ranking_limit = int(ranking_config.get("limit") or 10)
+    strong_percentile_min = float(
+        ranking_config.get("strong_point_percentile_min") or 75.0
+    )
+    require_all_aggregate_metrics = bool(
+        ranking_config.get("require_all_aggregate_metrics", True)
+    )
+    facebook_posts = facebook_analytics.get("posts")
+    facebook_posts = facebook_posts if isinstance(facebook_posts, list) else []
+    performance_rankings = {
+        "instagram": build_top_rankings(
+            posts,
+            platform="instagram",
+            maturity_window=ranking_window,
+            limit=ranking_limit,
+            strong_percentile_min=strong_percentile_min,
+            require_all_aggregate_metrics=require_all_aggregate_metrics,
+        ),
+        "facebook": build_top_rankings(
+            facebook_posts,
+            platform="facebook",
+            maturity_window=ranking_window,
+            limit=ranking_limit,
+            strong_percentile_min=strong_percentile_min,
+            require_all_aggregate_metrics=require_all_aggregate_metrics,
+        ),
+    }
 
     maturity_windows: dict[str, Any] = {}
     account_baselines: dict[str, Any] = {}
@@ -5619,6 +6008,7 @@ def build_moneyball_report(
             "next_ten_post_allocation": next_ten,
         },
         "maturity_windows": maturity_windows,
+        "performance_rankings": performance_rankings,
         "account_growth": account_growth,
         "account_baselines": account_baselines,
         "posts": posts,
@@ -5677,6 +6067,116 @@ def _follow_conversion_display(observation: Mapping[str, Any]) -> str:
         if value is None
         else f"{float(value):.2f}/1k {denominator}"
     )
+
+
+def _format_ranking_value(value: Any, format_name: str) -> str:
+    number = numeric(value)
+    if number is None:
+        return "Unavailable"
+    if format_name == "percent_ratio":
+        return f"{float(number) * 100:,.1f}%"
+    if format_name == "percent_direct":
+        return f"{float(number):,.1f}%"
+    if format_name == "rate_per_1000":
+        return f"{float(number):,.2f}/1k"
+    if format_name == "ratio":
+        return f"{float(number):,.3f}×"
+    return f"{float(number):,.2f}"
+
+
+def performance_rankings_markdown_lines(
+    rankings: Mapping[str, Any], *, platform_label: str
+) -> list[str]:
+    window = str(rankings.get("maturity_window") or "Unavailable")
+    metric_rankings = rankings.get("metric_rankings")
+    metric_rankings = (
+        metric_rankings if isinstance(metric_rankings, Mapping) else {}
+    )
+    lines = [
+        "",
+        f"## B4. {platform_label} fixed-window Top 10 rankings",
+        "",
+        f"Status: **{rankings.get('status', 'UNAVAILABLE')}**. Window: "
+        f"**{window}**; fixed-window cohort: **{rankings.get('cohort_size', 0)}**. "
+        "Reach fallbacks are excluded.",
+    ]
+    if str(rankings.get("status") or "") != "AVAILABLE":
+        lines.extend(["", "| Metric | Coverage |", "|---|---:|"])
+        for metric_key, metric in metric_rankings.items():
+            metric = metric if isinstance(metric, Mapping) else {}
+            lines.append(
+                f"| {markdown_cell(metric.get('label') or metric_key)} | "
+                f"{format_coverage(metric.get('coverage'))} |"
+            )
+        return lines
+
+    aggregate = rankings.get("aggregate_top_10")
+    aggregate = aggregate if isinstance(aggregate, list) else []
+    lines.extend(
+        [
+            "",
+            "### Aggregate Top 10",
+            "",
+            "The aggregate is the unweighted mean of all five directional "
+            "complete-cohort percentiles. It is not an engagement score.",
+            "",
+            "| Rank | Reel | Average directional percentile | Strong points |",
+            "|---:|---|---:|---|",
+        ]
+    )
+    for row in aggregate:
+        if not isinstance(row, Mapping):
+            continue
+        title = markdown_cell(row.get("title") or row.get("media_id"))
+        permalink = str(row.get("permalink") or "")
+        reel = f"[{title}]({permalink})" if permalink else title
+        strong_points = row.get("strong_points")
+        strong_points = strong_points if isinstance(strong_points, list) else []
+        labels = ", ".join(
+            str(point.get("label"))
+            for point in strong_points
+            if isinstance(point, Mapping) and point.get("label")
+        )
+        lines.append(
+            f"| {row.get('rank')} | {reel} | "
+            f"P{format_rate(row.get('average_directional_percentile'))} | "
+            f"{markdown_cell(labels or 'None')} |"
+        )
+
+    specification_by_key = {
+        str(specification["key"]): specification
+        for specification in PERFORMANCE_RANKING_METRICS
+    }
+    for metric_key, metric in metric_rankings.items():
+        metric = metric if isinstance(metric, Mapping) else {}
+        specification = specification_by_key.get(str(metric_key), {})
+        rows = metric.get("top_10")
+        rows = rows if isinstance(rows, list) else []
+        lines.extend(
+            [
+                "",
+                f"### {metric.get('label') or metric_key}",
+                "",
+                f"Direction: **{metric.get('direction')} is stronger**. Coverage: "
+                f"**{format_coverage(metric.get('coverage'))}**.",
+                "",
+                "| Rank | Reel | Value | Directional percentile | Snapshot age |",
+                "|---:|---|---:|---:|---:|",
+            ]
+        )
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            title = markdown_cell(row.get("title") or row.get("media_id"))
+            permalink = str(row.get("permalink") or "")
+            reel = f"[{title}]({permalink})" if permalink else title
+            lines.append(
+                f"| {row.get('rank')} | {reel} | "
+                f"{_format_ranking_value(row.get('value'), str(specification.get('format') or 'ratio'))} | "
+                f"P{format_rate(row.get('directional_percentile'))} | "
+                f"{format_rate(row.get('actual_age_hours'), suffix='h')} |"
+            )
+    return lines
 
 
 def facebook_markdown_lines(facebook: Mapping[str, Any]) -> list[str]:
@@ -6200,6 +6700,21 @@ def render_moneyball_markdown(report: Mapping[str, Any]) -> str:
     facebook = platforms.get("facebook")
     if isinstance(facebook, Mapping):
         lines.extend(facebook_markdown_lines(facebook))
+
+    performance_rankings = report.get("performance_rankings")
+    performance_rankings = (
+        performance_rankings
+        if isinstance(performance_rankings, Mapping)
+        else {}
+    )
+    instagram_rankings = performance_rankings.get("instagram")
+    if isinstance(instagram_rankings, Mapping):
+        lines.extend(
+            performance_rankings_markdown_lines(
+                instagram_rankings,
+                platform_label="Instagram",
+            )
+        )
 
     lines.extend(["", "## C. Undervalued content", ""])
     hidden_gems = classifications.get("hidden_gems", [])
@@ -6900,6 +7415,184 @@ def _html_count_rate(
     return (
         f'<span class="metric-main">{count_text}</span>'
         f"<small>{_html_text(note)}</small>"
+    )
+
+
+def _html_ranking_value(value: Any, format_name: str) -> str:
+    if format_name == "percent_ratio":
+        return _html_percent(value)
+    if format_name == "percent_direct":
+        return _html_percent(value, value_is_ratio=False)
+    if format_name == "rate_per_1000":
+        return f"{_html_metric(value, decimals=2)} /1k"
+    if format_name == "ratio":
+        return f"{_html_metric(value, decimals=3)}×"
+    return _html_metric(value, decimals=2)
+
+
+def _performance_rankings_html(
+    rankings: Mapping[str, Any],
+    *,
+    platform_label: str,
+) -> str:
+    """Render linked fixed-window leaderboards and their transparent aggregate."""
+    maturity_window = str(rankings.get("maturity_window") or "Unavailable")
+    cohort_size = int(numeric(rankings.get("cohort_size")) or 0)
+    methodology = rankings.get("methodology")
+    methodology = methodology if isinstance(methodology, Mapping) else {}
+    metric_rankings = rankings.get("metric_rankings")
+    metric_rankings = (
+        metric_rankings if isinstance(metric_rankings, Mapping) else {}
+    )
+    aggregate = rankings.get("aggregate_top_10")
+    aggregate = aggregate if isinstance(aggregate, list) else []
+    platform_key = platform_label.lower().replace(" ", "-")
+
+    if str(rankings.get("status") or "") != "AVAILABLE":
+        coverage_bits = []
+        for metric_key, metric in metric_rankings.items():
+            metric = metric if isinstance(metric, Mapping) else {}
+            coverage = metric.get("coverage")
+            coverage = coverage if isinstance(coverage, Mapping) else {}
+            coverage_bits.append(
+                "<li>"
+                f"{_html_text(metric.get('label') or metric_key)}: "
+                f"{_html_metric(coverage.get('count'))}/"
+                f"{_html_metric(coverage.get('total'))}</li>"
+            )
+        return (
+            f'<section id="{platform_key}-performance-rankings" '
+            f'data-testid="{platform_key}-performance-rankings" '
+            'class="panel full ranking-shell ranking-unavailable">'
+            f"<span class=\"eyebrow\">{_html_text(platform_label)} · comparable rankings</span>"
+            f"<h2>{_html_text(maturity_window)} Top 10 rankings unavailable</h2>"
+            "<p>The five requested metrics do not have enough complete observations "
+            "inside one fixed-maturity cohort. Missing fields remain unavailable.</p>"
+            f"<ul>{''.join(coverage_bits)}</ul></section>"
+        )
+
+    specification_by_key = {
+        str(specification["key"]): specification
+        for specification in PERFORMANCE_RANKING_METRICS
+    }
+    aggregate_rows: list[str] = []
+    for row in aggregate:
+        if not isinstance(row, Mapping):
+            continue
+        permalink = _html_href(row.get("permalink"))
+        title = row.get("title") or row.get("media_id")
+        reel = (
+            f'<a class="rank-reel-link" href="{permalink}" target="_blank" '
+            f'rel="noreferrer">{_html_text(title)} ↗</a>'
+            if permalink
+            else _html_text(title)
+        )
+        strong_points = row.get("strong_points")
+        strong_points = strong_points if isinstance(strong_points, list) else []
+        strong_html = []
+        for point in strong_points:
+            if not isinstance(point, Mapping):
+                continue
+            metric_key = str(point.get("metric") or "")
+            specification = specification_by_key.get(metric_key, {})
+            strong_html.append(
+                '<span class="strength-pill">'
+                f"{_html_text(point.get('label') or metric_key)} · "
+                f"{_html_ranking_value(point.get('value'), str(specification.get('format') or 'ratio'))} "
+                f"· #{_html_metric(point.get('rank'))}</span>"
+            )
+        components = row.get("components")
+        components = components if isinstance(components, Mapping) else {}
+        component_cells = []
+        for specification in PERFORMANCE_RANKING_METRICS:
+            component = components.get(str(specification["key"]))
+            component = component if isinstance(component, Mapping) else {}
+            component_cells.append(
+                "<td>"
+                f'<span class="metric-main">{_html_ranking_value(component.get("value"), str(specification["format"]))}</span>'
+                f'<small>#{_html_metric(component.get("metric_leaderboard_rank"))} · '
+                f"P{_html_metric(component.get('directional_percentile'), decimals=0)}</small>"
+                "</td>"
+            )
+        strong_points_html = (
+            "".join(strong_html)
+            or '<span class="muted">No top-quartile strength</span>'
+        )
+        aggregate_rows.append(
+            "<tr>"
+            f'<td><span class="aggregate-rank">#{_html_metric(row.get("rank"))}</span></td>'
+            f"<td>{reel}<small>{_html_text(row.get('series') or 'Series unavailable')}</small></td>"
+            f'<td><span class="metric-main">P{_html_metric(row.get("average_directional_percentile"), decimals=1)}</span>'
+            "<small>equal-weight directional percentile</small></td>"
+            f'<td><div class="strength-list">{strong_points_html}</div></td>'
+            f"{''.join(component_cells)}</tr>"
+        )
+
+    metric_cards = []
+    for specification in PERFORMANCE_RANKING_METRICS:
+        metric_key = str(specification["key"])
+        metric = metric_rankings.get(metric_key)
+        metric = metric if isinstance(metric, Mapping) else {}
+        rows = metric.get("top_10")
+        rows = rows if isinstance(rows, list) else []
+        coverage = metric.get("coverage")
+        coverage = coverage if isinstance(coverage, Mapping) else {}
+        list_items = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            permalink = _html_href(row.get("permalink"))
+            title = row.get("title") or row.get("media_id")
+            linked_title = (
+                f'<a href="{permalink}" target="_blank" rel="noreferrer">'
+                f"{_html_text(title)}</a>"
+                if permalink
+                else _html_text(title)
+            )
+            list_items.append(
+                "<li>"
+                f'<span class="rank-number">{_html_metric(row.get("rank"))}</span>'
+                f'<span class="rank-copy">{linked_title}<small>'
+                f"P{_html_metric(row.get('directional_percentile'), decimals=0)} · "
+                f"{_html_metric(row.get('actual_age_hours'), decimals=1)}h snapshot"
+                "</small></span>"
+                f'<strong>{_html_ranking_value(row.get("value"), str(specification["format"]))}</strong>'
+                "</li>"
+            )
+        metric_cards.append(
+            f'<article id="{platform_key}-ranking-{_html_text(metric_key)}" '
+            f'data-testid="{platform_key}-ranking-{_html_text(metric_key)}" '
+            'class="ranking-card">'
+            f'<span class="eyebrow">n={_html_metric(coverage.get("count"))} · '
+            f'{_html_text("higher wins" if specification["direction"] == "higher" else "lower wins")}</span>'
+            f"<h3>{_html_text(specification['label'])}</h3>"
+            f"<p>{_html_text(specification['source'])}</p>"
+            f'<ol class="ranking-list">{"".join(list_items)}</ol></article>'
+        )
+
+    return (
+        f'<section id="{platform_key}-performance-rankings" '
+        f'data-testid="{platform_key}-performance-rankings" '
+        'class="panel full ranking-shell">'
+        f"<span class=\"eyebrow\">{_html_text(platform_label)} · comparable {maturity_window} cohort</span>"
+        "<div class=\"ranking-title-row\"><div>"
+        "<h2>Five Moneyball Top 10s</h2>"
+        f"<p>{_html_metric(cohort_size)} Reels have a valid {_html_text(maturity_window)} "
+        "snapshot. Reach-denominator fallbacks are excluded.</p></div>"
+        f'<span class="status">{_html_metric(methodology.get("eligible_post_count"))} '
+        "complete for aggregate</span></div>"
+        '<div class="aggregate-heading"><div><span class="eyebrow">Aggregate Top 10</span>'
+        "<h3>Broad strength, not one vanity metric</h3></div>"
+        "<p>Unweighted mean of all five directional cohort percentiles. Every "
+        "component is shown; 3-second skip is reversed because lower is stronger.</p></div>"
+        '<div class="aggregate-table-wrap"><table class="aggregate-table">'
+        "<thead><tr><th>Rank</th><th>Reel</th><th>Aggregate</th><th>Strong points</th>"
+        + "".join(
+            f"<th>{_html_text(specification['short_label'])}</th>"
+            for specification in PERFORMANCE_RANKING_METRICS
+        )
+        + f"</tr></thead><tbody>{''.join(aggregate_rows)}</tbody></table></div>"
+        f'<div class="ranking-grid">{"".join(metric_cards)}</div></section>'
     )
 
 
@@ -8236,6 +8929,20 @@ def render_moneyball_html(report: Mapping[str, Any]) -> str:
     facebook_summary = (
         facebook_summary if isinstance(facebook_summary, Mapping) else {}
     )
+    performance_rankings = report.get("performance_rankings")
+    performance_rankings = (
+        performance_rankings
+        if isinstance(performance_rankings, Mapping)
+        else {}
+    )
+    instagram_rankings = performance_rankings.get("instagram")
+    instagram_rankings = (
+        instagram_rankings if isinstance(instagram_rankings, Mapping) else {}
+    )
+    facebook_rankings = performance_rankings.get("facebook")
+    facebook_rankings = (
+        facebook_rankings if isinstance(facebook_rankings, Mapping) else {}
+    )
     roster = report.get("series")
     roster = roster if isinstance(roster, list) else []
     warnings = growth.get("warnings")
@@ -8466,6 +9173,7 @@ def render_moneyball_html(report: Mapping[str, Any]) -> str:
             "otherwise it is explicitly labeled per 1,000 views. Select any heading "
             "to sort and select it again to reverse the order. Unavailable values stay last.</p>"
             f"{_facebook_per_reel_table(facebook_posts)}</section>"
+            f"{_performance_rankings_html(facebook_rankings, platform_label='Facebook')}"
         )
 
     roster_rows = []
@@ -8560,8 +9268,38 @@ def render_moneyball_html(report: Mapping[str, Any]) -> str:
         ".platform-divider h2{font-size:27px;margin:0}.platform-divider p{width:100%;"
         "max-width:940px;margin:0}.facebook-kpi{border-color:#315e70}"
         ".facebook-gap-panel li{margin:6px 0;color:var(--muted)}"
+        ".ranking-shell{padding:24px;background:linear-gradient(145deg,rgba(16,28,37,.98),"
+        "rgba(9,29,35,.96))}.ranking-title-row,.aggregate-heading{display:flex;"
+        "justify-content:space-between;gap:20px;align-items:start}.ranking-title-row h2{"
+        "font-size:30px;margin:8px 0 4px}.ranking-title-row p,.aggregate-heading p{margin:0;"
+        "max-width:660px}.aggregate-heading{margin:24px 0 13px;padding-top:20px;border-top:"
+        "1px solid var(--line)}.aggregate-heading h3{font-size:20px;margin:5px 0 0}"
+        ".aggregate-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px;"
+        "background:#0b1820}.aggregate-table{min-width:1760px;font-size:13px}"
+        ".aggregate-table th{position:sticky;top:0;background:#162630;z-index:2}"
+        ".aggregate-table td:nth-child(2){min-width:300px;max-width:360px}"
+        ".aggregate-table td:nth-child(4){min-width:360px}.aggregate-rank{font-size:22px;"
+        "font-weight:900;color:var(--lime)}.rank-reel-link{display:block;font-weight:750;"
+        "line-height:1.35;margin-bottom:5px}.strength-list{display:flex;flex-wrap:wrap;gap:5px}"
+        ".strength-pill{display:inline-flex;border:1px solid #3d6c61;background:#102d2a;"
+        "color:#b7f7df;border-radius:999px;padding:4px 8px;font-size:11px;white-space:nowrap}"
+        ".ranking-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;"
+        "margin-top:18px}.ranking-card{border:1px solid var(--line);border-radius:17px;"
+        "background:#0b1820;padding:16px;min-width:0}.ranking-card:last-child{grid-column:1/-1}"
+        ".ranking-card h3{font-size:18px;margin:6px 0 3px}.ranking-card>p{margin:0 0 12px;"
+        "font-size:12px}.ranking-list{list-style:none;padding:0;margin:0}.ranking-list li{"
+        "display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;align-items:center;"
+        "padding:9px 0;border-top:1px solid #1d3440}.ranking-list li:first-child{border-top:0}"
+        ".rank-number{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;"
+        "background:#162f39;color:var(--lime);font-weight:900}.rank-copy{min-width:0}"
+        ".rank-copy a{display:block;color:var(--ink);font-weight:650;white-space:nowrap;"
+        "overflow:hidden;text-overflow:ellipsis}.rank-copy small{display:block}"
+        ".ranking-list strong{color:var(--cyan);white-space:nowrap}.ranking-unavailable{"
+        "border-style:dashed}.ranking-unavailable li{color:var(--muted)}"
         "@media(max-width:900px){header{align-items:start;flex-direction:column}.kpis{"
-        "grid-template-columns:repeat(2,1fr)}.span-7,.span-5,.span-6{grid-column:1/-1}}"
+        "grid-template-columns:repeat(2,1fr)}.span-7,.span-5,.span-6{grid-column:1/-1}"
+        ".ranking-grid{grid-template-columns:1fr}.ranking-card:last-child{grid-column:auto}"
+        ".ranking-title-row,.aggregate-heading{flex-direction:column}}"
         "@media(max-width:520px){main{width:min(100% - 20px,1240px);padding-top:22px}"
         ".kpis{grid-template-columns:1fr}.panel{padding:13px}}"
         "</style></head><body>"
@@ -8590,6 +9328,7 @@ def render_moneyball_html(report: Mapping[str, Any]) -> str:
         f"{_maturity_coverage_svg(coverage)}</section>"
         '<section class="panel span-6"><h2>Distribution vs intent</h2>'
         f"{_reach_intent_svg(posts)}</section>"
+        f"{_performance_rankings_html(instagram_rankings, platform_label='Instagram')}"
         '<section id="per-reel-evidence" data-testid="per-reel-evidence" '
         'class="panel full"><h2>Per-Reel evidence table</h2>'
         '<p class="section-note">Latest lifetime snapshot for each Reel, with actual '

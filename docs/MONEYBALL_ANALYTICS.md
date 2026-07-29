@@ -289,6 +289,10 @@ reference](https://developers.facebook.com/docs/graph-api/reference/v25.0/insigh
 That edge requires `read_insights` together with the applicable Page
 permissions (including Page engagement access such as
 `pages_read_engagement` or `pages_manage_engagement`, depending on the edge).
+A July 2026 recheck of Meta's current v25 Video Insights reference and
+permissions catalog confirms that the **permission itself is not deprecated**.
+Meta has deprecated or renamed some individual Page-insight metrics; that is a
+separate migration from the `read_insights` permission.
 A live v25 capability probe with the current Page token does not have
 `read_insights`, so the pipeline uses the verified direct-object fallback
 above. Documented metric names are not fabricated into stored observations
@@ -400,6 +404,31 @@ Each table uses the latest lifetime observation per native Reel and prints its
 actual platform-specific age. Fixed 2-hour, 24-hour, 72-hour, and 7-day
 leaderboards remain separate by both platform and maturity window, so
 different ages and platform denominators are never mixed.
+
+## Fixed-window Top 10 rankings
+
+The dashboard also renders five linked Instagram Top 10 lists from the
+configured `performance_rankings.maturity_window` (currently `24h`):
+
+- `total_interactions / reach` — higher is stronger;
+- watch depth — higher is stronger and remains uncapped;
+- direct `reels_skip_rate` — lower is stronger;
+- saves per 1,000 reached accounts — higher is stronger; and
+- views per reached account — higher is stronger.
+
+The aggregate Top 10 requires all five metrics. It is the unweighted mean of
+the five directional percentiles within the same complete-case maturity
+cohort—not an opaque engagement score. Every result exposes its component
+value, leaderboard rank, cohort percentile, numerator/denominator provenance,
+and direct Reel link. “Strong point” labels require at least the configured
+directional percentile threshold (currently P75).
+
+The per-metric lists retain their full valid coverage, while aggregate
+percentiles are recomputed over the same complete-case cohort for all five
+components. View-denominator fallbacks never enter a reach-based list.
+Facebook receives the same machine-readable ranking structure, but its lists
+remain explicitly `INSUFFICIENT_DATA` until all requested source fields exist
+inside one Facebook maturity cohort.
 
 Every column heading in the evidence tables is a sort button. Select a heading
 once for ascending order and again for descending order; the active direction
