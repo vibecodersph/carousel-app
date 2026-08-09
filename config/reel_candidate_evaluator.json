@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "analogue_limit": 3,
+  "false_negative_review_limit": 10,
+  "duration_buckets_seconds": [
+    {
+      "label": "0-15s",
+      "minimum": 0,
+      "maximum": 15
+    },
+    {
+      "label": "16-25s",
+      "minimum": 15,
+      "maximum": 25
+    },
+    {
+      "label": "26-45s",
+      "minimum": 25,
+      "maximum": 45
+    },
+    {
+      "label": "over-45s",
+      "minimum": 45,
+      "maximum": null
+    }
+  ],
+  "relevance": {
+    "minimum_keyword_cosine_without_concept": 0.12,
+    "minimum_keyword_cosine_with_concept": 0.025,
+    "minimum_shared_concepts": 1
+  },
+  "evidence": {
+    "strong_minimum_analogues": 3,
+    "strong_minimum_distinct_sources": 2,
+    "strong_minimum_distinct_uploaders": 2,
+    "developing_minimum_analogues": 2,
+    "developing_minimum_distinct_sources": 2
+  },
+  "candidate_readiness": {
+    "minimum_hook_score": 8.0,
+    "minimum_value_score": 8.0,
+    "minimum_opening_score": 7.5
+  },
+  "diversity": {
+    "candidate_concept_jaccard_threshold": 0.72
+  }
+}

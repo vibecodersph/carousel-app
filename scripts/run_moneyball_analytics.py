@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import moneyball_analytics as moneyball  # noqa: E402
+import verified_winner_library as winner_library  # noqa: E402
 
 
 def aware_datetime(value: str) -> datetime:
@@ -88,6 +89,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=ROOT / "out" / "moneyball_data_audit.md",
     )
     parser.add_argument(
+        "--winner-library-markdown-out",
+        type=Path,
+        default=None,
+        help=(
+            "Deduplicated fixed-window Top-10 hook/script library. Defaults to "
+            "<json-out stem>.winner_library.md."
+        ),
+    )
+    parser.add_argument(
+        "--winner-library-json-out",
+        type=Path,
+        default=None,
+        help=(
+            "Machine-readable winner library. Defaults to "
+            "<json-out stem>.winner_library.json."
+        ),
+    )
+    parser.add_argument(
         "--as-of",
         type=aware_datetime,
         default=None,
@@ -134,6 +153,24 @@ def main(argv: list[str] | None = None) -> int:
         html_path=args.html_out,
         facebook_csv_path=args.facebook_csv_out,
     )
+    winner_markdown_out = args.winner_library_markdown_out or args.json_out.with_name(
+        f"{args.json_out.stem}.winner_library.md"
+    )
+    winner_json_out = args.winner_library_json_out or args.json_out.with_name(
+        f"{args.json_out.stem}.winner_library.json"
+    )
+    library = winner_library.build_winner_library(
+        report,
+        source_report_path=args.json_out,
+    )
+    moneyball.atomic_write_text(
+        winner_markdown_out,
+        winner_library.render_winner_library_markdown(library),
+    )
+    moneyball.atomic_write_text(
+        winner_json_out,
+        winner_library.render_winner_library_json(library),
+    )
     facebook = report.get("platform_analytics", {}).get("facebook", {})
     facebook_coverage = facebook.get("data_coverage", {})
     print(
@@ -160,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     if facebook.get("status") in {"AVAILABLE", "NO_PUBLISHED_POSTS"}:
         print(f"[moneyball] wrote {args.facebook_csv_out}")
     print(f"[moneyball] wrote {args.audit_out}")
+    print(f"[moneyball] wrote {winner_markdown_out}")
+    print(f"[moneyball] wrote {winner_json_out}")
     return 0
 
 

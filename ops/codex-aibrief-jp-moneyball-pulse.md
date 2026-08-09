@@ -53,9 +53,35 @@ partially regenerated bundle.
 
 ### 2. Check readiness
 
+When `/Users/aiagent/GitHub/reel-app/outputs` contains candidate files, generate
+the read-only review of the three newest reconciled batches:
+
+```sh
+UV_CACHE_DIR=state/uv-cache uv run --frozen python scripts/evaluate_reel_candidates.py \
+  --analysis-mode diagnostic \
+  --latest-from /Users/aiagent/GitHub/reel-app/outputs \
+  --latest-count 3 \
+  --markdown-out out/reel_candidate_evaluation.latest.md \
+  --json-out out/reel_candidate_evaluation.latest.json
+```
+
+This recurring pulse remains on the local diagnostic mode until transmission
+of unpublished candidate transcripts and internal winner analytics to the
+configured Gemini API account is explicitly approved for recurring runs. The
+current one-time three-folder approval does not authorize recurring sends. It
+selects pipeline outputs by file modification time, not source-video
+publication date. Preserve valid empty `clips` arrays in the report and never
+recover rejected intermediate candidates automatically. A
+candidate-evaluation failure must be disclosed, but it must not invalidate an
+otherwise complete analytics refresh.
+
 Read:
 
 - `out/reel_report.moneyball.json`
+- `out/reel_report.moneyball.winner_library.md`
+- `out/reel_report.moneyball.winner_library.json`
+- `out/reel_candidate_evaluation.latest.md`, when generated
+- `out/reel_candidate_evaluation.latest.json`, when generated
 - `out/reel_report.moneyball.content_analysis.md` as a structure and writing
   reference only
 - the most recent report under
@@ -141,6 +167,11 @@ The report must contain:
 10. **Next twelve-post learning portfolio**
     - suggest tests, not automatic queue changes. Each suggestion must name its
       24-hour evidence, sample size, baseline, and confidence.
+    - judge proposed hooks/scripts with the winner library protocol: declare the
+      intended evidence lane, show three linked same-maturity analogues from at
+      least two distinct source videos when possible, identify meaningful
+      differences, check source/topic saturation, and use only the allowed
+      decision labels.
 11. **Unsupported conclusions**
     - explicitly list what cannot be concluded from missing follows, profile
       visits, returning viewers, production time, series tags, or experiments.

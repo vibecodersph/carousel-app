@@ -24,6 +24,12 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
         self.markdown_out = self.root / "out" / "reel_report.moneyball.md"
         self.html_out = self.root / "out" / "reel_report.moneyball.html"
         self.json_out = self.root / "out" / "reel_report.moneyball.json"
+        self.winner_markdown_out = (
+            self.root / "out" / "reel_report.moneyball.winner_library.md"
+        )
+        self.winner_json_out = (
+            self.root / "out" / "reel_report.moneyball.winner_library.json"
+        )
         self.csv_out = self.root / "out" / "reel_report.moneyball.csv"
         self.facebook_csv_out = (
             self.root / "out" / "reel_report.moneyball.facebook.csv"
@@ -257,6 +263,8 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
             self.markdown_out,
             self.html_out,
             self.json_out,
+            self.winner_markdown_out,
+            self.winner_json_out,
             self.csv_out,
             self.audit_out,
         )
@@ -266,6 +274,9 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 0)
 
         report = json.loads(self.json_out.read_text(encoding="utf-8"))
+        winner_library = json.loads(
+            self.winner_json_out.read_text(encoding="utf-8")
+        )
         html_output = self.html_out.read_text(encoding="utf-8")
         self.assertIn('data-testid="moneyball-dashboard"', html_output)
         self.assertIn('id="account-growth-kpis"', html_output)
@@ -288,6 +299,18 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
         self.assertTrue(required_sections.issubset(report))
         self.assertEqual(report["report_metadata"]["generated_at"], "2026-07-20T00:00:00+00:00")
         self.assertEqual(report["data_coverage"]["published_posts"], 2)
+        self.assertEqual(
+            winner_library["library_metadata"]["maturity_window"],
+            "24h",
+        )
+        self.assertEqual(
+            winner_library["library_metadata"]["unique_winner_posts"],
+            1,
+        )
+        self.assertIn(
+            "How to judge new candidates",
+            self.winner_markdown_out.read_text(encoding="utf-8"),
+        )
 
         by_media_id = {
             post["identity"]["media_id"]: post for post in report["posts"]

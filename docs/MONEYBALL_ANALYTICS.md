@@ -430,6 +430,60 @@ Facebook receives the same machine-readable ranking structure, but its lists
 remain explicitly `INSUFFICIENT_DATA` until all requested source fields exist
 inside one Facebook maturity cohort.
 
+## Measured winner hook and script library
+
+Every Moneyball run also generates:
+
+- `out/reel_report.moneyball.winner_library.md`
+- `out/reel_report.moneyball.winner_library.json`
+
+The library takes the union of all five current Instagram metric Top 10s and
+the aggregate Top 10, then joins each media ID back to the canonical post and
+generation artifacts. Each post retains its direct Reel link, exact published
+caption hook, complete Japanese rendered subtitle script, original-language
+source transcript, source video, ranking memberships, actual observation age,
+raw numerators and denominators, and provenance warnings. A post appearing in
+several lists is written once with all of its placements.
+
+The published caption's first non-empty line takes precedence over mutable
+`one_liners.json` options. Japanese `subtitles.ja.ass` is the primary script
+source, and `notes.json.transcript` is retained separately as the
+original-language reference. A stale clip path may be recovered only when
+there is exactly one artifact with the same source-video clip index; such a
+match is marked medium confidence rather than silently treated as exact.
+
+“Measured winner” means fixed-window leaderboard membership in that report
+snapshot. It does not mean the hook caused performance, that the result is
+repeatable, or that the post converted followers. The library groups the five
+metrics into two correlated evidence families:
+
+- intent/action: interactions/reach and saves/1,000 reach; and
+- attention/replay: watch depth, lower three-second skip, and views/reached.
+
+Aggregate membership is a summary, not a sixth independent vote. The Markdown
+includes a candidate-comparison protocol that requires an intended hypothesis
+lane, three linked same-maturity analogues from distinct sources where
+possible, duration and source-saturation checks, and a transparent decision
+label. It does not change generation prompts, publishing behavior, or ranking
+weights.
+
+To rebuild only this library from an existing Moneyball JSON:
+
+```sh
+uv run --frozen python scripts/build_verified_winner_library.py
+```
+
+To apply the library to new `reel-app` `candidates.json` batches, use
+`scripts/evaluate_reel_candidates.py`. The evaluator writes a linked Markdown
+review and machine-readable JSON without modifying the source candidates or
+publishing queue. Candidate mode now uses a two-pass semantic LLM review:
+analogue selection happens before ranks and values are visible, then a verifier
+interprets exact 24-hour evidence only for the locked analogue IDs. This mode
+transmits unpublished candidate transcripts and internal winner evidence to the
+configured Gemini API account and therefore requires approval for that data
+transfer. See
+[`REEL_CANDIDATE_EVALUATION.md`](REEL_CANDIDATE_EVALUATION.md).
+
 Every column heading in the evidence tables is a sort button. Select a heading
 once for ascending order and again for descending order; the active direction
 is shown in the heading and exposed through `aria-sort`. Sorting uses

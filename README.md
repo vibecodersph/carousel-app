@@ -535,8 +535,75 @@ maturity window—interactions/reach, watch depth, lower three-second skip,
 saves/1k reach, and views/reached account—plus an aggregate Top 10 that exposes
 all five equal-weight directional percentiles and labels each Reel's
 top-quartile strengths.
+The same run writes
+`out/reel_report.moneyball.winner_library.md` and
+`out/reel_report.moneyball.winner_library.json`: a deduplicated pool of every
+current Top-10 Reel with its exact published hook, full Japanese rendered
+script, original source transcript, direct link, ranking evidence, raw counts,
+and provenance flags. The library includes a no-combined-score protocol for
+judging new candidates against three same-maturity analogues without treating
+hook resemblance as a performance guarantee. Rebuild only that pool with:
+
+```sh
+uv run --frozen python scripts/build_verified_winner_library.py
+```
+
+New `reel-app` candidate batches can be compared with that measured library
+without changing either project:
+
+```sh
+uv run --frozen python scripts/evaluate_reel_candidates.py \
+  --analysis-mode llm \
+  --approve-gemini-data-transfer \
+  --latest-from /Users/aiagent/GitHub/reel-app/outputs \
+  --latest-count 3 \
+  --markdown-out out/reel_candidate_evaluation.latest.md \
+  --json-out out/reel_candidate_evaluation.latest.json
+```
+
+The evaluator uses a two-pass Gemini semantic review. The first pass reads only
+the candidate's primary hook/source transcript and each winner's published or
+selected hook/source transcript while ranks and metric values are hidden; the
+second pass reveals exact fixed-24-hour evidence only for the analogues already
+selected. Unused hook variants are excluded from prompts, citation evidence,
+and evaluation output. Exact ranks, values, raw counts, and links are then
+joined programmatically from the library. Candidate-generator scores and prior
+reasons are not model inputs, and there is no lexical fallback.
+
+LLM mode transmits unpublished candidate transcripts and internal winner
+evidence to the configured Gemini API account, so run it only when that data
+transfer is approved. Empty reconciled candidate files remain visible. Their
+discriminator rejections receive an independent LLM false-negative screen
+without being restored or rewritten. See
+[`docs/REEL_CANDIDATE_EVALUATION.md`](docs/REEL_CANDIDATE_EVALUATION.md).
+
+Recheck only the exact active Reel schedule, excluding unscheduled sibling
+candidates from the same source files, with:
+
+```sh
+uv run --frozen python scripts/evaluate_reel_candidates.py \
+  --analysis-mode llm \
+  --approve-gemini-data-transfer \
+  --workers 6 \
+  --scheduled-db state/reels.db \
+  --channel aibrief_jp \
+  --markdown-out out/reel_scheduled_candidate_evaluation.llm.md \
+  --json-out out/reel_scheduled_candidate_evaluation.llm.json
+```
+
+Scheduled LLM mode is read-only. It evaluates the actual scheduled primary hook
+and transcript, excludes unused hook variants, preserves each slot and current
+regular/Trial lane, and keeps a per-pass cache for fast safe restarts. Use
+repeatable `--exclude-source-video` flags for already reviewed folders.
+
 Facebook currently uses Graph API v25 direct Video views/likes/comments plus
 Page Post shares when returned; unavailable shares remain unknown, not zero.
+
+Instagram publishes can add a channel-level first comment after the media is
+live. Set `publishing.instagram_initial_comment` in `channels/<id>/channel.json`;
+an `instagram_initial_comment` value in a manifest overrides it for that post.
+Comment failures are recorded in `instagram_publish.json` but remain nonfatal so
+a scheduler retry cannot duplicate an already-published post.
 The richer `video_insights` edge requires `read_insights` and Page permissions
 that the current token does not have. Meta's current v25 documentation still
 lists this permission; some individual legacy insight metrics, rather than the
