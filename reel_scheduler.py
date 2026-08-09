@@ -3669,6 +3669,20 @@ def unschedule_queued_reel(
             return False, "That reel is no longer in the ledger"
         if str(row["status"]) not in queued_statuses:
             return False, f"Cannot remove a reel with status '{row['status']}'"
+        trial_experiment = reel_ledger.trial_experiment_for_reel(
+            conn,
+            content_hash,
+            channel_id,
+        )
+        if row_trial_enabled(row) and trial_experiment is not None:
+            trial_state = str(trial_experiment["state"] or "").strip()
+            if trial_state != reel_ledger.TRIAL_STATE_SCHEDULED:
+                return (
+                    False,
+                    "Cannot remove a Trial Reel whose experiment state is "
+                    f"'{trial_state}'",
+                )
+        changed_at = utc_now()
         cursor = conn.execute(
             "UPDATE reels SET status=?, scheduled_at=NULL, trial_reel=0, "
             "trial_graduation_strategy=NULL, last_error=?, updated_at=? "
@@ -3676,7 +3690,7 @@ def unschedule_queued_reel(
             (
                 reel_ledger.STATUS_SKIPPED,
                 reason,
-                utc_now(),
+                changed_at,
                 content_hash,
                 channel_id,
                 reel_ledger.STATUS_SCHEDULED,
@@ -3685,6 +3699,17 @@ def unschedule_queued_reel(
         )
         if cursor.rowcount != 1:
             return False, "That reel was already claimed or changed"
+        if row_trial_enabled(row) and trial_experiment is not None:
+            reel_ledger.set_trial_experiment_state_for_reel(
+                conn,
+                content_hash=content_hash,
+                channel_id=channel_id,
+                state=reel_ledger.TRIAL_STATE_STOPPED,
+                decision="stop",
+                decision_reason=reason,
+                decision_at=changed_at,
+                stopped_at=changed_at,
+            )
         mark_manifest_unscheduled(Path(str(row["manifest_path"] or "")))
         return True, f"Removed '{row['title'] or row['clip_dir']}' from the schedule"
 

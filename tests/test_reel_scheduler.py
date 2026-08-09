@@ -1224,6 +1224,28 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                     scheduled_at="2026-06-24T13:00:00+09:00",
                     manifest_path=str(manifest),
                 )
+                reel_ledger.set_status(
+                    conn,
+                    "queued",
+                    "aibrief_jp",
+                    reel_ledger.STATUS_PREVIEWED,
+                    trial_reel=1,
+                    trial_graduation_strategy="manual",
+                )
+                reel_ledger.upsert_trial_experiment(
+                    conn,
+                    experiment_id="TRIAL-UNSCHEDULE",
+                    content_hash="queued",
+                    channel_id="aibrief_jp",
+                    case_type=reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION,
+                    parent_content_hash=None,
+                    parent_media_id=None,
+                    asset_family_id="asset-unschedule",
+                    baseline_hook="Baseline",
+                    variant_hook="Variant",
+                    changed_variables_json='["hook"]',
+                    scheduled_at="2026-06-24T13:00:00+09:00",
+                )
                 reel_ledger.upsert_imported(
                     conn,
                     content_hash="published",
@@ -1246,7 +1268,25 @@ class ReelLedgerPlanningTests(unittest.TestCase):
                 row = reel_ledger.get_reel(conn, "queued", "aibrief_jp")
                 self.assertEqual(row["status"], reel_ledger.STATUS_SKIPPED)
                 self.assertIsNone(row["scheduled_at"])
+                self.assertEqual(row["trial_reel"], 0)
                 self.assertEqual(reel_ledger.upcoming(conn, "aibrief_jp"), [])
+                experiment = reel_ledger.get_trial_experiment(
+                    conn,
+                    "TRIAL-UNSCHEDULE",
+                )
+                self.assertEqual(
+                    experiment["state"],
+                    reel_ledger.TRIAL_STATE_STOPPED,
+                )
+                self.assertEqual(experiment["decision"], "stop")
+                self.assertEqual(
+                    experiment["decision_reason"],
+                    "removed from queue UI",
+                )
+                self.assertEqual(
+                    experiment["decision_at"],
+                    experiment["stopped_at"],
+                )
             updated_manifest = reel_scheduler.read_json(manifest)
             self.assertNotIn("scheduled_at", updated_manifest)
             self.assertEqual(updated_manifest["schedule_status"], reel_ledger.STATUS_SKIPPED)

@@ -51,6 +51,34 @@ class InstagramPublishCredentialTests(unittest.TestCase):
         self.assertEqual(token, "cli-token")
         self.assertEqual(source, "cli")
 
+    def test_resolves_channel_initial_comment(self) -> None:
+        manifest = {"channel_id": "aibrief_jp"}
+        manifest_path = instagram_publish.ROOT / "out" / "manifest.json"
+
+        with patch.object(
+            instagram_publish,
+            "channel_publishing",
+            return_value={"instagram_initial_comment": "どう思いますか？"},
+        ):
+            comment = instagram_publish.resolve_instagram_initial_comment(manifest, manifest_path)
+
+        self.assertEqual(comment, "どう思いますか？")
+
+    def test_manifest_initial_comment_overrides_channel(self) -> None:
+        manifest = {
+            "channel_id": "aibrief_jp",
+            "instagram_initial_comment": "この投稿についてどう思いますか？",
+        }
+
+        with patch.object(instagram_publish, "channel_publishing") as channel_publishing:
+            comment = instagram_publish.resolve_instagram_initial_comment(
+                manifest,
+                instagram_publish.ROOT / "out" / "manifest.json",
+            )
+
+        self.assertEqual(comment, "この投稿についてどう思いますか？")
+        channel_publishing.assert_not_called()
+
 
 class InstagramPublishMediaItemTests(unittest.TestCase):
     def test_title_mp4_infers_video_media_kind(self) -> None:
@@ -159,6 +187,69 @@ class InstagramPublishMediaItemTests(unittest.TestCase):
             report["api_steps"][0]["params"]["trial_params"],
             '{"graduation_strategy": "SS_PERFORMANCE"}',
         )
+
+    def test_create_initial_comment_posts_to_media_comments_edge(self) -> None:
+        with patch.object(instagram_publish, "graph_request", return_value={"id": "comment-1"}) as request:
+            result = instagram_publish.create_initial_comment(
+                "media-1",
+                "どう思いますか？",
+                access_token="token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+            )
+
+        self.assertEqual(result, {"id": "comment-1"})
+        request.assert_called_once_with(
+            "media-1/comments",
+            access_token="token",
+            graph_version="v25.0",
+            graph_api_root="https://graph.facebook.com",
+            params={"message": "どう思いますか？"},
+            method="POST",
+        )
+
+    def test_initial_comment_failure_is_nonfatal_after_publish(self) -> None:
+        item = image_item(1)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(instagram_publish, "create_container", return_value="container-1"))
+            stack.enter_context(patch.object(instagram_publish, "publish_container", return_value={"id": "media-1"}))
+            stack.enter_context(patch.object(instagram_publish, "fetch_permalink", return_value={"permalink": "https://example.com/post"}))
+            create_comment = stack.enter_context(
+                patch.object(
+                    instagram_publish,
+                    "create_initial_comment",
+                    side_effect=SystemExit("permission denied"),
+                )
+            )
+            result = instagram_publish.publish_to_instagram(
+                [item],
+                caption="caption",
+                instagram_user_id="ig-user",
+                access_token="token",
+                graph_version="v25.0",
+                graph_api_root="https://graph.facebook.com",
+                wait_timeout=1,
+                wait_interval=1,
+                single_video_media_type="VIDEO",
+                initial_comment="どう思いますか？",
+            )
+
+        self.assertEqual(result["published"], {"id": "media-1"})
+        self.assertEqual(result["initial_comment"]["error"], "permission denied")
+        create_comment.assert_called_once()
+
+    def test_dry_run_plan_includes_nonfatal_initial_comment_step(self) -> None:
+        steps = instagram_publish.api_steps(
+            [image_item(1)],
+            "caption",
+            single_video_media_type="VIDEO",
+            initial_comment="どう思いますか？",
+        )
+
+        self.assertEqual(steps[-1]["action"], "create_initial_comment")
+        self.assertEqual(steps[-1]["params"], {"message": "どう思いますか？"})
+        self.assertEqual(steps[-1]["failure_mode"], "nonfatal")
 
 
 class InstagramPublishCarouselMusicTests(unittest.TestCase):

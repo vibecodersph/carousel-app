@@ -205,6 +205,15 @@ def channel_instagram_access_token(channel_id: str) -> str:
     )
 
 
+def resolve_instagram_initial_comment(manifest: dict[str, Any], manifest_path: Path) -> str:
+    """Return the per-post override or channel-level Instagram first comment."""
+    value = str(manifest.get("instagram_initial_comment") or "").strip()
+    if value:
+        return value
+    publishing = channel_publishing(manifest_channel_id(manifest, manifest_path))
+    return str(publishing.get("instagram_initial_comment") or "").strip()
+
+
 def resolve_instagram_user_id(explicit: str, manifest: dict[str, Any], manifest_path: Path) -> tuple[str, str]:
     if explicit.strip():
         return explicit.strip(), "cli"
@@ -855,6 +864,27 @@ def fetch_permalink(
     )
 
 
+def create_initial_comment(
+    media_id: str,
+    message: str,
+    *,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    response = graph_request(
+        f"{media_id}/comments",
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={"message": message},
+        method="POST",
+    )
+    if not response.get("id"):
+        raise SystemExit(f"Instagram did not return an initial comment id: {response}")
+    return response
+
+
 def api_steps(
     items: list[MediaItem],
     caption: str,
@@ -862,9 +892,10 @@ def api_steps(
     single_video_media_type: str,
     trial_reel: bool = False,
     trial_graduation_strategy: str = "MANUAL",
+    initial_comment: str = "",
 ) -> list[dict[str, Any]]:
     if len(items) == 1:
-        return [
+        steps = [
             {
                 "action": "create_media_container",
                 "params": media_create_params(
@@ -878,31 +909,42 @@ def api_steps(
             },
             {"action": "publish_media_container", "creation_id": "<container_id>"},
         ]
-    return [
-        *[
+    else:
+        steps = [
+            *[
+                {
+                    "action": "create_carousel_item_container",
+                    "slide_index": item.index,
+                    "params": media_create_params(
+                        item,
+                        caption=caption,
+                        carousel_item=True,
+                        single_video_media_type=single_video_media_type,
+                        trial_reel=False,
+                    ),
+                }
+                for item in items
+            ],
             {
-                "action": "create_carousel_item_container",
-                "slide_index": item.index,
-                "params": media_create_params(
-                    item,
-                    caption=caption,
-                    carousel_item=True,
-                    single_video_media_type=single_video_media_type,
-                    trial_reel=False,
-                ),
-            }
-            for item in items
-        ],
-        {
-            "action": "create_carousel_container",
-            "params": {
-                "media_type": "CAROUSEL",
-                "children": "<child_container_ids>",
-                **({"caption": caption} if caption else {}),
+                "action": "create_carousel_container",
+                "params": {
+                    "media_type": "CAROUSEL",
+                    "children": "<child_container_ids>",
+                    **({"caption": caption} if caption else {}),
+                },
             },
-        },
-        {"action": "publish_carousel_container", "creation_id": "<carousel_container_id>"},
-    ]
+            {"action": "publish_carousel_container", "creation_id": "<carousel_container_id>"},
+        ]
+    if initial_comment:
+        steps.append(
+            {
+                "action": "create_initial_comment",
+                "media_id": "<published_media_id>",
+                "params": {"message": initial_comment},
+                "failure_mode": "nonfatal",
+            }
+        )
+    return steps
 
 
 def publish_to_instagram(
@@ -918,6 +960,7 @@ def publish_to_instagram(
     single_video_media_type: str,
     trial_reel: bool = False,
     trial_graduation_strategy: str = "MANUAL",
+    initial_comment: str = "",
 ) -> dict[str, Any]:
     child_ids: list[str] = []
     item_results: list[dict[str, Any]] = []
@@ -1002,12 +1045,38 @@ def publish_to_instagram(
             )
         except SystemExit as exc:
             print(f"[instagram] published, but permalink lookup failed: {exc}")
+    initial_comment_result: dict[str, Any] = {}
+    if media_id and initial_comment:
+        print(f"[instagram] creating initial comment on media {media_id}")
+        try:
+            created_comment = create_initial_comment(
+                media_id,
+                initial_comment,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+            initial_comment_result = {
+                "requested": True,
+                "message": initial_comment,
+                "id": str(created_comment.get("id") or ""),
+            }
+        except SystemExit as exc:
+            # The media is already live. Treating this as a publish failure could
+            # make the scheduler retry and create a duplicate Instagram post.
+            print(f"[instagram] published, but initial comment failed: {exc}")
+            initial_comment_result = {
+                "requested": True,
+                "message": initial_comment,
+                "error": str(exc),
+            }
     return {
         "child_containers": item_results,
         "publish_container_id": publish_container_id,
         "publish_container_status": parent_status,
         "published": published,
         "permalink": permalink,
+        "initial_comment": initial_comment_result,
     }
 
 
@@ -1026,6 +1095,7 @@ def publish_to_instagram_with_retries(
     publish_retry_delay: int,
     trial_reel: bool = False,
     trial_graduation_strategy: str = "MANUAL",
+    initial_comment: str = "",
 ) -> dict[str, Any]:
     attempts = max(0, publish_retries) + 1
     for attempt in range(1, attempts + 1):
@@ -1044,6 +1114,7 @@ def publish_to_instagram_with_retries(
                 single_video_media_type=single_video_media_type,
                 trial_reel=trial_reel,
                 trial_graduation_strategy=trial_graduation_strategy,
+                initial_comment=initial_comment,
             )
         except InstagramContainerWaitError as exc:
             if attempt >= attempts:
@@ -1070,6 +1141,7 @@ def build_report(
     single_video_media_type: str,
     trial_reel: bool,
     trial_graduation_strategy: str,
+    initial_comment: str = "",
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
     carousel_music: dict[str, Any] | None = None,
@@ -1089,6 +1161,7 @@ def build_report(
         "trial_reel": trial_reel,
         "trial_graduation_strategy": trial_graduation_strategy if trial_reel else "",
         "caption": caption,
+        "initial_comment": initial_comment,
         "media": [asdict(item) for item in items],
         "carousel_music": carousel_music or {},
         "uploads": uploads or [],
@@ -1098,6 +1171,7 @@ def build_report(
             single_video_media_type=single_video_media_type,
             trial_reel=trial_reel,
             trial_graduation_strategy=trial_graduation_strategy,
+            initial_comment=initial_comment,
         ),
         "result": result or {},
     }
@@ -1299,6 +1373,7 @@ def main() -> int:
             timeout=args.r2_timeout,
         )
     caption = read_caption(args, manifest)
+    initial_comment = resolve_instagram_initial_comment(manifest, manifest_path)
 
     result: dict[str, Any] | None = None
     if args.dry_run:
@@ -1322,6 +1397,7 @@ def main() -> int:
             publish_retry_delay=args.publish_retry_delay,
             trial_reel=trial_reel,
             trial_graduation_strategy=trial_graduation_strategy,
+            initial_comment=initial_comment,
         )
     report = build_report(
         manifest_path=manifest_path,
@@ -1337,6 +1413,7 @@ def main() -> int:
         single_video_media_type=args.single_video_media_type,
         trial_reel=trial_reel,
         trial_graduation_strategy=trial_graduation_strategy,
+        initial_comment=initial_comment,
         uploads=uploads,
         result=result,
         carousel_music=carousel_music,
