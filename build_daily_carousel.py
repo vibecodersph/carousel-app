@@ -111,10 +111,51 @@ def strip_em_dashes(text):
 
 
 def _strip_for_vcph(text):
-    """Normalize VCPH copy after model output."""
+    """Normalize VCPH short copy after model output."""
     text = strip_em_dashes(str(text or ""))
     text = re.sub(r"\s+", " ", text).strip()
     return text.strip('"').strip()
+
+
+def _strip_caption_for_vcph(text):
+    """Normalize VCPH captions while preserving readable paragraphs."""
+    text = strip_em_dashes(str(text or ""))
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip('"').strip()
+
+
+def _daily_drop_caption_title(date_value=None):
+    if date_value:
+        raw = str(date_value).split("T", 1)[0]
+        try:
+            dt = datetime.fromisoformat(raw)
+            return f"🌀 The Daily Drop, {dt.strftime('%B %-d, %Y')}"
+        except Exception:
+            return f"🌀 The Daily Drop, {date_value}"
+    return f"🌀 The Daily Drop, {datetime.now(timezone.utc).strftime('%B %-d, %Y')}"
+
+
+def _cap_hashtags(text, max_tags=5):
+    tags = re.findall(r"#[\w]+", text)
+    if len(tags) <= max_tags:
+        return text
+    count = 0
+    def repl(match):
+        nonlocal count
+        count += 1
+        return match.group(0) if count <= max_tags else ""
+    text = re.sub(r"#[\w]+", repl, text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _ensure_caption_title(text, title):
+    cleaned = _strip_caption_for_vcph(text)
+    cleaned = re.sub(r"^🌀\s*The Daily Drop,.*?\n+", "", cleaned, count=1, flags=re.I)
+    return f"{title}\n\n{cleaned}".strip()
 
 
 def _clamp_words(text, limit):
@@ -197,10 +238,12 @@ def _has_taglish_marker(text: str) -> bool:
 def _sanitize_daily_voice_data(data: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "cover_headline", "cover_subtitle", "cover_swipe_line",
-        "cover_subject", "cover_style", "instagram_caption",
+        "cover_subject", "cover_style", "cover_color_palette",
     ):
         if key in data:
             data[key] = _strip_for_vcph(data[key])
+    if "instagram_caption" in data:
+        data["instagram_caption"] = _strip_caption_for_vcph(data["instagram_caption"])
     story_rows = data.get("stories")
     if not isinstance(story_rows, list):
         story_rows = []
@@ -241,6 +284,39 @@ def _daily_voice_issues(data: dict[str, Any], expected_count: int, channel) -> l
                 issues.append(f"{key} missing")
             elif not _has_taglish_marker(value):
                 issues.append(f"{key} is not Taglish enough")
+
+    allowed_styles = {
+        "editorial_photo", "cinematic_film", "editorial_collage", "product_showcase",
+        "surreal_poster", "oil_painting", "anime_keyframe", "comic_book", "claymation",
+        "watercolor_storybook", "retro_airbrush", "pixel_art", "low_poly_3d",
+        "blueprint_diagram", "luxury_packshot", "isometric_tech", "toy_photography",
+        "hyperreal_multiverse"
+    }
+    allowed_palettes = {
+        "burnt orange + warm cream + deep ink",
+        "terracotta + sand + charcoal",
+        "amber gold + off-white + espresso",
+        "copper rust + bone + midnight blue",
+        "deep crimson + cream + slate",
+        "olive + warm ivory + dark brown",
+        "teal + warm white + ink black",
+        "mustard + eggshell + dark walnut",
+        "rose gold + cream + charcoal",
+        "sienna + bone + espresso"
+    }
+
+    style = data.get("cover_style")
+    if not style:
+        issues.append("cover_style is missing or empty")
+    elif style not in allowed_styles:
+        issues.append(f"cover_style '{style}' is not one of the allowed styles")
+
+    palette = data.get("cover_color_palette")
+    if not palette:
+        issues.append("cover_color_palette is missing or empty")
+    elif palette not in allowed_palettes:
+        issues.append(f"cover_color_palette '{palette}' is not one of the allowed palettes")
+
     return issues
 
 
@@ -278,6 +354,8 @@ Hard repair rules:
 - Do not invent claims. Do not add jokes to story bodies.
 - Keep cover_headline with exactly one [accent] word.
 - Keep cover_subject as text-free cover-photo art direction using orange or terracotta, never purple, pink, violet, or magenta.
+- cover_style must be one of the allowed style keys.
+- cover_color_palette must be one of the allowed color palette names.
 - No em dashes.
 
 {channel.brand_name} channel voice block:
@@ -307,8 +385,10 @@ Current JSON to repair:
         api_version=os.environ.get("GEMINI_TEXT_API_VERSION") or "v1beta",
         timeout=90,
     )
-    repaired = parse_json_object(extract_gemini_text(response))
+    repaired_raw_text = extract_gemini_text(response)
+    repaired = parse_json_object(repaired_raw_text)
     if not isinstance(repaired, dict):
+        print(f"  [warn] Gemini voice repair returned no JSON or invalid shape. Raw text:\n{repaired_raw_text}")
         return None
     return _sanitize_daily_voice_data(repaired)
 
@@ -348,9 +428,11 @@ def _generate_daily_drop_magazine_cover(
 
     cover_subject = ""
     cover_style = ""
+    cover_color_palette = ""
     if voice:
         cover_subject = _strip_for_vcph(voice.get("cover_subject", ""))
         cover_style = _strip_for_vcph(voice.get("cover_style", ""))
+        cover_color_palette = _strip_for_vcph(voice.get("cover_color_palette", ""))
 
     hero_story = stories[0] if stories else {}
     hero_cover_line = _plain_cover_headline(cover_headline)
@@ -381,6 +463,7 @@ def _generate_daily_drop_magazine_cover(
         "cover_subtitle": cover_subtitle,
         "cover_subject": cover_subject,
         "cover_style": cover_style,
+        "cover_color_palette": cover_color_palette,
         "carousel_mode": True,
         "cover_asset_version": 2,
     }
@@ -402,6 +485,7 @@ def _generate_daily_drop_magazine_cover(
             output_path=img_path,
             skip_logo_overlay=True,
             cover_size="1024x1280",
+            cover_color_palette=cover_color_palette,
         )
         if generated and Path(str(generated)).exists():
             return img_path
@@ -632,6 +716,8 @@ def rewrite_stories_daily_carousel(stories, channel) -> dict[str, Any] | None:
         for i, s in enumerate(stories)
     ]
 
+    daily_caption_title = _daily_drop_caption_title()
+
     prompt = f"""
 You are the editor of a daily AI-news Instagram carousel for {channel.brand_name},
 written for {channel.audience}. Write every public-facing word in {channel.language_name}.
@@ -641,9 +727,10 @@ Return JSON only with this exact shape:
   "cover_headline": "4 to 8 words, Taglish-native hook about story n=1 only, with exactly one [accent] word in brackets",
   "cover_subtitle": "one short Taglish sentence that is a blurb ONLY about story n=1, 12 to 18 words. This is a subtitle for the hero story headline. Do NOT mention other stories, do not say 'plus', do not list anything. Just summarize what story n=1 is about.",
   "cover_swipe_line": "use exactly: Swipe for more →",
-  "cover_subject": "2 to 4 sentences describing a HYPERREALISTIC EDITORIAL MONTAGE cover photo that combines ALL 5 stories into ONE unified image. Describe the scene: characters, objects, settings from each story placed side-by-side or in a shared environment. Think magazine cover illustration where every story has a visual presence.",
-  "cover_style": "empty string, or one obvious Daily Drop style key only when the story clearly needs it",
-  "instagram_caption": "short Taglish caption with one hook, one useful line, one CTA, clean hashtags",
+  "cover_subject": "2 to 4 sentences describing an EDITORIAL MONTAGE cover photo that combines elements, characters, or concepts from ALL 5 stories into ONE unified image. Be highly creative, specific, and state-of-the-art. If stories feature tech giants or public figures (e.g. OpenAI/Sam Altman, Google/Sundar Pichai/Google DeepMind, Microsoft, Meta), explicitly describe their visual likenesses, caricatures, or logos integrated into the scene. Avoid generic tech slop.",
+  "cover_style": "one Daily Drop style key that best matches the story topics: editorial_photo, cinematic_film, editorial_collage, product_showcase, surreal_poster, oil_painting, anime_keyframe, comic_book, claymation, watercolor_storybook, retro_airbrush, pixel_art, low_poly_3d, blueprint_diagram, luxury_packshot, isometric_tech, toy_photography, hyperreal_multiverse",
+  "cover_color_palette": "one Daily Drop color palette name that best fits the mood of the stories: 'burnt orange + warm cream + deep ink', 'terracotta + sand + charcoal', 'amber gold + off-white + espresso', 'copper rust + bone + midnight blue', 'deep crimson + cream + slate', 'olive + warm ivory + dark brown', 'teal + warm white + ink black', 'mustard + eggshell + dark walnut', 'rose gold + cream + charcoal', 'sienna + bone + espresso'",
+  "instagram_caption": "Start exactly with: {daily_caption_title}. Then a blank line, then a hook, one short story-worthy summary, CTA that source links are in the comments, and 3 to 5 clean hashtags. Never more than 5 hashtags.",
   "stories": [
     {{"n": 1, "headline": "6 to 10 words", "body": "1 to 2 sentences, 18 to 25 words"}}
   ]
@@ -654,6 +741,10 @@ Voice rules:
 - Taglish-native for the cover, caption, framing lines, and every story headline. Body slides can lean English for technical precision, but should still sound like a Pinoy builder talking to barkada.
 - Every story headline, including stories n=2 to n=5, must contain at least one Filipino connector or phrase such as "may", "sa", "ng", "para", "nasa", "gamit", "ito", "pero", "kasi", "pwede", or "bagong". Do not return straight-English story headlines.
 - Smart-funny, never clown-funny. Keep jokes mostly on the cover or caption. Story headlines and bodies should be crisp and factual.
+- The Instagram caption must be readable as paragraphs, not a wall of text: title line, blank line, hook, short summary, CTA, hashtags.
+- Preserve the iconic caption title exactly: {daily_caption_title}.
+- Caption CTA should tell readers that source links are in the comments and to save the post if they want to check sources later.
+- Hashtags are for discovery, not dumping. Use 3 to 5 total and never more than 5.
 - No em dashes. No en dashes. Use commas, periods, colons, or parentheses.
 - No clickbait phrases, no BREAKING, no MUST READ, no corporate buzzwords, no emoji stacks.
 - No slay, ate, bestie, mga kababayan, or campaign-flyer energy.
@@ -666,9 +757,9 @@ Voice rules:
 - Use exactly one [accent] word in cover_headline only. Do not use brackets in story headlines or bodies.
 - Treat story n=1 as the hero story. cover_headline AND cover_subtitle must be about story n=1 ONLY. cover_subject must combine ALL 5 stories into one montage scene.
 - cover_subtitle is a SUBTITLE for the hero headline. It expands on story n=1 with one additional sentence of context. Do NOT mention stories 2-5 in the subtitle. Do NOT write a table of contents or use the word \"plus\".
-- cover_subject should think like a magazine cover illustrator: place subjects, characters, objects, or settings from each of the 5 stories into ONE shared hyperrealistic editorial image. Use side-by-side composition, a shared environment, or a surreal editorial tableau. Every story must have a recognizable visual element in the scene. Do not request text, logos, mastheads, screens full of labels, a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
-- cover_subject should use the VibeCoders PH orange/terracotta accent system, not purple, pink, or magenta.
-- cover_style should usually be empty so the VCPH OS style rotation can decide. Only choose a style when the source has an obvious medium match.
+- cover_subject should think like a magazine cover illustrator: place subjects, characters, objects, or settings from each of the 5 stories into ONE shared editorial montage image. If a story involves OpenAI/Sam Altman, Google/Sundar Pichai/Google DeepMind, Microsoft, Meta, etc., explicitly include their visual likenesses, caricatures, or logos in the scene to make it unique and personalized. Do not request text, logos inside screens, mastheads, screens full of labels, a generic AI dashboard, phone, laptop, glowing robot, chart wallpaper, or model-name screen.
+- cover_style must be chosen from the allowed list of style keys.
+- cover_color_palette must be chosen from the allowed list of color palette names.
 
 {channel.brand_name} channel voice block:
 {channel_voice}
@@ -696,9 +787,10 @@ Stories JSON:
             api_version=os.environ.get("GEMINI_TEXT_API_VERSION") or "v1beta",
             timeout=90,
         )
-        data = parse_json_object(extract_gemini_text(response))
+        gemini_raw_text = extract_gemini_text(response)
+        data = parse_json_object(gemini_raw_text)
         if not isinstance(data, dict):
-            print("  [warn] Gemini voice rewrite returned no JSON; using raw titles")
+            print(f"  [warn] Gemini voice rewrite returned no JSON or invalid shape. Raw text:\n{gemini_raw_text}")
             return None
 
         data = _sanitize_daily_voice_data(data)
@@ -770,6 +862,50 @@ def _headline_size(text: str, *, cover: bool = False) -> int:
     return 48
 
 
+def _cover_subtitle_size(text: str) -> int:
+    length = len(text)
+    if length <= 50:
+        return 31
+    if length <= 80:
+        return 27
+    if length <= 120:
+        return 23
+    return 20
+
+
+def _story_slide_font_sizes(headline: str, body: str) -> tuple[int, int]:
+    head_len = len(headline)
+    body_len = len(body)
+    
+    if head_len <= 32:
+        head_size = 70
+    elif head_len <= 46:
+        head_size = 62
+    elif head_len <= 64:
+        head_size = 54
+    else:
+        head_size = 48
+        
+    body_size = 28
+    total_len = head_len + body_len
+    if total_len > 180:
+        head_size = max(40, head_size - 8)
+        body_size = max(20, body_size - 4)
+    elif total_len > 140:
+        head_size = max(44, head_size - 4)
+        body_size = max(24, body_size - 2)
+        
+    if body_len > 140:
+        body_size = min(body_size, 20)
+    elif body_len > 100:
+        body_size = min(body_size, 24)
+        
+    if head_len > 70:
+        head_size = min(head_size, 42)
+        
+    return head_size, body_size
+
+
 # ─────────────────────────── Slide HTML templates ───────────────────────────
 
 def _file_uri(path):
@@ -780,13 +916,11 @@ def _file_uri(path):
 def _brand_logo_html(channel, css_class: str) -> str:
     if channel.id != "vibecodersph":
         return ""
-    logo_path = ROOT / "assets" / "vibecodersph_logo.png"
-    if not logo_path.exists():
-        return ""
-    logo_uri = _file_uri(logo_path)
     return (
-        f'<img class="{css_class}" src="{logo_uri}" '
-        f'alt="{html.escape(channel.brand_name)}">'
+        f'<div class="{css_class}" aria-label="{html.escape(channel.brand_name)}">'
+        '<span class="cover-logo-mark">&lt;/&gt;</span>'
+        '<span class="cover-logo-text">VIBE CODERS PH</span>'
+        '</div>'
     )
 
 
@@ -795,6 +929,7 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     safe_handle = html.escape(channel.handle)
     safe_subtitle = html.escape(str(subtitle or "").rstrip(" ."))
     font_size = _headline_size(headline_text, cover=True)
+    sub_size = _cover_subtitle_size(safe_subtitle)
     total_slides = story_count + 2
     logo_html = _brand_logo_html(channel, "cover-logo")
     lower_items = []
@@ -870,7 +1005,7 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     .headline .term {{ white-space: nowrap; }}
     .cover-subtitle {{
       margin-top: 22px; max-width: 760px; color: rgba(244,242,236,0.86);
-      font-size: 31px; line-height: 1.26; font-weight: 650;
+      font-size: {sub_size}px; line-height: 1.26; font-weight: 650;
     }}
     .cover-list {{
       position: absolute; left: 58px; right: 58px; bottom: 130px; z-index: 4;
@@ -896,8 +1031,18 @@ def _cover_slide_html(channel, headline, headline_text, subtitle, swipe_line, st
     }}
     .cover-logo {{
       position: absolute; right: 48px; bottom: 34px; z-index: 5;
-      width: 148px; height: auto; opacity: 0.92;
+      display: flex; align-items: center; gap: 12px;
+      color: rgba(244,242,236,0.88);
       filter: drop-shadow(0 5px 18px rgba(0,0,0,0.46));
+    }}
+    .cover-logo-mark {{
+      width: 28px; height: 28px; display: grid; place-items: center;
+      background: var(--primary); color: #0d0b08;
+      font-size: 10px; font-weight: 900; line-height: 1;
+    }}
+    .cover-logo-text {{
+      font-size: 13px; font-weight: 880; letter-spacing: 0.18em;
+      line-height: 1; text-transform: uppercase;
     }}
     .dots {{
       left: 50%; right: auto; bottom: 24px; transform: translateX(-50%);
@@ -934,13 +1079,14 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     body_text = story.get("body", story.get("desc", ""))
     headline_markup = phrase_text_markup(headline_text, max_chars=11)
     body_markup = phrase_text_markup(body_text, max_chars=17)
-    font_size = _headline_size(headline_text)
+    head_size, body_size = _story_slide_font_sizes(headline_text, body_text)
     total_slides = total_stories + 2
 
     img_html = """<div class="visual-fallback"></div>"""
     if image_path and image_path.exists():
         img_uri = _file_uri(image_path)
         img_html = f"""\
+        <div class="visual-blur" style="background-image:url('{img_uri}')"></div>
         <div class="visual-bg" style="background-image:url('{img_uri}')"></div>
         <div class="visual-fallback"></div>"""
 
@@ -952,19 +1098,24 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
       position: absolute; top: 0; left: 0; width: 100%; height: 1012px;
       overflow: hidden; background: #151713;
     }}
-    .visual-bg, .visual-fallback {{ position: absolute; inset: 0; }}
+    .visual-blur, .visual-bg, .visual-fallback {{ position: absolute; inset: 0; }}
+    .visual-blur {{
+      z-index: 1; background-position: center; background-size: cover;
+      filter: blur(40px) brightness(0.55) saturate(1.1);
+      opacity: 0.55;
+    }}
     .visual-bg {{
-      z-index: 1; background-position: center; background-size: contain;
-      background-repeat: no-repeat; background-color: #151713;
-      filter: saturate(0.96) contrast(1.02);
+      z-index: 2; background-position: center; background-size: contain;
+      background-repeat: no-repeat;
+      filter: saturate(0.96) contrast(1.02) drop-shadow(0 16px 48px rgba(0,0,0,0.6));
     }}
     .visual-card::before {{
-      content: ''; position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 100px;
+      content: ''; position: absolute; z-index: 3; left: 0; right: 0; top: 0; height: 100px;
       background: linear-gradient(180deg, rgba(13,11,8,0.52), rgba(13,11,8,0));
       pointer-events: none;
     }}
     .visual-card::after {{
-      content: ''; position: absolute; z-index: 2; inset: 0;
+      content: ''; position: absolute; z-index: 3; inset: 0;
       background:
         linear-gradient(180deg, rgba(var(--bg-rgb), 0) 56%, rgba(var(--bg-rgb), 0.34) 76%, var(--bg) 100%);
       pointer-events: none;
@@ -984,7 +1135,7 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
     .story-brand {{ left: 58px; }}
     .story-progress {{ right: 58px; letter-spacing: 0.06em; }}
     .story-cluster {{
-      position: absolute; left: 56px; right: 56px; top: 900px; bottom: 138px;
+      position: absolute; left: 56px; right: 56px; top: 860px; bottom: 120px;
       display: flex; flex-direction: column; justify-content: flex-start; z-index: 3;
       overflow: hidden;
     }}
@@ -997,14 +1148,14 @@ def _story_slide_html(channel, story, slide_num, total_stories, image_path=None)
       text-transform: uppercase; color: var(--primary);
     }}
     .story-headline {{
-      font-size: {font_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.05;
+      font-size: {head_size}px; font-weight: 850; letter-spacing: 0; line-height: 1.05;
       color: var(--fg); text-wrap: balance; word-break: normal;
     }}
     .story-headline .jp-phrase, .story-body .jp-phrase {{ display: inline-block; }}
     .story-headline .term, .story-body .term {{ white-space: nowrap; }}
     .story-rule {{ width: 100%; height: 2px; margin: 22px 0 18px; background: var(--rule); }}
     .story-body {{
-      color: var(--ink-soft); font-size: 28px; line-height: 1.32; font-weight: 640;
+      color: var(--ink-soft); font-size: {body_size}px; line-height: 1.32; font-weight: 640;
     }}
     .story-source {{
       position: absolute; left: 72px; right: 72px; bottom: 96px; z-index: 3;
@@ -1157,7 +1308,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     render_html_slide(out_dir / "slide_01.html", out_dir / "slide_01.png")
     slides_manifest.append({
         "file": "slide_01.png", "type": "cover",
-        "path": str(out_dir / "slide_01.png"),
+        "path": "slide_01.png",
         "headline": cover_headline, "subtitle": cover_subtitle,
         "cover_image": str(cover_image) if cover_image else None,
     })
@@ -1196,7 +1347,7 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
         img_note = " [img]" if story_image else ""
         slides_manifest.append({
             "file": f"slide_{slide_num:02d}.png", "type": "story",
-            "path": str(out_dir / f"slide_{slide_num:02d}.png"),
+            "path": f"slide_{slide_num:02d}.png",
             "source": story.get("source", ""),
             "headline": headline,
             "body": enriched.get("body", enriched.get("desc", ""))[:200],
@@ -1215,22 +1366,30 @@ def build_daily_carousel(stories, channel, voice, out_dir, *, use_images=True):
     )
     slides_manifest.append({
         "file": f"slide_{cta_num:02d}.png", "type": "cta",
-        "path": str(out_dir / f"slide_{cta_num:02d}.png"),
+        "path": f"slide_{cta_num:02d}.png",
         "action": "Follow + Save",
     })
     print(f"  [{cta_num}/{total_slides}] CTA: Follow {channel.handle}")
 
     # ── Manifest ──
+    daily_caption_title = _daily_drop_caption_title()
     instagram_caption = ""
     if voice:
-        instagram_caption = _strip_for_vcph(voice.get("instagram_caption", ""))
+        instagram_caption = _strip_caption_for_vcph(voice.get("instagram_caption", ""))
     if not instagram_caption:
-        caption_lines = [cover_headline]
-        for s in stories:
-            caption_lines.append(f"\n{s.get('source', '')}: {s.get('title', '')}")
-        caption_lines.append(f"\n\nFollow {channel.handle} for daily AI news.")
-        caption_lines.append("#ai #tech #news #philippines #vibecodersph")
+        story_names = ", ".join(_strip_for_vcph(s.get("title", "")) for s in stories[:3])
+        caption_lines = [
+            daily_caption_title,
+            "",
+            f"Ayt, today's AI drop is your quick scan before the feed gets noisy.",
+            f"Main watch: {_plain_cover_headline(cover_headline)}. Also worth checking: {story_names}.",
+            "Source links are in the comments. Save this if you want to check the receipts later.",
+            "",
+            "#VibeCodersPH #DailyDrop #AI #TechPH #FilipinoTech",
+        ]
         instagram_caption = "\n".join(caption_lines)
+    instagram_caption = _ensure_caption_title(instagram_caption, daily_caption_title)
+    instagram_caption = _cap_hashtags(instagram_caption, max_tags=5)
 
     manifest = {
         "pipeline": "daily_carousel",

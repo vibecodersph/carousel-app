@@ -105,6 +105,24 @@ class DailyCarouselTemplateTests(unittest.TestCase):
         self.assertIn("story 1 headline is not Taglish enough", issues)
         self.assertIn("story 2 headline is not Taglish enough", issues)
 
+    def test_daily_drop_caption_title_and_hashtag_cap(self) -> None:
+        title = build_daily_carousel._daily_drop_caption_title("2026-07-28")
+        raw = (
+            "Hook muna: may agent news na dapat bantayan.\n\n"
+            "Source links are in the comments. Save this.\n\n"
+            "#AI #Tech #News #Philippines #VibeCodersPH #Extra"
+        )
+
+        caption = build_daily_carousel._cap_hashtags(
+            build_daily_carousel._ensure_caption_title(raw, title),
+            max_tags=5,
+        )
+
+        self.assertTrue(caption.startswith("🌀 The Daily Drop, July 28, 2026\n\n"))
+        self.assertIn("\n\nSource links are in the comments", caption)
+        self.assertEqual(caption.count("#"), 5)
+        self.assertNotIn("#Extra", caption)
+
     def test_vcph_image_build_requires_generated_cover_photo(self) -> None:
         channel = load_channel("vibecodersph")
         stories = [
@@ -200,7 +218,7 @@ class DailyCarouselTemplateTests(unittest.TestCase):
         self.assertEqual(result, out_path)
         self.assertEqual(FakeClient.instance.images.kwargs["model"], "gpt-image-2")
         self.assertIn("burnt-orange", FakeClient.instance.images.kwargs["prompt"])
-        self.assertIn("Do not use purple", FakeClient.instance.images.kwargs["prompt"])
+        self.assertIn("no purple", FakeClient.instance.images.kwargs["prompt"])
 
 
 if __name__ == "__main__":

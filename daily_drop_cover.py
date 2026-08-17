@@ -307,8 +307,6 @@ def _de_risk_subject(subject: str, hero_line: str, hero_blurb: str) -> str:
     lower = subject.lower()
     risky_terms = [
         "handshake", "shaking hands", "holding hands", "high five", "fist bump",
-        "two ceos", "two founders", "two executives", "sam altman", "elon musk",
-        "satya nadella", "mark zuckerberg", "jensen huang", "sundar pichai",
     ]
     if not any(term in lower for term in risky_terms):
         return subject
@@ -359,6 +357,7 @@ def generate_full_cover(
     output_path: str | Path | None = None,
     skip_logo_overlay: bool = False,
     cover_size: str = "",
+    cover_color_palette: str = "",
 ) -> Path | None:
     """Generate a complete VibeCoders PH Daily Drop magazine cover.
 
@@ -387,7 +386,14 @@ def generate_full_cover(
     issue_str = f"ISSUE {issue_number:03d}"
     today = datetime.now().strftime("%b %d, %Y").upper()
     style = _style_for_issue(issue_number, cover_style)
-    color = _color_for_issue(issue_number)
+    color = None
+    if cover_color_palette:
+        for palette in COLOR_ROTATION:
+            if palette["name"] == cover_color_palette:
+                color = palette
+                break
+    if not color:
+        color = _color_for_issue(issue_number)
 
     hero = rows[0]
     hero_line = cover_safe_text(hero_cover_line or hero["headline"], max_words=14, max_chars=100)

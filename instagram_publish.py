@@ -50,6 +50,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 VIDEO_SUFFIXES = {".mp4", ".mov"}
 FINISHED_STATUS_CODES = {"FINISHED", "PUBLISHED"}
 WAIT_STATUS_CODES = {"EXPIRED", "ERROR"}
+VCPH_CAROUSEL_SIZE = (1080, 1440)
 
 
 @dataclass
@@ -179,6 +180,23 @@ def validate_public_url(url: str, *, dry_run: bool) -> None:
         raise SystemExit(f"{mode} needs a public HTTPS media URL, got: {url}")
 
 
+def validate_vcph_carousel_image(local_path: Path) -> None:
+    """Require the canonical VCPH 3:4 carousel raster when explicitly enabled."""
+    try:
+        from PIL import Image
+        with Image.open(local_path) as image:
+            size = image.size
+    except ImportError as exc:
+        raise SystemExit("--require-3x4 requires Pillow for image preflight") from exc
+    except OSError as exc:
+        raise SystemExit(f"Could not read carousel image {local_path}: {exc}") from exc
+    if size != VCPH_CAROUSEL_SIZE:
+        raise SystemExit(
+            f"VCPH carousel slide must be 3:4 at 1080x1440; "
+            f"got {size[0]}x{size[1]}: {local_path}"
+        )
+
+
 def build_media_items(
     manifest: dict[str, Any],
     manifest_path: Path,
@@ -186,6 +204,7 @@ def build_media_items(
     media_base_url: str,
     overrides: dict[str, str],
     dry_run: bool,
+    require_3x4: bool = False,
 ) -> list[MediaItem]:
     slides = manifest.get("slides")
     if not isinstance(slides, list) or not slides:
@@ -219,10 +238,13 @@ def build_media_items(
                 f"{raw_slide.get('index')}. Pass --media-base-url or --media-url."
             )
         validate_public_url(public_url, dry_run=dry_run)
+        kind = infer_media_kind(raw_slide, local_path)
+        if require_3x4 and len(slides) > 1 and kind == "image":
+            validate_vcph_carousel_image(local_path)
         items.append(
             MediaItem(
                 index=int(raw_slide.get("index") or len(items) + 1),
-                kind=infer_media_kind(raw_slide, local_path),
+                kind=kind,
                 local_path=str(local_path),
                 public_url=public_url,
                 slide_type=str(raw_slide.get("type") or ""),
@@ -787,6 +809,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--wait-timeout", type=int, default=600)
     parser.add_argument("--wait-interval", type=int, default=10)
+    parser.add_argument(
+        "--require-3x4",
+        action="store_true",
+        help="Fail unless every image in a multi-slide VCPH carousel is exactly 1080x1440",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate and write a publish plan only")
     parser.add_argument("--out", type=Path, help=f"Write report JSON here (default: {DEFAULT_REPORT_NAME})")
     parser.add_argument("--print-json", action="store_true", help="Print the report JSON to stdout")
@@ -812,6 +839,7 @@ def main() -> int:
         media_base_url=media_base_url,
         overrides=parse_media_url_overrides(args.media_url),
         dry_run=args.dry_run,
+        require_3x4=args.require_3x4,
     )
     uploads: list[dict[str, Any]] = []
     if args.upload_r2:
