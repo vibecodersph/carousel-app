@@ -79,7 +79,7 @@ def utc_now() -> str:
 
 def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise SystemExit(f"No manifest found at {path}") from exc
     except json.JSONDecodeError as exc:
@@ -389,7 +389,7 @@ def upload_media_to_r2(
 
 def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
     if args.caption_file:
-        return args.caption_file.read_text().strip()
+        return args.caption_file.read_text(encoding="utf-8").strip()
     if args.caption is not None:
         return args.caption.strip()
     # Daily carousel manifest carries an instagram_caption from Gemini voice rewrite

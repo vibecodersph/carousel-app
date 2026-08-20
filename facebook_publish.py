@@ -119,7 +119,7 @@ def resolve_page(token: str, page_id_hint: str) -> tuple[str, str, str]:
 
 def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
     if args.caption_file:
-        return Path(args.caption_file).read_text().strip()
+        return Path(args.caption_file).read_text(encoding="utf-8").strip()
     if args.caption is not None:
         return args.caption.strip()
     for key in ("facebook_caption", "instagram_caption"):
@@ -209,7 +209,7 @@ def main() -> None:
     if not token:
         raise SystemExit("META_SYSTEM_USER_ACCESS_TOKEN_VIBECODERSPH is not set")
 
-    manifest = json.loads(args.manifest.read_text())
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     caption = read_caption(args, manifest)
     items = collect_items(manifest, args.manifest.resolve())
     kinds = {k for k, _ in items}
