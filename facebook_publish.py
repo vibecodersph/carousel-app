@@ -202,6 +202,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--publish", action="store_true",
                         help="actually post (otherwise the script refuses unless --dry-run)")
+    parser.add_argument("--force", action="store_true",
+                        help=("Publish even if facebook_publish.json next to the manifest "
+                              "already records a successful post. Without this flag, a "
+                              "repeat --publish run refuses instead of risking a duplicate."))
     args = parser.parse_args()
 
     load_env_file(Path(__file__).resolve().parent / ".env")
@@ -227,6 +231,22 @@ def main() -> None:
         return
     if not args.publish:
         raise SystemExit("Refusing to post without --publish (or use --dry-run to validate)")
+
+    report_path = args.manifest.parent / "facebook_publish.json"
+    if report_path.exists() and not args.force:
+        try:
+            previous = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = None
+        prior_ids = [it.get("id") for it in (previous or {}).get("items", []) if it.get("id")]
+        prior_ids += [previous.get("post_id")] if previous and previous.get("post_id") else []
+        if prior_ids:
+            raise SystemExit(
+                f"Refusing to publish: {report_path} already records a live post "
+                f"(id(s) {prior_ids}). This manifest looks already posted, and "
+                "running this again would create a duplicate. If that id is wrong "
+                "or this is a deliberate re-post, rerun with --force."
+            )
 
     page_id, page_name, page_token = resolve_page(
         token, os.environ.get("FACEBOOK_PAGE_ID", "").strip())
@@ -261,9 +281,8 @@ def main() -> None:
         report["items"] = [{"kind": "image", "id": m} for m in media_ids]
         report["post_id"] = result.get("id")
 
-    out = args.manifest.parent / "facebook_publish.json"
-    out.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"[facebook] wrote report -> {out}")
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    print(f"[facebook] wrote report -> {report_path}")
 
 
 if __name__ == "__main__":

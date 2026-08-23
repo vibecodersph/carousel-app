@@ -815,6 +815,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail unless every image in a multi-slide VCPH carousel is exactly 1080x1440",
     )
     parser.add_argument("--dry-run", action="store_true", help="Validate and write a publish plan only")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Publish even if the report file already records a successful "
+            "live publish for this manifest. Without this flag, a repeat "
+            "live run refuses instead of risking a duplicate post."
+        ),
+    )
     parser.add_argument("--out", type=Path, help=f"Write report JSON here (default: {DEFAULT_REPORT_NAME})")
     parser.add_argument("--print-json", action="store_true", help="Print the report JSON to stdout")
     return parser
@@ -849,6 +858,7 @@ def main() -> int:
             timeout=args.r2_timeout,
         )
     caption = read_caption(args, manifest)
+    report_path = args.out or manifest_path.with_name(DEFAULT_REPORT_NAME)
 
     result: dict[str, Any] | None = None
     if args.dry_run:
@@ -858,6 +868,22 @@ def main() -> int:
             raise SystemExit("INSTAGRAM_USER_ID or --instagram-user-id is required to publish")
         if not args.access_token:
             raise SystemExit("INSTAGRAM_ACCESS_TOKEN or --access-token is required to publish")
+        if report_path.exists() and not args.force:
+            try:
+                previous = load_json(report_path)
+            except (OSError, json.JSONDecodeError):
+                previous = None
+            prior_id = None
+            if isinstance(previous, dict) and not previous.get("dry_run"):
+                prior_id = (previous.get("result") or {}).get("published", {}).get("id")
+            if prior_id:
+                raise SystemExit(
+                    f"Refusing to publish: {report_path} already records a live "
+                    f"publish (media id {prior_id}). This manifest looks already "
+                    "posted, and running this again would create a duplicate. "
+                    "If that id is wrong or this is a deliberate re-post, rerun "
+                    "with --force."
+                )
         result = publish_to_instagram(
             media_items,
             caption=caption,
@@ -883,7 +909,6 @@ def main() -> int:
         uploads=uploads,
         result=result,
     )
-    report_path = args.out or manifest_path.with_name(DEFAULT_REPORT_NAME)
     write_json(report_path, report)
     print(f"[instagram] wrote report -> {report_path}")
     if args.print_json:
