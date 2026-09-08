@@ -17,3 +17,7 @@ assets/tweet_embed.html
 assets/video_sources/
 # Carousel output samples — keep current files, gitignore future builds
 /out/
+.tiktok_sandbox_tokens.json
+
+# token backups written by rotate_meta_token.py — contain live secrets
+.env.bak*
