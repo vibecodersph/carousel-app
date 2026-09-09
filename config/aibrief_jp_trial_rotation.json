@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "timezone": "Asia/Tokyo",
+  "daily_time": "19:00",
+  "family_cooldown_hours": 72,
+  "entries": [
+    {
+      "content_hash": "df9d3e47e277a63fce45f0664ce35ce5cf806a2261767813e3bc69ff5f868bd9",
+      "source_video": "t0GiTyz4syY",
+      "clip_name": "003-netflix-s-tech-chief-admits-ai-code-is-unsettling",
+      "title": "壊れても修正不可、Netflix技術トップが恐れるAIのブラックボックス",
+      "enabled": true
+    },
+    {
+      "content_hash": "babd790dbce0151be380893e792f9f916251bc7f8562614d30e8880926024854",
+      "source_video": "fOLu-pWQssQ",
+      "clip_name": "001-mit-s-new-exam-pose-a-question-ai-can-t-answer",
+      "title": "MITは試験でAIを禁止せず、全員に配った",
+      "screenshot_title": "MITの新試験:AIが絶対に答えられない質問を作れ",
+      "reference_content_hash": "ba9d2e3be541dbe172042b64120cb6808e8b9dd1603145919ed4377094687b59",
+      "enabled": true
+    },
+    {
+      "content_hash": "f475b8d6e23ff13b427da7efbe593575e84d54756c01b7b6d72b64cca3f8c1dc",
+      "source_video": "PHQvb10vKyk",
+      "clip_name": "007-why-ai-coding-tools-turn-developers-into-vampires",
+      "title": "AIで生産性が4倍になった結果、夜通しコードを書き続けるエンジニア",
+      "enabled": true
+    },
+    {
+      "content_hash": "d3d93f6dab69ead5e759cbfc2b6b1c4a347876b210ce1efd288c6cf0a5e43ba3",
+      "source_video": "aFsAOu2bgFk",
+      "clip_name": "006-anthropic-killed-the-lean-startup-playbook",
+      "title": "プロトタイプは捨てない。10日で製品化するAnthropicの常識",
+      "enabled": true
+    },
+    {
+      "content_hash": "bdd3cac499496b758d8480a515883e253ad0672cc154afaaf3c9989adcc998db",
+      "source_video": "iT7kq-R3Gjc",
+      "clip_name": "002-the-exact-strategy-for-getting-ai-models-to-cite-you",
+      "title": "Redditで5件回答するだけで自社サイトをAIに引用させる戦略",
+      "enabled": true
+    },
+    {
+      "content_hash": "8b270f78a2dbe12922f2ff730a042178ca05ba793cb5627b8fdc61aef6dc1880",
+      "source_video": "RkQQ7WEor7w",
+      "clip_name": "007-he-asked-claude-what-song-was-playing-it-wrote-applescript-itsel",
+      "title": "Claudeに再生中の曲を聞いたら自力でAppleScriptを書いた",
+      "enabled": true
+    },
+    {
+      "content_hash": "2bca1c174cb75a66ace0f6c52cd86c08e8575d90154fa6e9b4f1e0aad4ace443",
+      "source_video": "TfyPshgMbug",
+      "clip_name": "005-ai-cold-solves-geometry-in-nineteen-seconds-since-2024",
+      "title": "AIは2024年、幾何学をわずか19秒で力任せに解き明かした",
+      "enabled": true
+    },
+    {
+      "content_hash": "fb0fe600b254d3b776406cb3c3c7af4dc1bb8094306d3e1e40add364d2a94daa",
+      "source_video": "Ybrl4FYM57c",
+      "clip_name": "002-inside-anthropic-s-just-in-time-planning-workflow",
+      "title": "Anthropicは計画書を全廃、スプレッドシート1枚で動くJIT計画術",
+      "enabled": true
+    },
+    {
+      "content_hash": "7054a21868aa647dee6de3161df81fe94d8520aa4d38368bd6ed126624ca6146",
+      "source_video": "bBS93A0BeNI",
+      "clip_name": "001-openai-s-agent-escalated-to-a-coworker-s-boss-without-asking-gre",
+      "title": "OpenAIのAIが暴走?Gregに無断で上司に直訴",
+      "screenshot_title": "OpenAIのAI、エラーを勝手に上司に直接エスカレーションした件",
+      "reference_content_hash": "f6784ace9963b68e213bcf60f3083778ce1488c6f8e70f455afb231ba6f5a8b7",
+      "enabled": true
+    },
+    {
+      "content_hash": "aa349900b32880854e297bb11eaee6bca751325df61994ba880eb287cf674b64",
+      "source_video": "qyPCVqFUyDo",
+      "clip_name": "002-the-undocumented-command-to-delete-claude-code-system-prompts",
+      "title": "Claude Codeのプロンプトを全消去すると逆に賢くなる",
+      "reference_content_hash": "1395085fec65d52d86f983cd73891306c33c1f38b330c5ed8a9592784136b72e",
+      "enabled": true
+    },
+    {
+      "content_hash": "f9d1a09b93fea714aa4d7958050825b41f3adeea49825c64c42cb02c59965305",
+      "source_video": "eh8bcBIAAFo",
+      "clip_name": "002-claude-s-design-head-doubts-middle-management-survives-ai",
+      "title": "Claudeデザイン責任者「AI時代、中間管理職は生き残れない」",
+      "enabled": true
+    },
+    {
+      "content_hash": "4aac7d9070eb3b61b407ffac6a280072a6c444e6ca9bb2571781253c68e6759e",
+      "source_video": "We7BZVKbCVw",
+      "clip_name": "005-anthropic-can-watch-a-deception-neuron-light-up-in-real-time",
+      "title": "AnthropicがAIの「嘘をつく瞬間」をリアルタイムで捉えた!",
+      "enabled": true
+    },
+    {
+      "content_hash": "04617bc38934a95430a9a3b5ae561087e692da322a093329258a73e73cbde628",
+      "source_video": "eh8bcBIAAFo",
+      "clip_name": "003-claude-s-head-of-design-won-t-hire-claude",
+      "title": "Claudeのデザイン責任者はClaudeをデザイナーに採用しない",
+      "enabled": true
+    },
+    {
+      "content_hash": "cf6d2db633d7ed556ca8fe2f450ab6868994d2059350fd21aec9a58954853a9a",
+      "source_video": "We7BZVKbCVw",
+      "clip_name": "013-he-quit-anthropic-for-cursor-then-came-back-in-two-weeks",
+      "title": "AnthropicからCursorに移籍、わずか2週間で戻った",
+      "screenshot_title": "彼はAnthropicを辞めCursorへ、2週間でUターンした話",
+      "subject": "Boris Cherny",
+      "topic_constraint": "Boris left Anthropic, joined Cursor, and returned to Anthropic two weeks later",
+      "source_title": "Head of Claude Code: What happens after coding is solved | Boris Cherny",
+      "source_upload_date": "2026-02-19",
+      "render_refreshed_at": "2026-07-23T12:50:09Z",
+      "supersedes_content_hash": "e70d47ab2a799e32fe098cbe858b57101682c822a6417bbfb0ff1bc255ea6452",
+      "enabled": true
+    },
+    {
+      "content_hash": "c65fd01cc84f45c6cfee55d8078460e7232234d7eaff44dcc49d84269e5eca1a",
+      "source_video": "9YMYVb1ASCg",
+      "clip_name": "004-the-talent-pipeline-shattered-because-everyone-delegates-to-ai",
+      "title": "全員がChatGPTに仕事を丸投げ、4000年続いた徒弟制度の崩壊",
+      "enabled": true
+    },
+    {
+      "content_hash": "e279c4d3325af03f8f2d5a41190469f7aa735c8cf26e851203e8a23861f55d76",
+      "source_video": "RkQQ7WEor7w",
+      "clip_name": "002-why-anthropic-gives-no-engineer-a-senior-title",
+      "title": "Anthropicがエンジニアに「シニア」の肩書を与えない理由",
+      "enabled": true
+    },
+    {
+      "content_hash": "fc2c67427d419ebec17cad44e3db83cdde2a0da85fcf72f62d5e892ba5b7afb3",
+      "source_video": "We7BZVKbCVw",
+      "clip_name": "003-plan-mode-is-just-one-injected-sentence-don-t-write-code-yet",
+      "title": "Claude Code作者、8割は「まだ書くな」から",
+      "screenshot_title": "Claude Code作者、8割は「まだ書くな」から",
+      "allow_trial_parent": true,
+      "origin_parent_content_hash": "b36d92b1fe197ca2379d24a6f3265d725cc4291b002f0c468e2b1a153c6af77a",
+      "origin_experiment_id": "TRIAL-V1-0050-A19-b36d92b1",
+      "enabled": true
+    },
+    {
+      "content_hash": "37868f7e990179216d8b4ab47f82b53bfa4aeced84b8a894746c8131051dfacd",
+      "source_video": "NYFGCESmikA",
+      "clip_name": "002-how-a-chinese-ai-exposed-frontier-model-censorship",
+      "title": "中国製AIは天安門事件に回答、なのに米国AIは翻訳すら拒絶する皮肉",
+      "required_hook_phrases": ["中国製AI"],
+      "enabled": true
+    }
+  ]
+}

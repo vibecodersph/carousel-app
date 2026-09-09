@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260908_single_v2",
+  "entries": [
+    {
+      "parent_content_hash": "2bca1c174cb75a66ace0f6c52cd86c08e8575d90154fa6e9b4f1e0aad4ace443",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0021-A19-2bca1c17",
+      "scheduled_at": "2026-09-19T19:00:00+09:00",
+      "hook": "AIが19秒で解く幾何学。壁は「遊び」だった"
+    }
+  ]
+}

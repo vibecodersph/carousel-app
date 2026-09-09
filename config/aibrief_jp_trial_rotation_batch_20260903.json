@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260903_single",
+  "entries": [
+    {
+      "parent_content_hash": "f475b8d6e23ff13b427da7efbe593575e84d54756c01b7b6d72b64cca3f8c1dc",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0017-A19-f475b8d6",
+      "scheduled_at": "2026-09-15T19:00:00+09:00",
+      "hook": "AIで速くなったのに、なぜ夜は終わらない？"
+    }
+  ]
+}

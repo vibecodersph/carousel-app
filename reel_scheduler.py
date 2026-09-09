@@ -24,7 +24,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1431,10 +1431,14 @@ def pop_alternating_row(
     channel_pools = pools[channel_id]
     if desired_source and channel_pools.get(desired_source):
         return channel_pools[desired_source].pop(0)
-    for source in source_order:
+    fallback_order = source_order
+    if desired_source in source_order:
+        desired_index = source_order.index(desired_source)
+        fallback_order = source_order[desired_index:] + source_order[:desired_index]
+    for source in fallback_order:
         if source != last_source and channel_pools.get(source):
             return channel_pools[source].pop(0)
-    for source in source_order:
+    for source in fallback_order:
         if channel_pools.get(source):
             return channel_pools[source].pop(0)
     for bucket in channel_pools.values():
@@ -1530,6 +1534,138 @@ def trial_changed_variables_json(
     return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
+def trial_required_hook_phrases(entry: Mapping[str, Any]) -> list[str]:
+    """Read literal hook constraints without rewriting their required text."""
+    phrases = entry.get("required_hook_phrases", [])
+    if not isinstance(phrases, list) or any(
+        not isinstance(phrase, str) or not phrase.strip() for phrase in phrases
+    ):
+        raise SystemExit(
+            "Trial rotation entry required_hook_phrases must be a list of "
+            "non-empty strings"
+        )
+    return list(phrases)
+
+
+def validate_trial_hook_constraints(entry: Mapping[str, Any], hook: str) -> None:
+    """Require every configured phrase to appear verbatim in the variant hook."""
+    missing = [
+        phrase for phrase in trial_required_hook_phrases(entry) if phrase not in hook
+    ]
+    if missing:
+        raise SystemExit(
+            "Trial hook must retain required phrase(s) verbatim: "
+            + ", ".join(repr(phrase) for phrase in missing)
+        )
+
+
+def load_trial_rotation_pool_entry(
+    *,
+    pool_path: Path,
+    channel_id: str,
+    parent_content_hash: str,
+    parent_is_trial_reel: bool,
+    asset_family_id: str,
+    scheduled_at: datetime,
+) -> dict[str, Any]:
+    """Validate an explicit fixed-pool authorization for parent reuse.
+
+    Published-parent uniqueness remains the default. Passing a reviewed pool
+    file narrowly authorizes reuse of enabled parents in that file, while the
+    normal content-hash, slot, and source-family guards still apply.
+    """
+    resolved_path = pool_path.expanduser().resolve()
+    if not resolved_path.is_file():
+        raise SystemExit(f"Trial rotation pool does not exist: {resolved_path}")
+    data = read_json(resolved_path)
+    if not isinstance(data, dict):
+        raise SystemExit("Trial rotation pool must contain a JSON object")
+    configured_channel = str(data.get("channel_id") or "").strip()
+    if configured_channel != channel_id:
+        raise SystemExit(
+            "Trial rotation pool channel does not match --channel: "
+            f"{configured_channel!r} != {channel_id!r}"
+        )
+    try:
+        cooldown_hours = float(data.get("family_cooldown_hours"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            "Trial rotation pool family_cooldown_hours must be numeric"
+        ) from exc
+    if cooldown_hours != TRIAL_FAMILY_OBSERVATION_HOURS:
+        raise SystemExit(
+            "Trial rotation pool family cooldown does not match scheduler guard: "
+            f"{cooldown_hours:g} != {TRIAL_FAMILY_OBSERVATION_HOURS:g}"
+        )
+    timezone_name = str(data.get("timezone") or "").strip()
+    if not timezone_name:
+        raise SystemExit("Trial rotation pool timezone is required")
+    try:
+        pool_timezone = timezone_for(timezone_name)
+    except SystemExit as exc:
+        raise SystemExit(
+            f"Invalid Trial rotation pool timezone {timezone_name!r}"
+        ) from exc
+    daily_time = str(data.get("daily_time") or "").strip()
+    try:
+        daily_clock = time.fromisoformat(daily_time)
+    except ValueError as exc:
+        raise SystemExit(
+            "Trial rotation pool daily_time must be HH:MM or HH:MM:SS"
+        ) from exc
+    local_scheduled = scheduled_at.astimezone(pool_timezone)
+    if local_scheduled.timetz().replace(tzinfo=None) != daily_clock:
+        raise SystemExit(
+            "Trial rotation pool only authorizes its configured daily slot: "
+            f"{daily_time} {timezone_name}"
+        )
+    entries = data.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit("Trial rotation pool entries must be a non-empty list")
+    matches = [
+        (index, entry)
+        for index, entry in enumerate(entries)
+        if isinstance(entry, dict)
+        and str(entry.get("content_hash") or "").strip() == parent_content_hash
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            "Published parent must appear exactly once in the Trial rotation pool: "
+            f"{parent_content_hash}"
+        )
+    index, entry = matches[0]
+    if entry.get("enabled") is not True:
+        raise SystemExit("Published parent is disabled in the Trial rotation pool")
+    required_hook_phrases = trial_required_hook_phrases(entry)
+    allow_trial_parent = entry.get("allow_trial_parent") is True
+    if parent_is_trial_reel and not allow_trial_parent:
+        raise SystemExit(
+            "Published Trial Reel parent requires allow_trial_parent=true in "
+            "the Trial rotation pool"
+        )
+    if allow_trial_parent and not parent_is_trial_reel:
+        raise SystemExit(
+            "Trial rotation pool expected a Trial Reel parent but the ledger row "
+            "is a regular Reel"
+        )
+    configured_family = normalized_trial_family_id(entry.get("source_video"))
+    requested_family = normalized_trial_family_id(asset_family_id)
+    if configured_family and configured_family != requested_family:
+        raise SystemExit(
+            "Trial rotation pool source family does not match the requested family: "
+            f"{configured_family!r} != {requested_family!r}"
+        )
+    return {
+        "path": str(resolved_path),
+        "pool_id": str(data.get("pool_id") or "").strip(),
+        "entry_index": index,
+        "content_hash": parent_content_hash,
+        "source_video": str(entry.get("source_video") or "").strip(),
+        "allow_trial_parent": allow_trial_parent,
+        "required_hook_phrases": required_hook_phrases,
+    }
+
+
 def row_asset_family_id(row: Any) -> str:
     source = str(row_value(row, "source_video") or "").strip()
     clip_name = Path(str(row_value(row, "clip_dir") or "")).name
@@ -1565,6 +1701,7 @@ def trial_family_overlap(
     experiments = conn.execute(
         """
         SELECT t.experiment_id, t.asset_family_id,
+               t.state,
                t.published_at, t.scheduled_at,
                r.published_at AS reel_published_at,
                r.scheduled_at AS reel_scheduled_at
@@ -1577,6 +1714,23 @@ def trial_family_overlap(
         (channel_id,),
     ).fetchall()
     for experiment in experiments:
+        state = str(experiment["state"] or "").strip().lower()
+        was_published = bool(
+            str(experiment["published_at"] or "").strip()
+            or str(experiment["reel_published_at"] or "").strip()
+        )
+        if (
+            state
+            in {
+                reel_ledger.TRIAL_STATE_STOPPED,
+                reel_ledger.TRIAL_STATE_FAILED,
+            }
+            and not was_published
+        ):
+            # A Trial retired before launch has no observation window. Keep its
+            # stopped/failed experiment for auditability without letting the
+            # abandoned future timestamp block a later pool rotation.
+            continue
         if (
             normalized_trial_family_id(experiment["asset_family_id"])
             != normalized_family
@@ -1952,6 +2106,7 @@ def add_trial_from_published(
     apply: bool,
     caption_mode: str = "preserve-parent",
     now: datetime | None = None,
+    rotation_pool_path: Path | None = None,
 ) -> dict[str, Any]:
     """Add a published-parent Trial at an explicit slot without displacing a Reel."""
     channel_id = channel_id.strip()
@@ -2031,6 +2186,17 @@ def add_trial_from_published(
         family_id = (asset_family_id or row_asset_family_id(parent)).strip()
         if not family_id:
             raise SystemExit("Trial asset family id must not be empty")
+        rotation_pool = None
+        if rotation_pool_path is not None:
+            rotation_pool = load_trial_rotation_pool_entry(
+                pool_path=rotation_pool_path,
+                channel_id=channel_id,
+                parent_content_hash=str(parent["content_hash"]),
+                parent_is_trial_reel=row_trial_enabled(parent),
+                asset_family_id=family_id,
+                scheduled_at=scheduled,
+            )
+            validate_trial_hook_constraints(rotation_pool, variant_hook)
         baseline_hook = row_hook(parent)
         metadata = trial_manifest_metadata(
             experiment_id=experiment_id,
@@ -2057,6 +2223,8 @@ def add_trial_from_published(
             "caption_mode": caption_mode,
             "trial_experiment": metadata,
         }
+        if rotation_pool is not None:
+            preview["rotation_pool"] = rotation_pool
 
         existing_experiment = reel_ledger.get_trial_experiment(conn, experiment_id)
         linked_experiment = reel_ledger.trial_experiment_for_reel(
@@ -2186,7 +2354,7 @@ def add_trial_from_published(
             "WHERE channel_id=? AND parent_content_hash=? LIMIT 1",
             (channel_id, str(parent["content_hash"])),
         ).fetchone()
-        if parent_experiment is not None:
+        if parent_experiment is not None and rotation_pool is None:
             raise SystemExit(
                 f"Published parent is already linked to Trial "
                 f"{parent_experiment['experiment_id']!r}"
@@ -2439,6 +2607,263 @@ def convert_scheduled_reel_to_trial(
             experiment_metadata=metadata,
         )
         return preview
+
+
+def retire_unpublished_trial_reels(
+    *,
+    db_path: Path,
+    channel_id: str,
+    apply: bool,
+    reason: str = "retired before Trial publication",
+) -> dict[str, Any]:
+    """Retire every safely queued, unpublished Trial for one channel.
+
+    Scheduled conversions return to the regular lane without moving their
+    slots. Additive published-parent variants become skipped and lose their
+    queue timestamps. In both cases the experiment is retained as a stopped
+    audit record. Legacy replacement variants fail closed because retiring one
+    would require reconstructing its displaced regular row.
+    """
+    channel_id = channel_id.strip()
+    reason = re.sub(r"\s+", " ", str(reason or "")).strip()
+    if not channel_id:
+        raise SystemExit("--channel is required")
+    if not reason:
+        raise SystemExit("--reason must not be empty")
+
+    queued_statuses = (
+        reel_ledger.STATUS_SCHEDULED,
+        reel_ledger.STATUS_PREVIEWED,
+    )
+    written_manifests: list[tuple[Path, dict[str, Any]]] = []
+    result: dict[str, Any] | None = None
+    try:
+        with reel_ledger.connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT r.*, t.experiment_id,
+                       t.case_type AS trial_case_type,
+                       t.state AS trial_state,
+                       t.parent_content_hash AS trial_parent_content_hash,
+                       t.displaced_content_hash AS trial_displaced_content_hash,
+                       t.scheduled_at AS trial_scheduled_at,
+                       t.published_at AS trial_published_at
+                FROM reels AS r
+                LEFT JOIN trial_experiments AS t
+                  ON t.content_hash=r.content_hash
+                 AND t.channel_id=r.channel_id
+                WHERE r.channel_id=?
+                  AND r.trial_reel=1
+                  AND r.status IN (?, ?)
+                  AND r.published_at IS NULL
+                  AND r.media_id IS NULL
+                ORDER BY r.scheduled_at, r.content_hash
+                """,
+                (channel_id, *queued_statuses),
+            ).fetchall()
+
+            prepared: list[dict[str, Any]] = []
+            for row in rows:
+                content_hash = str(row["content_hash"] or "").strip()
+                experiment_id = str(row["experiment_id"] or "").strip()
+                case_type = str(row["trial_case_type"] or "").strip()
+                trial_state = str(row["trial_state"] or "").strip().lower()
+                scheduled_at = str(row["scheduled_at"] or "").strip()
+                experiment_at = str(row["trial_scheduled_at"] or "").strip()
+                displaced_hash = str(
+                    row["trial_displaced_content_hash"] or ""
+                ).strip()
+                if not experiment_id:
+                    raise SystemExit(
+                        "Queued Trial has no registered experiment: "
+                        f"{channel_id}/{content_hash}"
+                    )
+                if trial_state != reel_ledger.TRIAL_STATE_SCHEDULED:
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} has experiment state "
+                        f"{trial_state!r}; expected 'scheduled'"
+                    )
+                if str(row["trial_published_at"] or "").strip():
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} already has an experiment "
+                        "publish timestamp"
+                    )
+                if not scheduled_at or experiment_at != scheduled_at:
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} has inconsistent schedule times"
+                    )
+
+                if case_type == reel_ledger.TRIAL_CASE_SCHEDULED_CONVERSION:
+                    behavior = "restore_regular_in_place"
+                elif case_type == reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT:
+                    if displaced_hash:
+                        raise SystemExit(
+                            f"Queued Trial {experiment_id!r} displaced regular Reel "
+                            f"{displaced_hash!r}; retire it with an explicit restoration "
+                            "workflow instead of the bulk command"
+                        )
+                    if not str(row["trial_parent_content_hash"] or "").strip():
+                        raise SystemExit(
+                            f"Additive Trial {experiment_id!r} has no published parent"
+                        )
+                    behavior = "skip_additive_variant"
+                else:
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} has unsupported case type "
+                        f"{case_type!r}"
+                    )
+
+                manifest_path = Path(str(row["manifest_path"] or ""))
+                if not manifest_path.is_file():
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} manifest is missing: "
+                        f"{manifest_path}"
+                    )
+                manifest = read_json(manifest_path)
+                if not isinstance(manifest, dict):
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} manifest must contain an object"
+                    )
+                manifest_experiment = manifest.get("trial_experiment")
+                trial_config = manifest.get("instagram_trial_reel")
+                if (
+                    str(manifest.get("scheduled_at") or "").strip()
+                    != scheduled_at
+                    or not isinstance(manifest_experiment, dict)
+                    or str(manifest_experiment.get("experiment_id") or "").strip()
+                    != experiment_id
+                    or not isinstance(trial_config, dict)
+                    or not bool(trial_config.get("enabled"))
+                ):
+                    raise SystemExit(
+                        f"Queued Trial {experiment_id!r} manifest is inconsistent "
+                        "with the ledger"
+                    )
+                prepared.append(
+                    {
+                        "content_hash": content_hash,
+                        "experiment_id": experiment_id,
+                        "case_type": case_type,
+                        "behavior": behavior,
+                        "scheduled_at": scheduled_at,
+                        "manifest_path": manifest_path,
+                        "manifest": manifest,
+                    }
+                )
+
+            result = {
+                "action": "retire_unpublished_trial_reels",
+                "mode": "apply" if apply else "dry-run",
+                "channel_id": channel_id,
+                "reason": reason,
+                "count": len(prepared),
+                "scheduled_conversions": sum(
+                    item["behavior"] == "restore_regular_in_place"
+                    for item in prepared
+                ),
+                "additive_variants": sum(
+                    item["behavior"] == "skip_additive_variant"
+                    for item in prepared
+                ),
+                "rows": [
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"manifest_path", "manifest"}
+                    }
+                    for item in prepared
+                ],
+            }
+            if not apply:
+                return result
+
+            changed_at = utc_now()
+            for item in prepared:
+                manifest_path = item["manifest_path"]
+                original_manifest = item["manifest"]
+                updated_manifest = dict(original_manifest)
+                if item["behavior"] == "restore_regular_in_place":
+                    updated_manifest.pop("instagram_trial_reel", None)
+                    updated_manifest.pop("trial_experiment", None)
+                    updated_manifest.pop("schedule_status", None)
+                    if (
+                        updated_manifest.get("source_type")
+                        == "trial_reel_scheduled_conversion"
+                    ):
+                        updated_manifest["source_type"] = "scheduled_reel"
+                else:
+                    updated_manifest.pop("scheduled_at", None)
+                    updated_manifest.pop("instagram_trial_reel", None)
+                    updated_manifest["schedule_status"] = reel_ledger.STATUS_SKIPPED
+                written_manifests.append((manifest_path, original_manifest))
+                write_json(manifest_path, updated_manifest)
+
+            for item in prepared:
+                if item["behavior"] == "restore_regular_in_place":
+                    reel_update = conn.execute(
+                        "UPDATE reels SET trial_reel=0, "
+                        "trial_graduation_strategy=NULL, last_error=NULL, updated_at=? "
+                        "WHERE content_hash=? AND channel_id=? AND trial_reel=1 "
+                        "AND status IN (?, ?) AND scheduled_at=? "
+                        "AND published_at IS NULL AND media_id IS NULL",
+                        (
+                            changed_at,
+                            item["content_hash"],
+                            channel_id,
+                            *queued_statuses,
+                            item["scheduled_at"],
+                        ),
+                    )
+                else:
+                    reel_update = conn.execute(
+                        "UPDATE reels SET status=?, scheduled_at=NULL, trial_reel=0, "
+                        "trial_graduation_strategy=NULL, last_error=?, updated_at=? "
+                        "WHERE content_hash=? AND channel_id=? AND trial_reel=1 "
+                        "AND status IN (?, ?) AND scheduled_at=? "
+                        "AND published_at IS NULL AND media_id IS NULL",
+                        (
+                            reel_ledger.STATUS_SKIPPED,
+                            reason,
+                            changed_at,
+                            item["content_hash"],
+                            channel_id,
+                            *queued_statuses,
+                            item["scheduled_at"],
+                        ),
+                    )
+                if reel_update.rowcount != 1:
+                    raise RuntimeError(
+                        f"Queued Trial {item['experiment_id']!r} changed during retirement"
+                    )
+                experiment_update = conn.execute(
+                    "UPDATE trial_experiments SET state=?, decision='stop', "
+                    "decision_reason=?, decision_at=?, stopped_at=?, updated_at=? "
+                    "WHERE experiment_id=? AND content_hash=? AND channel_id=? "
+                    "AND state=? AND published_at IS NULL AND scheduled_at=?",
+                    (
+                        reel_ledger.TRIAL_STATE_STOPPED,
+                        reason,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        item["experiment_id"],
+                        item["content_hash"],
+                        channel_id,
+                        reel_ledger.TRIAL_STATE_SCHEDULED,
+                        item["scheduled_at"],
+                    ),
+                )
+                if experiment_update.rowcount != 1:
+                    raise RuntimeError(
+                        f"Trial experiment {item['experiment_id']!r} changed "
+                        "during retirement"
+                    )
+        assert result is not None
+        return result
+    except Exception:
+        for manifest_path, original_manifest in reversed(written_manifests):
+            write_json(manifest_path, original_manifest)
+        raise
 
 
 def retire_unpublished_scheduled_trial_conversions(
@@ -4648,6 +5073,263 @@ def reflow_queue_rows(
     if not apply:
         print("[reel-scheduler] dry run only; rerun with --apply to update the ledger")
     return counts
+
+
+def resequence_queued_trial_reels(
+    *,
+    db_path: Path,
+    channel_id: str,
+    start_at_text: str,
+    apply: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Pack queued published-parent Trial Reels into consecutive 19:00 slots.
+
+    Trial rows are deliberately excluded from the generic queue reflow because
+    their experiment metadata is coupled to the planned time. This operation
+    moves only queued, additive published-parent Trials and keeps the reel
+    ledger, experiment ledger, and manifest in lockstep.
+    """
+    channel_id = channel_id.strip()
+    if not channel_id:
+        raise SystemExit("--channel is required")
+    raw_start = str(start_at_text or "").strip()
+    if not raw_start:
+        raise SystemExit("--start-at is required")
+    try:
+        start_at = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit(
+            "--start-at must be an ISO 8601 datetime with a timezone offset"
+        ) from exc
+    if start_at.tzinfo is None:
+        raise SystemExit("--start-at must include a timezone offset")
+    channel = load_channel(channel_id)
+    settings = reel_settings(channel, "instagram_reels")
+    timezone_name = setting_text(settings, "timezone", DEFAULT_TIMEZONE)
+    channel_timezone = timezone_for(timezone_name)
+    local_start = start_at.astimezone(channel_timezone).replace(microsecond=0)
+    if local_start.timetz().replace(tzinfo=None) != time(hour=19):
+        raise SystemExit(
+            "Queued published-parent Trials must start at 19:00 in the channel timezone"
+        )
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise SystemExit("Current time must include a timezone offset")
+    if local_start <= current.astimezone(channel_timezone):
+        raise SystemExit("--start-at must be in the future")
+
+    def parse_stored_time(value: object, *, field: str) -> datetime:
+        raw_value = str(value or "").strip()
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise SystemExit(
+                f"{field} must be an ISO 8601 datetime with an offset"
+            ) from exc
+        if parsed.tzinfo is None:
+            raise SystemExit(f"{field} must include a timezone offset")
+        return parsed.replace(microsecond=0)
+
+    queued_statuses = [reel_ledger.STATUS_SCHEDULED, reel_ledger.STATUS_PREVIEWED]
+    status_placeholders = ",".join("?" for _ in queued_statuses)
+    with reel_ledger.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.*, t.experiment_id, t.case_type AS trial_case_type,
+                   t.state AS trial_state, t.scheduled_at AS trial_scheduled_at,
+                   t.parent_content_hash AS trial_parent_content_hash
+            FROM reels AS r
+            LEFT JOIN trial_experiments AS t
+              ON t.content_hash=r.content_hash AND t.channel_id=r.channel_id
+            WHERE r.channel_id=?
+              AND r.status IN ("""
+            + status_placeholders
+            + ") AND r.trial_reel=1 "
+            + "ORDER BY r.scheduled_at, r.content_hash",
+            [channel_id, *queued_statuses],
+        ).fetchall()
+        if not rows:
+            raise SystemExit(f"No queued Trial Reels found for {channel_id!r}")
+
+        moves: list[dict[str, Any]] = []
+        target_hashes = {str(row["content_hash"]) for row in rows}
+        for index, row in enumerate(rows):
+            experiment_id = str(row["experiment_id"] or "").strip()
+            case_type = str(row["trial_case_type"] or "").strip()
+            trial_state = str(row["trial_state"] or "").strip().lower()
+            parent_hash = str(row["trial_parent_content_hash"] or "").strip()
+            if (
+                not experiment_id
+                or case_type != reel_ledger.TRIAL_CASE_SUCCESSFUL_POST_VARIANT
+            ):
+                raise SystemExit(
+                    "Can only resequence queued published-parent Trial Reels; "
+                    f"found unsupported row {row['content_hash']!r}"
+                )
+            if trial_state != reel_ledger.TRIAL_STATE_SCHEDULED or not parent_hash:
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} is not an active scheduled "
+                    "published-parent experiment"
+                )
+            old_reel_at = parse_stored_time(
+                row["scheduled_at"],
+                field=f"reel {row['content_hash']} scheduled_at",
+            )
+            old_reel_at_text = str(row["scheduled_at"] or "").strip()
+            old_experiment_at = parse_stored_time(
+                row["trial_scheduled_at"],
+                field=f"Trial {experiment_id} scheduled_at",
+            )
+            old_experiment_at_text = str(row["trial_scheduled_at"] or "").strip()
+            if old_reel_at != old_experiment_at:
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} has inconsistent ledger schedule times"
+                )
+            manifest_path = Path(str(row["manifest_path"] or ""))
+            media_path = Path(str(row["media_path"] or ""))
+            if not media_path.is_file():
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} media is missing: {media_path}"
+                )
+            if not manifest_path.is_file():
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} manifest is missing: {manifest_path}"
+                )
+            manifest = read_json(manifest_path)
+            if not isinstance(manifest, dict):
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} manifest must contain a JSON object"
+                )
+            manifest_at = parse_stored_time(
+                manifest.get("scheduled_at"),
+                field=f"Queued Trial {experiment_id} manifest scheduled_at",
+            )
+            manifest_experiment = manifest.get("trial_experiment")
+            trial_config = manifest.get("instagram_trial_reel")
+            if (
+                manifest_at != old_reel_at
+                or not isinstance(manifest_experiment, dict)
+                or str(manifest_experiment.get("experiment_id") or "") != experiment_id
+                or not isinstance(trial_config, dict)
+                or not bool(trial_config.get("enabled"))
+            ):
+                raise SystemExit(
+                    f"Queued Trial {experiment_id!r} manifest is inconsistent with its ledger"
+                )
+            target_at = local_start + timedelta(days=index)
+            moves.append(
+                {
+                    "content_hash": str(row["content_hash"]),
+                    "experiment_id": experiment_id,
+                    "old_scheduled_at": old_reel_at_text,
+                    "old_experiment_scheduled_at": old_experiment_at_text,
+                    "scheduled_at": target_at.isoformat(),
+                    "manifest_path": manifest_path,
+                    "manifest": manifest,
+                }
+            )
+
+        occupied_rows = conn.execute(
+            "SELECT content_hash, scheduled_at FROM reels WHERE channel_id=? "
+            "AND scheduled_at IS NOT NULL AND status IN (?, ?, ?)",
+            (
+                channel_id,
+                reel_ledger.STATUS_SCHEDULED,
+                reel_ledger.STATUS_PREVIEWED,
+                reel_ledger.STATUS_PUBLISHING,
+            ),
+        ).fetchall()
+        occupied = {
+            parse_stored_time(row["scheduled_at"], field="occupied scheduled_at")
+            .astimezone(timezone.utc)
+            for row in occupied_rows
+            if str(row["content_hash"]) not in target_hashes
+        }
+        for move in moves:
+            target_at = parse_stored_time(move["scheduled_at"], field="target slot")
+            if target_at.astimezone(timezone.utc) in occupied:
+                raise SystemExit(
+                    "Queued Trial resequence would collide with an existing reel at "
+                    f"{move['scheduled_at']}"
+                )
+
+        result = {
+            "action": "resequence_queued_trial_reels",
+            "mode": "apply" if apply else "dry-run",
+            "channel_id": channel_id,
+            "count": len(moves),
+            "start_at": local_start.isoformat(),
+            "end_at": moves[-1]["scheduled_at"],
+            "moves": [
+                {
+                    key: value
+                    for key, value in move.items()
+                    if key
+                    not in {
+                        "manifest_path",
+                        "manifest",
+                        "old_experiment_scheduled_at",
+                    }
+                }
+                for move in moves
+            ],
+        }
+        if not apply:
+            return result
+
+        written_manifests: list[tuple[Path, dict[str, Any]]] = []
+        changed_at = utc_now()
+        try:
+            for move in moves:
+                manifest_path = move["manifest_path"]
+                original_manifest = move["manifest"]
+                updated_manifest = dict(original_manifest)
+                updated_manifest["scheduled_at"] = move["scheduled_at"]
+                write_json(manifest_path, updated_manifest)
+                written_manifests.append((manifest_path, original_manifest))
+            for move in moves:
+                reel_update = conn.execute(
+                    "UPDATE reels SET scheduled_at=?, updated_at=? "
+                    "WHERE content_hash=? AND channel_id=? AND status IN (?, ?) "
+                    "AND trial_reel=1 AND scheduled_at=?",
+                    (
+                        move["scheduled_at"],
+                        changed_at,
+                        move["content_hash"],
+                        channel_id,
+                        reel_ledger.STATUS_SCHEDULED,
+                        reel_ledger.STATUS_PREVIEWED,
+                        move["old_scheduled_at"],
+                    ),
+                )
+                if reel_update.rowcount != 1:
+                    raise RuntimeError(
+                        f"Queued Trial {move['experiment_id']!r} changed during resequence"
+                    )
+                experiment_update = conn.execute(
+                    "UPDATE trial_experiments SET scheduled_at=?, updated_at=? "
+                    "WHERE experiment_id=? AND content_hash=? AND channel_id=? "
+                    "AND state=? AND scheduled_at=?",
+                    (
+                        move["scheduled_at"],
+                        changed_at,
+                        move["experiment_id"],
+                        move["content_hash"],
+                        channel_id,
+                        reel_ledger.TRIAL_STATE_SCHEDULED,
+                        move["old_experiment_scheduled_at"],
+                    ),
+                )
+                if experiment_update.rowcount != 1:
+                    raise RuntimeError(
+                        f"Trial experiment {move['experiment_id']!r} changed during resequence"
+                    )
+        except Exception:
+            for manifest_path, original_manifest in reversed(written_manifests):
+                write_json(manifest_path, original_manifest)
+            raise
+        return result
 
 
 def alternate_source_queue_rows(
@@ -7312,6 +7994,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_trial_from_published_parser.add_argument("--db", type=Path, default=None)
     add_trial_from_published_parser.add_argument(
+        "--rotation-pool",
+        type=Path,
+        help=(
+            "Reviewed fixed-pool JSON; narrowly permits enabled published parents "
+            "in that pool to be reused across rotation cycles"
+        ),
+    )
+    add_trial_from_published_parser.add_argument(
         "--apply",
         action="store_true",
         help="Apply after inspecting the default dry-run output",
@@ -7346,6 +8036,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     convert_trial.add_argument("--db", type=Path, default=None)
     convert_trial.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
+
+    retire_trials = subparsers.add_parser(
+        "trial-retire-unpublished",
+        help=(
+            "Retire every queued unpublished Trial while preserving regular "
+            "Reel slots and stopped audit records"
+        ),
+    )
+    retire_trials.add_argument(
+        "--channel",
+        required=True,
+        help="Instagram channel id",
+    )
+    retire_trials.add_argument(
+        "--reason",
+        default="retired before Trial publication",
+        help="Audit reason stored on each stopped experiment",
+    )
+    retire_trials.add_argument("--db", type=Path, default=None)
+    retire_trials.add_argument(
         "--apply",
         action="store_true",
         help="Apply after inspecting the default dry-run output",
@@ -7460,6 +8174,23 @@ def build_parser() -> argparse.ArgumentParser:
     reflow.add_argument("--start-at", help="First eligible date/time; accepts YYYY-MM-DD or ISO 8601")
     reflow.add_argument("--jitter-minutes", type=int, help="Override channel jitter for this reflow")
     reflow.add_argument("--apply", action="store_true", help="Actually update queued rows")
+
+    resequence_trials = subparsers.add_parser(
+        "resequence-trial-queue",
+        help="Pack queued published-parent Trial Reels into consecutive daily 19:00 slots",
+    )
+    resequence_trials.add_argument("--channel", required=True, help="Instagram channel id")
+    resequence_trials.add_argument(
+        "--start-at",
+        required=True,
+        help="First 19:00 slot as an ISO 8601 datetime with a timezone offset",
+    )
+    resequence_trials.add_argument("--db", type=Path, default=None)
+    resequence_trials.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply after inspecting the default dry-run output",
+    )
 
     alternate_sources = subparsers.add_parser(
         "alternate-sources",
@@ -7838,6 +8569,7 @@ def trial_add_from_published_command(args: argparse.Namespace) -> int:
             out_dir=args.out_dir,
             apply=args.apply,
             caption_mode=args.caption_mode,
+            rotation_pool_path=args.rotation_pool,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -7862,6 +8594,18 @@ def trial_convert_scheduled_command(args: argparse.Namespace) -> int:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    print_trial_operation(result, db_path)
+    return 0
+
+
+def trial_retire_unpublished_command(args: argparse.Namespace) -> int:
+    db_path = resolve_db(args)
+    result = retire_unpublished_trial_reels(
+        db_path=db_path,
+        channel_id=args.channel,
+        reason=args.reason,
+        apply=args.apply,
+    )
     print_trial_operation(result, db_path)
     return 0
 
@@ -7981,6 +8725,21 @@ def reflow_queue_command(args: argparse.Namespace) -> int:
         settings_key=settings_key_for(platform),
         apply=args.apply,
     )
+    print(f"[reel-scheduler] ledger: {db_path}")
+    return 0
+
+
+def resequence_trial_queue_command(args: argparse.Namespace) -> int:
+    db_path = args.db or reel_ledger.DEFAULT_DB_PATH
+    result = resequence_queued_trial_reels(
+        db_path=db_path,
+        channel_id=args.channel,
+        start_at_text=args.start_at,
+        apply=args.apply,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if not args.apply:
+        print("[reel-scheduler] dry run only; rerun with --apply to update the ledger")
     print(f"[reel-scheduler] ledger: {db_path}")
     return 0
 
@@ -8987,6 +9746,8 @@ def main() -> int:
         return trial_add_from_published_command(args)
     if args.command == "trial-convert-scheduled":
         return trial_convert_scheduled_command(args)
+    if args.command == "trial-retire-unpublished":
+        return trial_retire_unpublished_command(args)
     if args.command == "register-trial-publish":
         return register_trial_publish_command(args)
     if args.command == "trial-decide":
@@ -8995,6 +9756,8 @@ def main() -> int:
         return queue_outputs_command(args)
     if args.command == "reflow-queue":
         return reflow_queue_command(args)
+    if args.command == "resequence-trial-queue":
+        return resequence_trial_queue_command(args)
     if args.command == "alternate-sources":
         return alternate_sources_command(args)
     if args.command == "refresh-captions":

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260907_single",
+  "entries": [
+    {
+      "parent_content_hash": "8b270f78a2dbe12922f2ff730a042178ca05ba793cb5627b8fdc61aef6dc1880",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0020-A19-8b270f78",
+      "scheduled_at": "2026-09-18T19:00:00+09:00",
+      "hook": "曲名を聞いただけで、ClaudeはAppleScriptを書いた"
+    }
+  ]
+}

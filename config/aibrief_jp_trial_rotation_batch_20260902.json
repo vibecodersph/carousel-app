@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260902_single",
+  "entries": [
+    {
+      "parent_content_hash": "df9d3e47e277a63fce45f0664ce35ce5cf806a2261767813e3bc69ff5f868bd9",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0016-A19-df9d3e47",
+      "scheduled_at": "2026-09-14T19:00:00+09:00",
+      "hook": "性能は上がる。でも、壊れたら直せない"
+    }
+  ]
+}

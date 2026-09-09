@@ -178,24 +178,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ledger channel used by --scheduled-db.",
     )
     parser.add_argument(
-        "--facebook-db",
-        type=Path,
-        default=ROOT / "state" / "facebook.db",
-        help=(
-            "Read-only Facebook ledger used by the capacity-aware Trial "
-            "selector in scheduled mode."
-        ),
-    )
-    parser.add_argument(
-        "--insights-report",
-        type=Path,
-        default=ROOT / "out" / "reel_report.insights.json",
-        help=(
-            "Existing Instagram insight report used by the official daily "
-            "Trial selector in scheduled mode."
-        ),
-    )
-    parser.add_argument(
         "--winner-library",
         type=Path,
         default=ROOT / "out" / "reel_report.moneyball.winner_library.json",
@@ -486,61 +468,9 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     winner_library_path=winner_path,
                 )
-                from scripts import select_aibrief_jp_trial_candidates as trial_selector
-
-                generated_at = str(
-                    winner_library.get("library_metadata", {}).get(
-                        "generated_at"
-                    )
-                    or ""
-                )
-                as_of = (
-                    trial_selector.parse_aware_datetime(
-                        generated_at,
-                        field="winner_library.generated_at",
-                    )
-                    if generated_at
-                    else trial_selector.default_as_of()
-                )
-                full_trial_selection = trial_selector.build_selection(
-                    db_path=scheduled_db,
-                    report_path=args.insights_report,
-                    facebook_db=args.facebook_db,
-                    channel_id=args.channel,
-                    as_of=as_of,
-                )
-                recommendation = full_trial_selection.get(
-                    "recommendation",
-                    {},
-                )
-                conversion = recommendation.get("lanes", {}).get(
-                    trial_selector.LANE_SCHEDULED_CONVERSION,
-                    {},
-                )
-                official_trial_selection = {
-                    "policy_version": full_trial_selection.get(
-                        "policy_version"
-                    ),
-                    "as_of": full_trial_selection.get("as_of"),
-                    "status": conversion.get("status"),
-                    "target_date": recommendation.get("target_date"),
-                    "experiment_id": conversion.get("experiment_id"),
-                    "content_hash": conversion.get("content_hash"),
-                    "expected_scheduled_at": conversion.get(
-                        "expected_scheduled_at"
-                    ),
-                    "selected": conversion.get("scheduled_target"),
-                    "dry_run_argv": conversion.get("dry_run_argv"),
-                    "facebook_effect": conversion.get("facebook_effect"),
-                    "manual_approval_required": recommendation.get(
-                        "manual_approval_required"
-                    ),
-                    "auto_apply": recommendation.get("auto_apply"),
-                }
                 report = scheduled_evaluator.apply_schedule_triage(
                     report,
                     input_audit=input_audit,
-                    official_trial_selection=official_trial_selection,
                 )
         else:
             if analysis_mode == "llm":

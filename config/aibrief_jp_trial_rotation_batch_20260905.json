@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260905_single_v2",
+  "entries": [
+    {
+      "parent_content_hash": "bdd3cac499496b758d8480a515883e253ad0672cc154afaaf3c9989adcc998db",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0019-A19-bdd3cac4",
+      "scheduled_at": "2026-09-17T19:00:00+09:00",
+      "hook": "AIに引用される鍵は、Redditで有益な回答"
+    }
+  ]
+}

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build a deterministic, read-only AI Brief JP daily Trial Reel batch.
+"""Build a deterministic, read-only AI Brief JP Trial Reel rotation packet.
 
-The selector never renders, schedules, changes a manifest, or publishes.  It
-only reads the Instagram and optional Facebook ledgers and writes a JSON and
-Markdown review packet. Every JST date has two independent lanes: one existing
-scheduled Reel converted in place and one published-parent hook rerender added
-at 19:00 without displacing a regular Reel. A packet may safely advance only
-the ready lane when the other is blocked.
+The active policy has one candidate source: the explicitly maintained rotation
+pool in ``config/aibrief_jp_trial_rotation.json``.  Scheduled regular Reels and
+analytics-ranked published Reels are not candidate sources.  The selector only
+reads configuration and ledger state; it never renders, schedules, changes a
+manifest, or publishes.
+
+The older two-lane helpers remain in this module for migration/audit code, but
+``build_selection`` and the CLI below use only the fixed rotation pool.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from reel_scheduler import trial_required_hook_phrases
 from scripts import aibrief_jp_reach_analysis as reach_analysis
 
 
@@ -36,6 +39,12 @@ CHANNEL = "aibrief_jp"
 JST = ZoneInfo("Asia/Tokyo")
 POLICY_VERSION = "aibrief-trial-daily-v2"
 SCHEMA_VERSION = 2
+ROTATION_POLICY_VERSION = "aibrief-trial-rotation-pool-v1"
+ROTATION_SCHEMA_VERSION = 3
+ROTATION_LANE = "rotation_pool"
+ROTATION_TARGET_LEAD_HOURS = 12
+ROTATION_SEARCH_HORIZON_DAYS = 366
+DEFAULT_ROTATION_CONFIG = ROOT / "config" / "aibrief_jp_trial_rotation.json"
 DAILY_TRIAL_LANES = 2
 PUBLISHED_VARIANT_HOUR = 19
 PARENT_TARGET_LEAD_HOURS = 12
@@ -323,6 +332,11 @@ def daily_lane_dates(
     """Return JST dates already occupied by each Trial lane."""
     result = {lane: set() for lane in DAILY_LANES}
     for experiment in experiments:
+        if (
+            str(experiment.get("state") or "").strip().lower()
+            not in NONTERMINAL_STATES
+        ):
+            continue
         lane = str(experiment.get("case_type") or "").strip()
         when = experiment_time(experiment)
         if lane in result and when is not None:
@@ -335,6 +349,11 @@ def daily_lane_experiments(
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
     result: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for experiment in experiments:
+        if (
+            str(experiment.get("state") or "").strip().lower()
+            not in NONTERMINAL_STATES
+        ):
+            continue
         lane = str(experiment.get("case_type") or "").strip()
         when = experiment_time(experiment)
         if lane not in DAILY_LANES or when is None:
@@ -423,6 +442,17 @@ def formal_experiment_id(
     return f"TRIAL-V1-{ordinal:04d}-{lane_code}{slot}-{suffix}"
 
 
+def terminal_before_publication(experiment: Mapping[str, Any]) -> bool:
+    """Return whether a stopped/failed Trial never actually launched."""
+    state = str(experiment.get("state") or "").strip().lower()
+    if state not in {"stopped", "failed"}:
+        return False
+    return not any(
+        str(experiment.get(key) or "").strip()
+        for key in ("published_at", "reel_published_at")
+    )
+
+
 def trial_history(
     experiments: Sequence[Mapping[str, Any]],
 ) -> tuple[set[str], set[str], set[str]]:
@@ -430,6 +460,8 @@ def trial_history(
     tested_reels: set[str] = set()
     tested_families: set[str] = set()
     for experiment in experiments:
+        if terminal_before_publication(experiment):
+            continue
         parent = str(experiment.get("parent_content_hash") or "").strip()
         if parent:
             tested_parents.add(parent)
@@ -448,6 +480,8 @@ def trial_family_observation_starts(
     """Return every prior Trial launch grouped by normalized source family."""
     starts: dict[str, list[datetime]] = {}
     for experiment in experiments:
+        if terminal_before_publication(experiment):
+            continue
         family = normalized_experiment_family(
             experiment.get("asset_family_id")
         )
@@ -1604,7 +1638,7 @@ def input_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def build_selection(
+def build_legacy_selection(
     *,
     db_path: Path,
     report_path: Path,
@@ -2250,7 +2284,7 @@ def markdown_cell(value: Any) -> str:
     return str(value if value not in (None, "") else "—").replace("|", "\\|").replace("\n", " ")
 
 
-def render_markdown(selection: Mapping[str, Any]) -> str:
+def render_legacy_markdown(selection: Mapping[str, Any]) -> str:
     batch = selection["daily_batch"]
     capacity = selection["capacity"]
     recommendation = selection["recommendation"]
@@ -2411,19 +2445,790 @@ def render_markdown(selection: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def load_rotation_config(path: Path, *, channel_id: str) -> dict[str, Any]:
+    """Load and strictly validate the sole operational candidate source."""
+    resolved = path.expanduser().resolve()
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Trial rotation config not found: {resolved}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Trial rotation config JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Trial rotation config must contain a JSON object")
+
+    configured_channel = str(payload.get("channel_id") or "").strip()
+    if configured_channel != channel_id:
+        raise ValueError(
+            "Trial rotation config channel_id mismatch: "
+            f"expected {channel_id!r}, found {configured_channel!r}"
+        )
+    pool_id = str(payload.get("pool_id") or "").strip()
+    if not pool_id:
+        raise ValueError("Trial rotation config pool_id must not be empty")
+    timezone_name = str(payload.get("timezone") or "").strip()
+    try:
+        ZoneInfo(timezone_name)
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid Trial rotation timezone: {timezone_name!r}"
+        ) from exc
+    daily_time_text = str(payload.get("daily_time") or "").strip()
+    try:
+        daily_clock = time.fromisoformat(daily_time_text)
+    except ValueError as exc:
+        raise ValueError(
+            "Trial rotation daily_time must be HH:MM or HH:MM:SS"
+        ) from exc
+    if daily_clock.tzinfo is not None or daily_clock.second or daily_clock.microsecond:
+        raise ValueError(
+            "Trial rotation daily_time must be a minute-precision local clock"
+        )
+    cooldown = payload.get("family_cooldown_hours")
+    if isinstance(cooldown, bool) or not isinstance(cooldown, (int, float)):
+        raise ValueError("family_cooldown_hours must be a positive number")
+    if float(cooldown) <= 0:
+        raise ValueError("family_cooldown_hours must be greater than zero")
+
+    raw_entries = payload.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError("Trial rotation config entries must be a non-empty list")
+    entries: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for index, value in enumerate(raw_entries):
+        if not isinstance(value, dict):
+            raise ValueError(f"Trial rotation entry {index + 1} must be an object")
+        entry = dict(value)
+        content_hash = str(entry.get("content_hash") or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", content_hash) is None:
+            raise ValueError(
+                f"Trial rotation entry {index + 1} has an invalid content_hash"
+            )
+        if content_hash in seen_hashes:
+            raise ValueError(
+                f"Trial rotation config repeats content_hash {content_hash}"
+            )
+        seen_hashes.add(content_hash)
+        for key in ("source_video", "clip_name", "title"):
+            if not str(entry.get(key) or "").strip():
+                raise ValueError(
+                    f"Trial rotation entry {index + 1} {key} must not be empty"
+                )
+        enabled = entry.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError(
+                f"Trial rotation entry {index + 1} enabled must be boolean"
+            )
+        try:
+            required_hook_phrases = trial_required_hook_phrases(entry)
+        except SystemExit as exc:
+            raise ValueError(f"Trial rotation entry {index + 1}: {exc}") from exc
+        entry.update(
+            {
+                "content_hash": content_hash,
+                "source_video": str(entry["source_video"]).strip(),
+                "clip_name": str(entry["clip_name"]).strip(),
+                "title": str(entry["title"]).strip(),
+                "enabled": enabled,
+                "required_hook_phrases": required_hook_phrases,
+                "position": index + 1,
+            }
+        )
+        entries.append(entry)
+
+    return {
+        **payload,
+        "channel_id": configured_channel,
+        "pool_id": pool_id,
+        "timezone": timezone_name,
+        "daily_time": daily_clock.strftime("%H:%M"),
+        "family_cooldown_hours": float(cooldown),
+        "entries": entries,
+        "config_path": str(resolved),
+    }
+
+
+def rotation_pool_token(pool_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "-", pool_id).strip("-").upper()
+    if not normalized:
+        raise ValueError("Trial rotation pool_id has no usable identifier characters")
+    # The digest keeps tokens distinct when their readable prefixes truncate.
+    digest = hashlib.sha256(pool_id.encode("utf-8")).hexdigest()[:6].upper()
+    return f"{normalized[:32]}-{digest}"
+
+
+def rotation_experiment_prefix(pool_id: str) -> str:
+    return f"TRIAL-POOL-{rotation_pool_token(pool_id)}-"
+
+
+def rotation_experiment_ordinal(
+    experiment: Mapping[str, Any],
+    *,
+    pool_id: str,
+) -> int | None:
+    prefix = re.escape(rotation_experiment_prefix(pool_id))
+    match = re.fullmatch(
+        prefix + r"(\d{4,})-A(?:\d{2}|\d{4})-[0-9a-f]{8}",
+        str(experiment.get("experiment_id") or ""),
+    )
+    return int(match.group(1)) if match else None
+
+
+def rotation_experiment_launch(
+    experiment: Mapping[str, Any],
+) -> datetime | None:
+    """Return a real/planned launch, ignoring cancelled unlaunched Trials.
+
+    A stopped or failed Trial only participates in history and cooldowns when
+    it actually published.  This prevents retired future rows from creating
+    phantom rotation uses and phantom 72-hour family windows.
+    """
+    for key in ("published_at", "reel_published_at"):
+        value = str(experiment.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            return parse_aware_datetime(value, field=key)
+        except ValueError:
+            continue
+    state = str(experiment.get("state") or "").strip().lower()
+    if state not in NONTERMINAL_STATES:
+        return None
+    for key in ("scheduled_at", "reel_scheduled_at"):
+        value = str(experiment.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            return parse_aware_datetime(value, field=key)
+        except ValueError:
+            continue
+    return None
+
+
+def rotation_family_observation_starts(
+    experiments: Sequence[Mapping[str, Any]],
+) -> dict[str, list[datetime]]:
+    starts: dict[str, list[datetime]] = {}
+    for experiment in experiments:
+        family = normalized_experiment_family(experiment.get("asset_family_id"))
+        launch = rotation_experiment_launch(experiment)
+        if not family or launch is None:
+            continue
+        starts.setdefault(family, []).append(launch)
+    for values in starts.values():
+        values.sort()
+    return starts
+
+
+def rotation_history(
+    experiments: Sequence[Mapping[str, Any]],
+    *,
+    pool_id: str,
+) -> tuple[list[dict[str, Any]], int]:
+    records: list[dict[str, Any]] = []
+    ordinals: list[int] = []
+    for experiment in experiments:
+        ordinal = rotation_experiment_ordinal(experiment, pool_id=pool_id)
+        if ordinal is None:
+            continue
+        # Every allocated id remains consumed, including a cancelled attempt.
+        ordinals.append(ordinal)
+        launch = rotation_experiment_launch(experiment)
+        if launch is None:
+            continue
+        records.append(
+            {
+                "experiment_id": str(experiment.get("experiment_id") or ""),
+                "parent_content_hash": str(
+                    experiment.get("parent_content_hash") or ""
+                ),
+                "asset_family_id": normalized_experiment_family(
+                    experiment.get("asset_family_id")
+                ),
+                "state": str(experiment.get("state") or ""),
+                "launch": launch,
+                "ordinal": ordinal,
+            }
+        )
+    records.sort(key=lambda item: (item["launch"], item["ordinal"]))
+    return records, (max(ordinals) + 1 if ordinals else 1)
+
+
+def rotation_entry_audit(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    ledger_rows: Sequence[Mapping[str, Any]],
+    history: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_hash = {
+        str(row.get("content_hash") or ""): row for row in ledger_rows
+    }
+    use_counts = Counter(
+        str(record.get("parent_content_hash") or "") for record in history
+    )
+    audited: list[dict[str, Any]] = []
+    for raw_entry in entries:
+        entry = dict(raw_entry)
+        reasons: list[str] = []
+        if not bool(entry.get("enabled")):
+            reasons.append("POOL_ENTRY_DISABLED")
+        content_hash = str(entry.get("content_hash") or "")
+        row = rows_by_hash.get(content_hash)
+        if row is None:
+            reasons.append("POOL_PARENT_NOT_IN_LEDGER")
+        else:
+            if str(row.get("status") or "") != "published":
+                reasons.append("POOL_PARENT_NOT_PUBLISHED")
+            if not str(row.get("media_id") or "").strip():
+                reasons.append("POOL_PARENT_MISSING_MEDIA_ID")
+            ledger_trial_reel = bool(row.get("trial_reel") or 0)
+            allow_trial_parent = entry.get("allow_trial_parent") is True
+            if ledger_trial_reel and not allow_trial_parent:
+                reasons.append("POOL_TRIAL_PARENT_NOT_ALLOWED")
+            if allow_trial_parent and not ledger_trial_reel:
+                reasons.append("POOL_EXPECTED_TRIAL_PARENT")
+            if str(row.get("source_video") or "").strip() != str(
+                entry.get("source_video") or ""
+            ):
+                reasons.append("POOL_SOURCE_VIDEO_MISMATCH")
+            if Path(str(row.get("clip_dir") or "")).name != str(
+                entry.get("clip_name") or ""
+            ):
+                reasons.append("POOL_CLIP_NAME_MISMATCH")
+        audited.append(
+            {
+                **entry,
+                "ledger_status": str(row.get("status") or "") if row else None,
+                "ledger_media_id": str(row.get("media_id") or "") if row else None,
+                "ledger_title": str(row.get("title") or "") if row else None,
+                "ledger_published_at": (
+                    str(row.get("published_at") or "") if row else None
+                ),
+                "ledger_clip_dir": str(row.get("clip_dir") or "") if row else None,
+                "ledger_media_path": str(row.get("media_path") or "") if row else None,
+                "ledger_trial_reel": bool(row.get("trial_reel") or 0) if row else None,
+                "rotation_use_count": use_counts.get(content_hash, 0),
+                "base_eligible": not reasons,
+                "base_exclusions": sorted(set(reasons)),
+                "selected": False,
+            }
+        )
+    return audited
+
+
+def rotation_start_index(
+    entries: Sequence[Mapping[str, Any]],
+    history: Sequence[Mapping[str, Any]],
+) -> int:
+    positions = {
+        str(entry.get("content_hash") or ""): index
+        for index, entry in enumerate(entries)
+    }
+    for record in reversed(history):
+        position = positions.get(str(record.get("parent_content_hash") or ""))
+        if position is not None:
+            return (position + 1) % len(entries)
+    return 0
+
+
+def rotation_trial_dates(
+    ledger_rows: Sequence[Mapping[str, Any]],
+    experiments: Sequence[Mapping[str, Any]],
+    *,
+    timezone: ZoneInfo,
+) -> set[str]:
+    dates: set[str] = set()
+    live_statuses = {"scheduled", "publish_previewed", "publishing"}
+    for row in ledger_rows:
+        if not bool(row.get("trial_reel") or 0):
+            continue
+        if str(row.get("status") or "") not in live_statuses:
+            continue
+        try:
+            launch = parse_aware_datetime(
+                row.get("scheduled_at"), field="scheduled_at"
+            )
+        except ValueError:
+            continue
+        dates.add(launch.astimezone(timezone).date().isoformat())
+    for experiment in experiments:
+        state = str(experiment.get("state") or "").strip().lower()
+        if state not in NONTERMINAL_STATES:
+            continue
+        launch = rotation_experiment_launch(experiment)
+        if launch is not None:
+            dates.add(launch.astimezone(timezone).date().isoformat())
+    return dates
+
+
+def rotation_input_fingerprint(
+    *,
+    as_of: datetime,
+    config: Mapping[str, Any],
+    ledger_rows: Sequence[Mapping[str, Any]],
+    experiments: Sequence[Mapping[str, Any]],
+) -> str:
+    payload = {
+        "policy_version": ROTATION_POLICY_VERSION,
+        "as_of": as_of.isoformat(),
+        "config": {
+            key: value
+            for key, value in config.items()
+            if key != "config_path"
+        },
+        "reels": [
+            {
+                key: row.get(key)
+                for key in (
+                    "content_hash",
+                    "status",
+                    "scheduled_at",
+                    "published_at",
+                    "media_id",
+                    "source_video",
+                    "clip_dir",
+                    "trial_reel",
+                    "updated_at",
+                )
+            }
+            for row in ledger_rows
+        ],
+        "experiments": [
+            {
+                key: experiment.get(key)
+                for key in (
+                    "experiment_id",
+                    "parent_content_hash",
+                    "asset_family_id",
+                    "state",
+                    "scheduled_at",
+                    "published_at",
+                    "reel_scheduled_at",
+                    "reel_published_at",
+                )
+            }
+            for experiment in experiments
+        ],
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_selection(
+    *,
+    db_path: Path,
+    channel_id: str,
+    as_of: datetime,
+    config_path: Path = DEFAULT_ROTATION_CONFIG,
+    report_path: Path | None = None,
+    facebook_db: Path | None = None,
+) -> dict[str, Any]:
+    """Select one fixed-pool parent for the next eligible daily Trial slot."""
+    del report_path, facebook_db  # Accepted only for legacy caller compatibility.
+    config = load_rotation_config(config_path, channel_id=channel_id)
+    timezone = ZoneInfo(str(config["timezone"]))
+    daily_clock = time.fromisoformat(str(config["daily_time"]))
+    cooldown_hours = float(config["family_cooldown_hours"])
+    ledger_rows, experiments = load_ledger_state(db_path, channel_id=channel_id)
+    history, next_ordinal = rotation_history(
+        experiments,
+        pool_id=str(config["pool_id"]),
+    )
+    pool = rotation_entry_audit(
+        config["entries"],
+        ledger_rows=ledger_rows,
+        history=history,
+    )
+    start_index = rotation_start_index(pool, history)
+    ordered_indexes = [
+        (start_index + offset) % len(pool) for offset in range(len(pool))
+    ]
+    family_starts = rotation_family_observation_starts(experiments)
+    trial_dates = rotation_trial_dates(
+        ledger_rows,
+        experiments,
+        timezone=timezone,
+    )
+    occupied = occupied_launch_times(ledger_rows)
+    lead_boundary = as_of + timedelta(hours=ROTATION_TARGET_LEAD_HOURS)
+    first_date = as_of.astimezone(timezone).date()
+    cooldown = timedelta(hours=cooldown_hours)
+
+    selected: dict[str, Any] | None = None
+    selected_launch: datetime | None = None
+    dates_considered: list[dict[str, Any]] = []
+    last_pool_reasons: dict[str, list[str]] = {}
+    for offset in range(ROTATION_SEARCH_HORIZON_DAYS):
+        target_date = first_date + timedelta(days=offset)
+        launch = datetime.combine(target_date, daily_clock, tzinfo=timezone)
+        date_reasons: list[str] = []
+        if launch < lead_boundary:
+            date_reasons.append("INSUFFICIENT_RERENDER_LEAD")
+        if launch in occupied:
+            date_reasons.append("ROTATION_SLOT_OCCUPIED")
+        if target_date.isoformat() in trial_dates:
+            date_reasons.append("TRIAL_ALREADY_ON_DATE")
+        if date_reasons:
+            dates_considered.append(
+                {
+                    "date": target_date.isoformat(),
+                    "scheduled_at": launch.isoformat(),
+                    "status": "HOLD",
+                    "hold_reasons": sorted(set(date_reasons)),
+                }
+            )
+            continue
+
+        per_entry_reasons: dict[str, list[str]] = {}
+        for index in ordered_indexes:
+            candidate = pool[index]
+            reasons = list(candidate["base_exclusions"])
+            family = normalized_experiment_family(candidate["source_video"])
+            if not reasons and any(
+                start < launch + cooldown and launch < start + cooldown
+                for start in family_starts.get(family, ())
+            ):
+                reasons.append("ASSET_FAMILY_OBSERVATION_COOLDOWN")
+            per_entry_reasons[str(candidate["content_hash"])] = reasons
+            if not reasons:
+                selected = candidate
+                selected_launch = launch
+                break
+        last_pool_reasons = per_entry_reasons
+        if selected is not None:
+            dates_considered.append(
+                {
+                    "date": target_date.isoformat(),
+                    "scheduled_at": launch.isoformat(),
+                    "status": "READY",
+                    "hold_reasons": [],
+                }
+            )
+            break
+        reasons = sorted(
+            {
+                reason
+                for entry_reasons in per_entry_reasons.values()
+                for reason in entry_reasons
+            }
+        ) or ["NO_ELIGIBLE_ROTATION_POOL_ENTRY"]
+        dates_considered.append(
+            {
+                "date": target_date.isoformat(),
+                "scheduled_at": launch.isoformat(),
+                "status": "HOLD",
+                "hold_reasons": reasons,
+            }
+        )
+        # Publication/config readiness does not change by scanning later dates.
+        if not any(item["base_eligible"] for item in pool):
+            break
+
+    ready = selected is not None and selected_launch is not None
+    if ready:
+        assert selected is not None and selected_launch is not None
+        selected["selected"] = True
+        slot_token = (
+            f"A{daily_clock.hour:02d}"
+            if daily_clock.minute == 0
+            else f"A{daily_clock.hour:02d}{daily_clock.minute:02d}"
+        )
+        experiment_id = (
+            f"{rotation_experiment_prefix(str(config['pool_id']))}"
+            f"{next_ordinal:04d}-{slot_token}-"
+            f"{str(selected['content_hash'])[:8]}"
+        )
+        dry_run_argv = [
+            "uv",
+            "run",
+            "python",
+            "reel_scheduler.py",
+            "trial-add-from-published",
+            "--channel",
+            channel_id,
+            "--rotation-pool",
+            str(Path(str(config["config_path"])).resolve()),
+            "--parent-content-hash",
+            str(selected["content_hash"]),
+            "--media-path",
+            "<rerendered-variant.mp4>",
+            "--experiment-id",
+            experiment_id,
+            "--hook",
+            "<new-rendered-hook>",
+            "--scheduled-at",
+            selected_launch.isoformat(),
+            "--expected-scheduled-at",
+            selected_launch.isoformat(),
+            "--asset-family-id",
+            str(selected["source_video"]),
+            "--changed-variable",
+            "overlay_hook",
+            "--caption-mode",
+            "preserve-parent",
+        ]
+        lane = {
+            "lane": ROTATION_LANE,
+            "status": "READY",
+            "mode": "add_at_daily_time",
+            "rotation_pool_id": config["pool_id"],
+            "rotation_position": selected["position"],
+            "experiment_id": experiment_id,
+            "parent": selected,
+            "scheduled_at": selected_launch.isoformat(),
+            "expected_scheduled_at": selected_launch.isoformat(),
+            "asset_family_id": selected["source_video"],
+            "changed_variables": ["overlay_hook"],
+            "required_hook_phrases": selected["required_hook_phrases"],
+            "manual_approval_required": True,
+            "auto_apply": False,
+            "dry_run_argv_ready": False,
+            "dry_run_argv": dry_run_argv,
+            "required_manual_checks": [
+                "Author and approve a new grounded Japanese opening hook.",
+                *[
+                    f"Keep the exact phrase 「{phrase}」 in every opening hook variant."
+                    for phrase in selected["required_hook_phrases"]
+                ],
+                "Rerender the opening treatment and preserve the source clip.",
+                "Review the final MP4 before running the scheduler dry run.",
+            ],
+        }
+        recommendation: dict[str, Any] = {
+            "status": "READY",
+            "target_date": selected_launch.astimezone(timezone).date().isoformat(),
+            "recommended_lane_count": 1,
+            "manual_approval_required": True,
+            "auto_apply": False,
+            "lanes": {ROTATION_LANE: lane},
+        }
+    else:
+        hold_reasons = (
+            dates_considered[-1]["hold_reasons"]
+            if dates_considered
+            else ["NO_ELIGIBLE_ROTATION_POOL_ENTRY"]
+        )
+        recommendation = {
+            "status": "HOLD",
+            "target_date": None,
+            "recommended_lane_count": 0,
+            "manual_approval_required": True,
+            "auto_apply": False,
+            "hold_reasons": hold_reasons,
+            "lanes": {
+                ROTATION_LANE: {
+                    "lane": ROTATION_LANE,
+                    "status": "HOLD",
+                    "hold_reasons": hold_reasons,
+                    "manual_approval_required": True,
+                    "auto_apply": False,
+                    "dry_run_argv": [],
+                }
+            },
+        }
+
+    # Audit every configured entry at the selected launch, not just entries
+    # visited before the first winner in the ordered scan.
+    if selected_launch is not None:
+        last_pool_reasons = {}
+        for item in pool:
+            reasons = list(item["base_exclusions"])
+            family = normalized_experiment_family(item["source_video"])
+            if not reasons and any(
+                start < selected_launch + cooldown
+                and selected_launch < start + cooldown
+                for start in family_starts.get(family, ())
+            ):
+                reasons.append("ASSET_FAMILY_OBSERVATION_COOLDOWN")
+            last_pool_reasons[str(item["content_hash"])] = reasons
+    for item in pool:
+        dynamic = last_pool_reasons.get(
+            str(item["content_hash"]),
+            list(item["base_exclusions"]),
+        )
+        item["selection_exclusions"] = sorted(set(dynamic))
+        item["eligible_at_target"] = not dynamic if dates_considered else False
+
+    exclusion_counts: Counter[str] = Counter()
+    for item in pool:
+        exclusion_counts.update(item["selection_exclusions"])
+    return {
+        "schema_version": ROTATION_SCHEMA_VERSION,
+        "policy_version": ROTATION_POLICY_VERSION,
+        "read_only": True,
+        "channel_id": channel_id,
+        "as_of": as_of.isoformat(),
+        "rotation_pool": {
+            "pool_id": config["pool_id"],
+            "config_path": config["config_path"],
+            "entry_count": len(pool),
+            "enabled_entry_count": sum(bool(item["enabled"]) for item in pool),
+            "next_rotation_position": start_index + 1,
+        },
+        "daily_batch": {
+            "target_date": recommendation["target_date"],
+            "timezone": str(timezone),
+            "daily_time": config["daily_time"],
+            "lanes_per_day": 1,
+            "recommended_lanes": (
+                [ROTATION_LANE] if recommendation["status"] == "READY" else []
+            ),
+            "blocked_lanes": (
+                [] if recommendation["status"] == "READY" else [ROTATION_LANE]
+            ),
+        },
+        "capacity": {
+            "daily_trial_lanes": 1,
+            "published_rerender_lead_hours": ROTATION_TARGET_LEAD_HOURS,
+            "family_cooldown_hours": cooldown_hours,
+            "analytics_candidate_sourcing": False,
+            "scheduled_candidate_sourcing": False,
+        },
+        "recommendation": recommendation,
+        "shortlists": {
+            "rotation_pool": pool,
+            # Compatibility keys are intentionally empty: neither is a source.
+            "published_parents": [],
+            "scheduled_candidates": [],
+        },
+        "dates_considered": dates_considered,
+        "exclusions": {"counts_by_reason": dict(sorted(exclusion_counts.items()))},
+        "provenance": {
+            "source_db": str(db_path.expanduser().resolve()),
+            "rotation_config": str(Path(str(config["config_path"])).resolve()),
+            "source_report": "ignored_by_rotation_pool_policy",
+            "facebook_db": "ignored_by_rotation_pool_policy",
+            "input_fingerprint": rotation_input_fingerprint(
+                as_of=as_of,
+                config=config,
+                ledger_rows=ledger_rows,
+                experiments=experiments,
+            ),
+        },
+    }
+
+
+def build_scheduled_conversion_selection(
+    *,
+    db_path: Path,
+    facebook_db: Path | None,
+    channel_id: str,
+    as_of: datetime,
+    reserved_parent_families: set[str] | None = None,
+) -> dict[str, Any]:
+    """Compatibility shim: scheduled conversion sourcing is policy-disabled."""
+    del db_path, facebook_db, reserved_parent_families
+    return {
+        "policy_version": ROTATION_POLICY_VERSION,
+        "as_of": as_of.isoformat(),
+        "lane": LANE_SCHEDULED_CONVERSION,
+        "status": "HOLD",
+        "target_date": None,
+        "experiment_id": None,
+        "content_hash": None,
+        "expected_scheduled_at": None,
+        "selected": None,
+        "shortlist": [],
+        "excluded": {"FIXED_ROTATION_POOL_ONLY": 1},
+        "dates_considered": [],
+        "dry_run_argv": [],
+        "channel_id": channel_id,
+    }
+
+
+def render_markdown(selection: Mapping[str, Any]) -> str:
+    if selection.get("policy_version") != ROTATION_POLICY_VERSION:
+        return render_legacy_markdown(selection)
+    recommendation = selection["recommendation"]
+    pool_meta = selection["rotation_pool"]
+    batch = selection["daily_batch"]
+    lines = [
+        "# AI Brief JP Trial rotation pool",
+        "",
+        f"- As of: `{selection['as_of']}`",
+        f"- Policy: `{selection['policy_version']}`",
+        f"- Pool: `{pool_meta['pool_id']}` ({pool_meta['entry_count']} entries)",
+        f"- Cadence: one Trial daily at `{batch['daily_time']}` `{batch['timezone']}`",
+        "- Candidate source: fixed config pool only; analytics and scheduled Reels are disabled.",
+        "- Selector mode: read-only; emitted commands never include `--apply`.",
+        "",
+        "## Recommendation",
+        "",
+        f"- Status: `{recommendation['status']}`",
+    ]
+    lane = recommendation["lanes"][ROTATION_LANE]
+    if lane["status"] == "READY":
+        parent = lane["parent"]
+        lines.extend(
+            [
+                f"- Target: `{lane['scheduled_at']}`",
+                f"- Experiment: `{lane['experiment_id']}`",
+                f"- Rotation position: `{lane['rotation_position']}`",
+                f"- Parent: {markdown_cell(parent.get('title'))}",
+                f"- Parent hash: `{parent.get('content_hash')}`",
+                f"- Source family: `{parent.get('source_video')}`",
+                "- Render and manual MP4 review are required before scheduling.",
+                "",
+                "Dry-run argv:",
+                "",
+                "```sh",
+                shlex.join([str(value) for value in lane["dry_run_argv"]]),
+                "```",
+            ]
+        )
+        for phrase in lane.get("required_hook_phrases", []):
+            lines.append(f"- Every opening hook must retain the exact phrase: 「{phrase}」")
+    else:
+        lines.append(
+            "- Hold reasons: "
+            + ", ".join(f"`{reason}`" for reason in lane["hold_reasons"])
+        )
+    lines.extend(
+        [
+            "",
+            "## Ordered pool",
+            "",
+            "| Position | Enabled | Published | Uses | Selected | Source | Title | Required hook phrases | Holds |",
+            "|---:|---|---|---:|---|---|---|---|---|",
+        ]
+    )
+    for item in selection["shortlists"]["rotation_pool"]:
+        lines.append(
+            f"| {item['position']} | {'yes' if item['enabled'] else 'no'} | "
+            f"{'yes' if item.get('ledger_status') == 'published' else 'no'} | "
+            f"{item['rotation_use_count']} | {'yes' if item['selected'] else 'no'} | "
+            f"`{item['source_video']}` | {markdown_cell(item['title'])} | "
+            f"{markdown_cell(', '.join(item.get('required_hook_phrases', [])))} | "
+            f"{markdown_cell(', '.join(item['selection_exclusions']))} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--channel", default=CHANNEL)
     parser.add_argument("--db", type=Path, default=ROOT / "state" / "reels.db")
     parser.add_argument(
+        "--config",
+        "--rotation-config",
+        dest="config_path",
+        type=Path,
+        default=DEFAULT_ROTATION_CONFIG,
+        help="Fixed Trial rotation pool JSON (the sole candidate source)",
+    )
+    parser.add_argument(
         "--facebook-db",
         type=Path,
         default=ROOT / "state" / "facebook.db",
+        help="Deprecated compatibility option; ignored by the fixed-pool policy",
     )
     parser.add_argument(
         "--report",
         type=Path,
         default=ROOT / "out" / "reel_report.insights.json",
+        help="Deprecated compatibility option; analytics never source pool candidates",
     )
     parser.add_argument("--as-of", help="Aware ISO 8601 selection time")
     parser.add_argument(
@@ -2446,13 +3251,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.as_of
         else default_as_of()
     )
-    selection = build_selection(
-        db_path=args.db,
-        report_path=args.report,
-        facebook_db=args.facebook_db,
-        channel_id=args.channel,
-        as_of=as_of,
-    )
+    try:
+        selection = build_selection(
+            db_path=args.db,
+            report_path=args.report,
+            facebook_db=args.facebook_db,
+            channel_id=args.channel,
+            as_of=as_of,
+            config_path=args.config_path,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     args.json_out.parent.mkdir(parents=True, exist_ok=True)
     args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
     args.json_out.write_text(

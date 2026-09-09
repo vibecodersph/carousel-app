@@ -312,17 +312,17 @@ Trial experiment. Its schedule labels are deliberately conservative:
 - `KEEP REGULAR — SUPPORTED, NOT PROVEN` means the creative passes and has a
   thin or developing measured analogue set.
 - `TRIAL CANDIDATE` means the creative passes but has no relevant measured
-  analogue; it may be sent to the separate capacity-aware Trial selector.
+  analogue. It is a diagnostic label only and is not an operational sourcing
+  path for Trial Reels.
 - `REVISE CREATIVE` identifies a known source-candidate score miss.
 - `RESCORE / MANUAL REVIEW` preserves legacy clips whose historical opening
   score is unavailable.
 - `SOURCE SUPPORT REVIEW` and `DIVERSITY REVIEW` are review flags, not duplicate
   or removal proof.
 
-The same run displays the next conversion chosen by the existing Trial policy,
-including its target date, Facebook effect, capacity/cooldown context, and
-whether the candidate evaluator agrees. It does not execute the dry run or
-apply the conversion.
+The scheduled evaluator does not nominate or convert Trial Reels. Operational
+Trial candidates come only from `config/aibrief_jp_trial_rotation.json`; update
+that fixed pool explicitly when its membership should change.
 
 Scheduled mode is read-only. It reports zero safe automatic removals and never
 changes the Reel or Facebook ledgers, manifests, media, schedule, or Trial

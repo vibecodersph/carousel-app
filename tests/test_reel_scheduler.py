@@ -1206,6 +1206,40 @@ class ReelLedgerPlanningTests(unittest.TestCase):
             ["vibe-new", "jp-new", "vibe-old", "jp-old"],
         )
 
+    def test_source_round_robin_skips_exhausted_sources_without_resetting(self) -> None:
+        source_counts = {
+            "A": 3,
+            "B": 1,
+            "C": 2,
+            "D": 1,
+            "E": 2,
+        }
+        source_created = {
+            "A": "2026-06-05T00:00:00+00:00",
+            "B": "2026-06-04T00:00:00+00:00",
+            "C": "2026-06-03T00:00:00+00:00",
+            "D": "2026-06-02T00:00:00+00:00",
+            "E": "2026-06-01T00:00:00+00:00",
+        }
+        queued_rows = [
+            {
+                "content_hash": f"{source}-{index}",
+                "channel_id": "aibrief_jp",
+                "source_video": source,
+                "created_at": source_created[source],
+            }
+            for source, count in source_counts.items()
+            for index in range(1, count + 1)
+        ]
+
+        assignments, source_orders = reel_scheduler.source_round_robin_assignments(queued_rows)
+
+        self.assertEqual(source_orders["aibrief_jp"], ["A", "B", "C", "D", "E"])
+        self.assertEqual(
+            [selected["source_video"] for _, selected, _ in assignments],
+            ["A", "B", "C", "D", "E", "A", "C", "E", "A"],
+        )
+
     def test_unschedule_queued_reel_marks_skipped_and_refuses_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

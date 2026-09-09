@@ -487,7 +487,6 @@ def apply_schedule_triage(
     report: dict[str, Any],
     *,
     input_audit: Mapping[str, Any],
-    official_trial_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     counts: Counter[str] = Counter()
@@ -601,26 +600,6 @@ def apply_schedule_triage(
         ),
     }
 
-    selector_payload = dict(official_trial_selection or {})
-    selected_hash = _text(selector_payload.get("content_hash"))
-    matching = next(
-        (row for row in rows if row["content_hash"] == selected_hash),
-        None,
-    )
-    if selector_payload:
-        selector_payload["candidate_evaluator"] = {
-            "matched": matching is not None,
-            "action": matching.get("action") if matching else None,
-            "agreement": (
-                bool(matching)
-                and matching.get("action") == ACTION_TRIAL_CANDIDATE
-            ),
-            "warning": (
-                "The official selector enforces capacity, cooldowns, dates, and "
-                "ledger guards. Conversion is still a separate approved action."
-            ),
-        }
-
     report["report_metadata"]["input_scope"] = "scheduled_pipeline"
     report["report_metadata"]["scheduled_row_count"] = len(rows)
     report["scheduled_pipeline"] = {
@@ -632,7 +611,6 @@ def apply_schedule_triage(
         "action_counts": dict(sorted(counts.items())),
         "schedule_horizon": horizon,
         "input_audit": dict(input_audit),
-        "official_trial_selection": selector_payload or None,
         "rows": rows,
         "interpretation": {
             ACTION_KEEP_TRIAL: (
@@ -644,8 +622,9 @@ def apply_schedule_triage(
                 "does not mean proven."
             ),
             ACTION_TRIAL_CANDIDATE: (
-                "Passing creative with no relevant measured analogue; eligible "
-                "for the separate capacity-aware Trial selector."
+                "Passing creative with no relevant measured analogue. This is a "
+                "creative diagnostic label only and is not an operational Trial "
+                "sourcing path."
             ),
             ACTION_REVISE: (
                 "Known source-candidate readiness miss. Revise before Trial; do "
@@ -771,36 +750,6 @@ def render_scheduled_markdown(report: Mapping[str, Any]) -> str:
             f"({_score(item.get('percentage'))}%) |"
         )
 
-    selector = _mapping(scheduled.get("official_trial_selection"))
-    if selector:
-        selector_eval = _mapping(selector.get("candidate_evaluator"))
-        selected = _mapping(selector.get("selected"))
-        lines.extend(
-            [
-                "",
-                "## Next capacity-aware Trial conversion",
-                "",
-                (
-                    f"- Selector status: **{_cell(selector.get('status'))}**; "
-                    f"target date: **{_cell(selector.get('target_date'))}**"
-                ),
-                (
-                    f"- Selected: **{_cell(selected.get('title'))}** "
-                    f"(`{_cell(selector.get('content_hash'))[:12]}…`)"
-                ),
-                (
-                    f"- Candidate-evaluator action: "
-                    f"**{_cell(selector_eval.get('action'))}**; "
-                    f"agreement: **{'yes' if selector_eval.get('agreement') else 'no'}**"
-                ),
-                (
-                    "- Important: converting the Instagram Reel to Trial removes "
-                    "its mutable Facebook mirror from the regular cross-platform "
-                    "lane."
-                ),
-            ]
-        )
-
     for action in action_order:
         selected_rows = [row for row in rows if row.get("action") == action]
         if not selected_rows:
@@ -857,7 +806,7 @@ def render_scheduled_markdown(report: Mapping[str, Any]) -> str:
             "## How to use this report",
             "",
             "1. Keep registered Trials intact and review their parent/variant results after publishing.",
-            "2. Send only `TRIAL CANDIDATE` rows through the existing capacity-aware daily Trial selector.",
+            "2. Treat `TRIAL CANDIDATE` as a diagnostic label only; it does not add anything to the fixed Trial rotation pool.",
             "3. Rewrite `REVISE CREATIVE` rows before deciding whether to retain their slots.",
             "4. Rescore `RESCORE / MANUAL REVIEW` rows; do not remove them because historical metadata is missing.",
             "5. Rerun this audit about three days before publication because the winner library and news freshness change.",

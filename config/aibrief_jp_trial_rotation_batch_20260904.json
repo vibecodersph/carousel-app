@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260904_single",
+  "entries": [
+    {
+      "parent_content_hash": "d3d93f6dab69ead5e759cbfc2b6b1c4a347876b210ce1efd288c6cf0a5e43ba3",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0018-A19-d3d93f6d",
+      "scheduled_at": "2026-09-16T19:00:00+09:00",
+      "hook": "プロトタイプを捨てない。Anthropicは10日で製品化した"
+    }
+  ]
+}

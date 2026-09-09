@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260830",
+  "entries": [
+    {
+      "parent_content_hash": "df9d3e47e277a63fce45f0664ce35ce5cf806a2261767813e3bc69ff5f868bd9",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0001-A19-df9d3e47",
+      "scheduled_at": "2026-08-30T19:00:00+09:00",
+      "hook": "「動くのに読めない」Netflix技術トップが恐れたAIコード"
+    },
+    {
+      "parent_content_hash": "babd790dbce0151be380893e792f9f916251bc7f8562614d30e8880926024854",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0002-A19-babd790d",
+      "scheduled_at": "2026-08-31T19:00:00+09:00",
+      "hook": "答えではなく「AIが解けない問い」を作らせたMITの試験"
+    },
+    {
+      "parent_content_hash": "f475b8d6e23ff13b427da7efbe593575e84d54756c01b7b6d72b64cca3f8c1dc",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0003-A19-f475b8d6",
+      "scheduled_at": "2026-09-01T19:00:00+09:00",
+      "hook": "AIで4倍速になった結果、労働時間は過去最長"
+    },
+    {
+      "parent_content_hash": "d3d93f6dab69ead5e759cbfc2b6b1c4a347876b210ce1efd288c6cf0a5e43ba3",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0004-A19-d3d93f6d",
+      "scheduled_at": "2026-09-02T19:00:00+09:00",
+      "hook": "Anthropicは10日で試作を製品にする。捨てない開発術"
+    },
+    {
+      "parent_content_hash": "bdd3cac499496b758d8480a515883e253ad0672cc154afaaf3c9989adcc998db",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0005-A19-bdd3cac4",
+      "scheduled_at": "2026-09-03T19:00:00+09:00",
+      "hook": "1万コメントより、所属を明かしたRedditの5回答"
+    },
+    {
+      "parent_content_hash": "8b270f78a2dbe12922f2ff730a042178ca05ba793cb5627b8fdc61aef6dc1880",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0006-A19-8b270f78",
+      "scheduled_at": "2026-09-04T19:00:00+09:00",
+      "hook": "曲名不明でも、ClaudeはAppleScriptで特定した"
+    },
+    {
+      "parent_content_hash": "2bca1c174cb75a66ace0f6c52cd86c08e8575d90154fa6e9b4f1e0aad4ace443",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0007-A19-2bca1c17",
+      "scheduled_at": "2026-09-05T19:00:00+09:00",
+      "hook": "探索木を19秒で総当たり。AIが幾何学を解いた方法"
+    },
+    {
+      "parent_content_hash": "fb0fe600b254d3b776406cb3c3c7af4dc1bb8094306d3e1e40add364d2a94daa",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0008-A19-fb0fe600",
+      "scheduled_at": "2026-09-06T19:00:00+09:00",
+      "hook": "Anthropicの計画書は、スプレッドシート1枚だけ"
+    },
+    {
+      "parent_content_hash": "7054a21868aa647dee6de3161df81fe94d8520aa4d38368bd6ed126624ca6146",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0009-A19-7054a218",
+      "scheduled_at": "2026-09-07T19:00:00+09:00",
+      "hook": "OpenAIのAI、頼まれていないのに上司へ直訴した"
+    },
+    {
+      "parent_content_hash": "aa349900b32880854e297bb11eaee6bca751325df61994ba880eb287cf674b64",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0010-A19-aa349900",
+      "scheduled_at": "2026-09-08T19:00:00+09:00",
+      "hook": "隠し設定「simple=1」でClaude Codeの指示が消える"
+    },
+    {
+      "parent_content_hash": "f9d1a09b93fea714aa4d7958050825b41f3adeea49825c64c42cb02c59965305",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0011-A19-f9d1a09b",
+      "scheduled_at": "2026-09-09T19:00:00+09:00",
+      "hook": "Claudeのデザイン責任者は、出世より現場を選んだ"
+    },
+    {
+      "parent_content_hash": "4aac7d9070eb3b61b407ffac6a280072a6c444e6ca9bb2571781253c68e6759e",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0012-A19-4aac7d90",
+      "scheduled_at": "2026-09-10T19:00:00+09:00",
+      "hook": "Anthropicは、AIの嘘を3層で監視している"
+    }
+  ]
+}
