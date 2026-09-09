@@ -88,10 +88,13 @@ def post(
                     "reach": reach,
                     "interactions": interactions,
                     "saves": saves,
+                    "shares": 3,
                     "reels_skip_rate": 40.0,
                     "duration_seconds": 20.0,
                 },
                 "derived_metrics": {
+                    "saves_per_reach": saves / reach,
+                    "shares_per_view": 3 / 260,
                     "engagement_rate_by_reach": interactions / reach,
                     "watch_depth": 0.5,
                     "saves_per_1000_reach": saves / reach * 1000,
@@ -177,24 +180,17 @@ class VerifiedWinnerLibraryTests(unittest.TestCase):
         for specification in moneyball.PERFORMANCE_RANKING_METRICS:
             key = specification["key"]
             value = {
-                "total_interactions_per_reach": 0.05,
-                "watch_depth": 0.5,
+                "shares_per_view": 3 / 260,
+                "reach": 200,
                 "three_second_skip_rate": 40.0,
-                "saves_per_1000_reach": 25.0,
+                "saves_per_reach": 0.025,
                 "views_per_reached_account": 1.3,
             }[key]
             support = {
-                "total_interactions_per_reach": {
-                    "interactions": 10,
-                    "reach": 200,
-                    "denominator_type": "reach",
-                },
-                "watch_depth": {
-                    "average_watch_time_seconds": 10,
-                    "duration_seconds": 20,
-                },
+                "shares_per_view": {"shares": 3, "views": 260, "denominator_type": "views"},
+                "reach": {"reach": 200},
                 "three_second_skip_rate": {"reels_skip_rate": 40},
-                "saves_per_1000_reach": {
+                "saves_per_reach": {
                     "saves": 5,
                     "reach": 200,
                     "denominator_type": "reach",
@@ -279,7 +275,7 @@ class VerifiedWinnerLibraryTests(unittest.TestCase):
         )
         self.assertEqual(
             balanced["winner_evidence"]["independent_family_count"],
-            2,
+            3,
         )
         self.assertEqual(
             balanced["asset_provenance"]["published_asset"]["status"],
@@ -328,6 +324,23 @@ class VerifiedWinnerLibraryTests(unittest.TestCase):
             decoded["data_coverage"]["japanese_scripts"]["count"],
             2,
         )
+
+    def test_library_uses_selected_families_and_keeps_retired_metrics_contextual(self):
+        library = winners.build_winner_library(self.report())
+        balanced = next(row for row in library["winners"] if row["identity"]["media_id"] == "m-balanced")
+        evidence = balanced["winner_evidence"]
+        selected = {item["key"] for item in moneyball.PERFORMANCE_RANKING_METRICS}
+        self.assertEqual(set(evidence["all_metrics_at_window"]), selected)
+        self.assertEqual(set(evidence["signal_families"]), {"attention_replay", "intent_action", "distribution"})
+        self.assertEqual(evidence["all_metrics_at_window"]["shares_per_view"]["supporting_metrics"]["denominator_type"], "views")
+        self.assertEqual(evidence["supporting_diagnostics_at_window"]["watch_depth"]["value"], 0.5)
+        self.assertEqual(evidence["supporting_diagnostics_at_window"]["total_interactions_per_reach"]["value"], 0.05)
+        self.assertNotIn("watch_depth", {row["leaderboard"] for row in evidence["ranking_memberships"]})
+        self.assertEqual(winners._format_metric("saves_per_reach", 0.025), "2.5%")
+        self.assertEqual(winners._format_metric("shares_per_view", 0.05), "5.0%")
+        self.assertEqual(winners._format_metric("shares_per_view", 1 / 32069), "0.0031%")
+        self.assertEqual(winners._format_metric("saves_per_reach", 1 / 32069), "0.0031%")
+        self.assertEqual(winners._format_metric("reach", 1200), "1,200")
 
 
 if __name__ == "__main__":

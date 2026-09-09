@@ -5,11 +5,11 @@ import moneyball_analytics as moneyball
 
 
 METRIC_KEYS = (
-    "total_interactions_per_reach",
-    "watch_depth",
     "three_second_skip_rate",
-    "saves_per_1000_reach",
     "views_per_reached_account",
+    "saves_per_reach",
+    "shares_per_view",
+    "reach",
 )
 
 
@@ -20,6 +20,7 @@ def make_ranking_observation(
     views=100,
     interactions=10,
     saves=1,
+    shares=1,
     average_watch_time_seconds=5,
     duration_seconds=10,
     skip_rate=50,
@@ -31,6 +32,7 @@ def make_ranking_observation(
         "views": views,
         "interactions": interactions,
         "saves": saves,
+        "shares": shares,
         "average_watch_time_seconds": average_watch_time_seconds,
         "duration_seconds": duration_seconds,
         "reels_skip_rate": skip_rate,
@@ -79,14 +81,62 @@ def aggregate_rows(result):
 
 
 class MoneyballTopRankingTests(unittest.TestCase):
+    def test_small_nonzero_action_rates_remain_visible_in_markdown_and_html(self):
+        source = make_ranking_post("small-share", shares=1, views=32069, saves=1, reach=32069)
+        rankings = moneyball.build_top_rankings([source])
+        markdown = "\n".join(moneyball.performance_rankings_markdown_lines(rankings, platform_label="Instagram"))
+        rendered = moneyball._performance_rankings_html(rankings, platform_label="Instagram")
+        self.assertIn("0.0031%", markdown)
+        self.assertIn("0.0031%", rendered)
+        self.assertEqual(moneyball._format_ranking_value(1 / 2372, "percent_ratio"), "0.0422%")
+        self.assertEqual(moneyball._format_ranking_value(0, "percent_ratio"), "0.0%")
+        self.assertEqual(moneyball._html_ranking_value(1e-9, "percent_ratio"), "&lt;0.0001%")
+
+    def test_selected_five_are_ordered_and_watch_depth_and_interactions_have_no_weight(self):
+        self.assertEqual(tuple(item["key"] for item in moneyball.PERFORMANCE_RANKING_METRICS), METRIC_KEYS)
+        a = make_ranking_post("a", reach=100, views=200, saves=10, shares=20)
+        b = make_ranking_post("b", reach=200, views=400, saves=20, shares=40)
+        baseline = moneyball.build_top_rankings([a, b])
+        changed = make_ranking_post(
+            "a", reach=100, views=200, saves=10, shares=20,
+            average_watch_time_seconds=999, duration_seconds=1, interactions=999999,
+        )
+        self.assertEqual(baseline, moneyball.build_top_rankings([changed, b]))
+        # All four rates tie; raw reach alone changes the equal-weight result.
+        rows = aggregate_rows(baseline)
+        self.assertEqual([row["media_id"] for row in rows], ["b", "a"])
+        self.assertEqual([row["average_directional_percentile"] for row in rows], [55, 45])
+
+    def test_share_rate_uses_views_even_when_reach_present_and_preserves_support(self):
+        source = make_ranking_post("source", reach=100, views=400, shares=20, saves=10)
+        result = moneyball.build_top_rankings([source])
+        share = ranking_rows(result, "shares_per_view")[0]
+        self.assertEqual(share["value"], 0.05)
+        self.assertEqual(share["supporting_metrics"], {
+            "shares": 20, "views": 400, "denominator_type": "views",
+        })
+        self.assertEqual(ranking_rows(result, "saves_per_reach")[0]["value"], 0.1)
+        self.assertEqual(result["metric_rankings"]["shares_per_view"]["format"], "percent_ratio")
+
+    def test_missing_shares_or_views_excludes_share_rate_and_combined_rank(self):
+        posts = [make_ranking_post("no-shares", shares=None),
+                 make_ranking_post("no-views", views=None),
+                 make_ranking_post("zero-shares", shares=0)]
+        result = moneyball.build_top_rankings(posts)
+        self.assertEqual([row["media_id"] for row in ranking_rows(result, "shares_per_view")], ["zero-shares"])
+        self.assertEqual(ranking_rows(result, "shares_per_view")[0]["value"], 0)
+        self.assertEqual([row["media_id"] for row in aggregate_rows(result)], ["zero-shares"])
+        self.assertEqual(result["metric_rankings"]["reach"]["coverage"]["count"], 3)
+
     def test_five_top_tens_are_linked_limited_and_directionally_correct(self):
         posts = [
             make_ranking_post(
                 f"reel-{index:02d}",
-                reach=100,
+                reach=100 + index,
                 views=100 + index * 10,
                 interactions=index,
                 saves=index,
+                shares=index * 3,
                 average_watch_time_seconds=1 + index,
                 duration_seconds=10,
                 skip_rate=20 + index,
@@ -124,15 +174,15 @@ class MoneyballTopRankingTests(unittest.TestCase):
                 )
 
         self.assertEqual(
-            ranking_rows(result, "total_interactions_per_reach")[0]["media_id"],
+            ranking_rows(result, "shares_per_view")[0]["media_id"],
             "reel-11",
         )
         self.assertEqual(
-            ranking_rows(result, "watch_depth")[0]["media_id"],
+            ranking_rows(result, "reach")[0]["media_id"],
             "reel-11",
         )
         self.assertEqual(
-            ranking_rows(result, "saves_per_1000_reach")[0]["media_id"],
+            ranking_rows(result, "saves_per_reach")[0]["media_id"],
             "reel-11",
         )
         self.assertEqual(
@@ -160,6 +210,7 @@ class MoneyballTopRankingTests(unittest.TestCase):
             views=1_000,
             interactions=900,
             saves=500,
+            shares=900,
             average_watch_time_seconds=9,
             skip_rate=5,
         )
@@ -181,8 +232,8 @@ class MoneyballTopRankingTests(unittest.TestCase):
         )
 
         for metric in (
-            "total_interactions_per_reach",
-            "saves_per_1000_reach",
+            "reach",
+            "saves_per_reach",
             "views_per_reached_account",
         ):
             with self.subTest(metric=metric):
@@ -195,11 +246,11 @@ class MoneyballTopRankingTests(unittest.TestCase):
                     result["metric_rankings"][metric]["source"].lower(),
                 )
         self.assertIn(
-            "view-denominator fallbacks are excluded",
+            "denominators are never substituted",
             result["methodology"]["denominator_rule"].lower(),
         )
         self.assertEqual(
-            [row["media_id"] for row in ranking_rows(result, "watch_depth")],
+            [row["media_id"] for row in ranking_rows(result, "shares_per_view")],
             ["missing-reach", "complete"],
         )
         self.assertEqual(
@@ -218,6 +269,7 @@ class MoneyballTopRankingTests(unittest.TestCase):
             "two-window",
             interactions=1,
             saves=1,
+    shares=1,
             views=100,
             maturity_window="24h",
             actual_age_hours=25,
@@ -257,7 +309,7 @@ class MoneyballTopRankingTests(unittest.TestCase):
             self.assertEqual([row["media_id"] for row in rows], ["two-window"])
             self.assertEqual(rows[0]["actual_age_hours"], 25)
         self.assertEqual(
-            ranking_rows(result, "total_interactions_per_reach")[0]["value"],
+            ranking_rows(result, "shares_per_view")[0]["value"],
             0.01,
         )
 
@@ -267,7 +319,8 @@ class MoneyballTopRankingTests(unittest.TestCase):
                 media_id,
                 interactions=0,
                 saves=0,
-                views=0,
+                views=100,
+                shares=0,
                 average_watch_time_seconds=0,
                 skip_rate=0,
             )
@@ -292,7 +345,8 @@ class MoneyballTopRankingTests(unittest.TestCase):
                 ["tie-a", "tie-b", "tie-c"],
             )
             self.assertTrue(
-                    all(row["value"] == 0 for row in ranking_rows(first, metric))
+                    all(row["value"] == {"reach": 100, "views_per_reached_account": 1}.get(metric, 0)
+                        for row in ranking_rows(first, metric))
             )
         self.assertEqual(
             [row["media_id"] for row in aggregate_rows(first)],
@@ -303,10 +357,11 @@ class MoneyballTopRankingTests(unittest.TestCase):
         posts = [
             make_ranking_post(
                 f"aggregate-{index:02d}",
-                reach=100,
+                reach=100 + index,
                 views=100 + index * 25,
                 interactions=index * 2,
                 saves=index,
+                shares=index * 3,
                 average_watch_time_seconds=2 + index,
                 duration_seconds=20,
                 skip_rate=80 - index * 4,
@@ -394,6 +449,7 @@ class MoneyballTopRankingTests(unittest.TestCase):
     def test_facebook_does_not_fabricate_reach_rankings_from_view_fallbacks(self):
         facebook_post = make_ranking_post(
             "facebook-view-only",
+            shares=None,
             reach=None,
             views=10_000,
             interactions=100,
@@ -421,10 +477,11 @@ class MoneyballTopRankingTests(unittest.TestCase):
         posts = [
             make_ranking_post(
                 f"linked-{index:02d}",
-                reach=100,
+                reach=100 + index,
                 views=100 + index * 10,
                 interactions=index,
                 saves=index,
+                shares=index * 3,
                 average_watch_time_seconds=index + 1,
                 duration_seconds=20,
                 skip_rate=50 - index,
@@ -513,6 +570,7 @@ class MoneyballTopRankingTests(unittest.TestCase):
             [
                 make_ranking_post(
                     "views-only",
+                    shares=None,
                     reach=None,
                     views=10_000,
                     interactions=None,

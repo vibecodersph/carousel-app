@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import moneyball_analytics as moneyball
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT / "config" / "reel_candidate_evaluator.json"
@@ -35,6 +37,7 @@ TIER_PRIORITY = {
     "CROSS_FAMILY_REFERENCE": 1,
     "INTENT_ACTION_SPECIALIST": 2,
     "ATTENTION_REPLAY_SPECIALIST": 2,
+    "DISTRIBUTION_SPECIALIST": 2,
 }
 
 STOPWORDS = frozenset(
@@ -700,13 +703,8 @@ def metric_summary(winner: Mapping[str, Any]) -> dict[str, Any]:
     evidence = _mapping(winner.get("winner_evidence"))
     metrics = _mapping(evidence.get("all_metrics_at_window"))
     result: dict[str, Any] = {}
-    for key in (
-        "total_interactions_per_reach",
-        "watch_depth",
-        "three_second_skip_rate",
-        "saves_per_1000_reach",
-        "views_per_reached_account",
-    ):
+    for specification in moneyball.PERFORMANCE_RANKING_METRICS:
+        key = str(specification["key"])
         metric = _mapping(metrics.get(key))
         result[key] = {
             "value": _number(metric.get("value")),
@@ -1225,22 +1223,14 @@ def analogue_lane(analogues: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     ]
     for analogue in eligible:
         counts.update(_sequence(analogue.get("signal_families")))
-    intent = counts.get("intent_action", 0)
-    attention = counts.get("attention_replay", 0)
-    if not intent and not attention:
-        lane = "UNESTABLISHED"
-    elif intent == attention:
-        lane = "MIXED"
-    elif intent > attention:
-        lane = "INTENT_ACTION"
-    else:
-        lane = "ATTENTION_REPLAY"
+    family_counts = {key: counts.get(key, 0)
+                     for key in ("intent_action", "attention_replay", "distribution")}
+    maximum = max(family_counts.values())
+    strongest = [key for key, count in family_counts.items() if count == maximum]
+    lane = "UNESTABLISHED" if not maximum else "MIXED" if len(strongest) > 1 else strongest[0].upper()
     return {
         "recommended_lane": lane,
-        "analogue_family_counts": {
-            "intent_action": intent,
-            "attention_replay": attention,
-        },
+        "analogue_family_counts": family_counts,
         "warning": (
             "This is the dominant family among retrieved measured analogues; "
             "it is not a prediction and should be confirmed before testing."
@@ -2285,14 +2275,14 @@ def _metric_display(key: str, value: Any) -> str:
     number = _number(value)
     if number is None:
         return "Unavailable"
-    if key in {"total_interactions_per_reach", "watch_depth"}:
-        return f"{number * 100:.1f}%"
+    if key in {"saves_per_reach", "shares_per_view"}:
+        return moneyball._format_ranking_value(number, "percent_ratio")
     if key == "three_second_skip_rate":
         return f"{number:.1f}%"
-    if key == "saves_per_1000_reach":
-        return f"{number:.1f}/1k"
     if key == "views_per_reached_account":
         return f"{number:.2f}×"
+    if key == "reach":
+        return f"{number:,.0f}"
     return f"{number:.2f}"
 
 
@@ -2301,21 +2291,12 @@ def _metric_evidence_text(key: str, metric_value: Any) -> str:
     value = metric.get("value")
     support = _mapping(metric.get("supporting_metrics"))
     display = _metric_display(key, value)
-    if key == "total_interactions_per_reach":
+    if key == "shares_per_view":
         raw = (
-            f"{_format_number(support.get('interactions'), 0)}/"
-            f"{_format_number(support.get('reach'), 0)} reach"
-            if _number(support.get("interactions")) is not None
-            and _number(support.get("reach")) is not None
-            else ""
-        )
-    elif key == "watch_depth":
-        raw = (
-            f"{_format_number(support.get('average_watch_time_seconds'), 1)}s/"
-            f"{_format_number(support.get('duration_seconds'), 1)}s"
-            if _number(support.get("average_watch_time_seconds")) is not None
-            and _number(support.get("duration_seconds")) is not None
-            else ""
+            f"{_format_number(support.get('shares'), 0)}/"
+            f"{_format_number(support.get('views'), 0)} views"
+            if _number(support.get("shares")) is not None
+            and _number(support.get("views")) is not None else ""
         )
     elif key == "three_second_skip_rate":
         raw = (
@@ -2323,7 +2304,7 @@ def _metric_evidence_text(key: str, metric_value: Any) -> str:
             if _number(support.get("reels_skip_rate")) is not None
             else ""
         )
-    elif key == "saves_per_1000_reach":
+    elif key == "saves_per_reach":
         raw = (
             f"{_format_number(support.get('saves'), 0)}/"
             f"{_format_number(support.get('reach'), 0)} reach"
@@ -2703,13 +2684,9 @@ def render_candidate_evaluation_markdown(report: Mapping[str, Any]) -> str:
                     )
                 )
                 metric_text = "; ".join(
-                    [
-                        f"interactions {_metric_evidence_text('total_interactions_per_reach', metrics.get('total_interactions_per_reach'))}",
-                        f"watch {_metric_evidence_text('watch_depth', metrics.get('watch_depth'))}",
-                        f"skip {_metric_evidence_text('three_second_skip_rate', metrics.get('three_second_skip_rate'))}",
-                        f"saves {_metric_evidence_text('saves_per_1000_reach', metrics.get('saves_per_1000_reach'))}",
-                        f"views/reach {_metric_evidence_text('views_per_reached_account', metrics.get('views_per_reached_account'))}",
-                    ]
+                    f"{specification['short_label']} "
+                    f"{_metric_evidence_text(specification['key'], metrics.get(specification['key']))}"
+                    for specification in moneyball.PERFORMANCE_RANKING_METRICS
                 )
                 link = (
                     f"[{_escape_cell(analogue.get('published_hook'))}]"

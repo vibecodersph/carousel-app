@@ -77,7 +77,9 @@
     "limit": 10,
     "strong_point_percentile_min": 75.0,
     "require_all_aggregate_metrics": true,
-    "aggregate_method": "unweighted_mean_directional_percentile"
+    "aggregate_method": "unweighted_mean_directional_percentile",
+    "selected_metrics": ["three_second_skip_rate", "views_per_reached_account", "saves_per_reach", "shares_per_view", "reach"],
+    "ranking_note": "Five equal-weight directional percentiles: low skip, looping, saves/reach, shares/views, raw reach. Watch depth and total interactions remain contextual diagnostics."
   },
   "classifications": {
     "hidden_gem": {

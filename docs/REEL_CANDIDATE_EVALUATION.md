@@ -173,21 +173,26 @@ not trusted to generate those facts.
 
 All of these are experiment recommendations, not performance predictions.
 
-## Six comparisons, two evidence families
+## Six comparisons, three evidence families
 
 Every completed candidate has a separate comparison for:
 
-1. total interactions / reach;
-2. watch depth;
-3. 3-second skip rate;
-4. saves / 1,000 reach;
-5. views / reached account;
+1. 3-second skip rate (lower is stronger);
+2. looping: views / reached account;
+3. save rate: saves / reach;
+4. share ratio: shares / views;
+5. raw reach;
 6. balanced aggregate Top 10.
 
-Watch depth, skip rate, and views/reached form the related
-`ATTENTION_REPLAY` family. Interactions/reach and saves/reach form the related
-`INTENT_ACTION` family. Aggregate membership is correlated summary evidence,
-not a third family or a sixth vote.
+Skip rate and looping form the related `ATTENTION_REPLAY` family. Save rate
+and share ratio form the `INTENT_ACTION` family; their reach and views
+denominators remain explicit. Raw reach is the `DISTRIBUTION` family. The
+aggregate equally weights the five directional percentiles. Aggregate
+membership is correlated summary evidence, not another family or vote.
+
+Watch depth, total interactions, and absolute views remain supporting context
+and do not determine these rankings. Manually supplied follows / viewers have
+a separate descriptive leaderboard and do not enter candidate ranking scores.
 
 ## Empty-folder false-negative audit
 

@@ -224,6 +224,23 @@ def make_series_account_baseline():
 
 
 class MoneyballMathTests(unittest.TestCase):
+    def test_selected_save_and_share_rates_have_exact_valid_denominators(self):
+        values = moneyball.compute_post_metrics({"reach": 100, "views": 400, "saves": 10, "shares": 20}, {})
+        self.assertEqual(values["saves_per_reach"], 0.1)
+        self.assertEqual(values["shares_per_view"], 0.05)
+        # Existing per-1,000 diagnostics retain their separate semantics.
+        self.assertEqual(values["saves_per_1000_reach"], 100)
+        self.assertEqual(values["shares_per_1000_reach"], 200)
+        for metric, action, denominator in (("saves_per_reach", "saves", "reach"),
+                                            ("shares_per_view", "shares", "views")):
+            for invalid in (None, 0, -1, math.nan, math.inf, True):
+                with self.subTest(metric=metric, denominator=invalid):
+                    self.assertIsNone(moneyball.compute_post_metrics({action: 5, denominator: invalid}, {})[metric])
+            for invalid in (None, -1, math.nan, math.inf, True):
+                with self.subTest(metric=metric, numerator=invalid):
+                    self.assertIsNone(moneyball.compute_post_metrics({action: invalid, denominator: 100}, {})[metric])
+            self.assertEqual(moneyball.compute_post_metrics({action: 0, denominator: 100}, {})[metric], 0)
+
     def test_safe_divide_rejects_missing_zero_negative_nonfinite_and_bool(self):
         self.assertEqual(moneyball.safe_divide(9, 3), 3.0)
         for numerator, denominator in (

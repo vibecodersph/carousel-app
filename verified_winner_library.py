@@ -24,30 +24,23 @@ import moneyball_analytics as moneyball
 SCHEMA_VERSION = 1
 PLATFORM = "instagram"
 SIGNAL_FAMILIES = {
-    "intent_action": {
-        "label": "Intent / action",
-        "metrics": [
-            "total_interactions_per_reach",
-            "saves_per_1000_reach",
-        ],
-        "boundary": (
-            "Meta total_interactions includes saves, so these two rankings are "
-            "correlated and count as one evidence family."
-        ),
-    },
     "attention_replay": {
         "label": "Attention / replay",
-        "metrics": [
-            "watch_depth",
-            "three_second_skip_rate",
-            "views_per_reached_account",
-        ],
-        "boundary": (
-            "Watch depth, three-second skip, and views/reached are related "
-            "attention signals; watch depth also remains duration-sensitive."
-        ),
+        "metrics": ["three_second_skip_rate", "views_per_reached_account"],
+        "boundary": "Early skipping and looping are related attention signals; looping is views/reach, not a direct completed-loop count.",
+    },
+    "intent_action": {
+        "label": "Intent / action",
+        "metrics": ["saves_per_reach", "shares_per_view"],
+        "boundary": "Save rate uses reach; share rate uses views. Keep both exact denominators visible.",
+    },
+    "distribution": {
+        "label": "Distribution",
+        "metrics": ["reach"],
+        "boundary": "Raw reach measures distribution scale and remains distinct from action rates.",
     },
 }
+
 METRIC_TO_FAMILY = {
     metric: family
     for family, definition in SIGNAL_FAMILIES.items()
@@ -337,56 +330,17 @@ def _localized_hook_options(one_liners: Mapping[str, Any]) -> list[str]:
 def _metric_value(
     metric_key: str, observation: Mapping[str, Any]
 ) -> float | None:
-    raw = _mapping(observation.get("raw_metrics"))
-    derived = _mapping(observation.get("derived_metrics"))
-    if metric_key == "total_interactions_per_reach":
-        return _finite_number(derived.get("engagement_rate_by_reach"))
-    if metric_key == "watch_depth":
-        return _finite_number(derived.get("watch_depth"))
-    if metric_key == "three_second_skip_rate":
-        return _finite_number(raw.get("reels_skip_rate"))
-    if metric_key == "saves_per_1000_reach":
-        return _finite_number(derived.get("saves_per_1000_reach"))
-    if metric_key == "views_per_reached_account":
-        return _finite_number(derived.get("views_per_reached_account"))
-    return None
+    source_metric = next(
+        (item["metric"] for item in moneyball.PERFORMANCE_RANKING_METRICS if item["key"] == metric_key),
+        {"total_interactions_per_reach": "engagement_rate_by_reach"}.get(metric_key, metric_key),
+    )
+    return _finite_number(moneyball.metric_value(observation, source_metric))
 
 
 def _supporting_metrics(
     metric_key: str, observation: Mapping[str, Any]
 ) -> dict[str, Any]:
-    raw = _mapping(observation.get("raw_metrics"))
-    derived = _mapping(observation.get("derived_metrics"))
-    if metric_key == "total_interactions_per_reach":
-        return {
-            "interactions": _finite_number(raw.get("interactions")),
-            "reach": _finite_number(raw.get("reach")),
-            "denominator_type": "reach",
-        }
-    if metric_key == "watch_depth":
-        return {
-            "average_watch_time_seconds": _finite_number(
-                derived.get("average_watch_time_seconds")
-            ),
-            "duration_seconds": _finite_number(raw.get("duration_seconds")),
-        }
-    if metric_key == "three_second_skip_rate":
-        return {
-            "reels_skip_rate": _finite_number(raw.get("reels_skip_rate")),
-        }
-    if metric_key == "saves_per_1000_reach":
-        return {
-            "saves": _finite_number(raw.get("saves")),
-            "reach": _finite_number(raw.get("reach")),
-            "denominator_type": "reach",
-        }
-    if metric_key == "views_per_reached_account":
-        return {
-            "views": _finite_number(raw.get("views")),
-            "reach": _finite_number(raw.get("reach")),
-            "denominator_type": "reach",
-        }
-    return {}
+    return moneyball._ranking_supporting_metrics(observation, metric_key)
 
 
 def _metric_definitions(
@@ -421,6 +375,8 @@ def _winner_tier(
         return "INTENT_ACTION_SPECIALIST"
     if family_set == {"attention_replay"}:
         return "ATTENTION_REPLAY_SPECIALIST"
+    if family_set == {"distribution"}:
+        return "DISTRIBUTION_SPECIALIST"
     return "MEASURED_REFERENCE"
 
 
@@ -442,22 +398,26 @@ def _candidate_protocol() -> dict[str, Any]:
             {
                 "id": "ATTENTION_REPLAY_HYPOTHESIS",
                 "description": (
-                    "Candidate is designed to reduce early skipping, hold watch "
-                    "depth, or invite replay."
+                    "Candidate is designed to reduce early skipping or invite replay."
                 ),
             },
             {
                 "id": "INTENT_ACTION_HYPOTHESIS",
                 "description": (
-                    "Candidate is designed to earn saves or other measured "
-                    "interactions per reached account."
+                    "Candidate is designed to earn saves per reached account or "
+                    "shares per view."
                 ),
+            },
+            {
+                "id": "DISTRIBUTION_HYPOTHESIS",
+                "description": "Candidate tests traits associated with broader raw reach at the same maturity window.",
             },
             {
                 "id": "BALANCED_HYPOTHESIS",
                 "description": (
                     "Candidate intentionally combines attention and useful-action "
-                    "traits seen across both evidence families."
+                    "traits seen across the selected evidence families, with raw "
+                    "reach assessed as distribution."
                 ),
             },
             {
@@ -499,7 +459,7 @@ def _candidate_protocol() -> dict[str, Any]:
         "prohibited_claims": [
             "Do not say a matching hook will cause performance.",
             "Do not treat aggregate membership as a sixth independent vote.",
-            "Do not call a candidate a follower-growth winner; media-level follows are unavailable.",
+            "Do not call a candidate a follower-growth winner from this library; API fixed-window media-level follows are unavailable.",
             "Do not compare later outcomes at different maturity windows.",
         ],
     }
@@ -695,20 +655,16 @@ def build_winner_library(
         membership_keys = {
             _text(row.get("leaderboard")) for row in selection["memberships"]
         }
-        interactions = _finite_number(raw.get("interactions"))
-        if (
-            "total_interactions_per_reach" in membership_keys
-            and interactions is not None
-            and interactions < 5
+        for metric_key, action, flag in (
+            ("saves_per_reach", "saves", "LOW_SAVE_COUNT"),
+            ("shares_per_view", "shares", "LOW_SHARE_COUNT"),
         ):
-            flags.append("LOW_INTERACTION_COUNT")
-        saves = _finite_number(raw.get("saves"))
-        if (
-            "saves_per_1000_reach" in membership_keys
-            and saves is not None
-            and saves < 5
-        ):
-            flags.append("LOW_SAVE_COUNT")
+            count = _finite_number(raw.get(action))
+            if metric_key in membership_keys and count is not None and count < 5:
+                flags.append(flag)
+        views = _finite_number(raw.get("views"))
+        if "shares_per_view" in membership_keys and views is not None and views < 100:
+            flags.append("LOW_BASE_VIEWS")
         if transcript_confidence == "medium":
             flags.append("TRANSCRIPT_MEDIUM_CONFIDENCE")
         if not japanese_segments:
@@ -818,6 +774,11 @@ def build_winner_library(
                     "signal_families": families,
                     "independent_family_count": len(families),
                     "all_metrics_at_window": all_metrics,
+                    "supporting_diagnostics_at_window": {
+                        key: {"value": _metric_value(key, observation),
+                              "supporting_metrics": _supporting_metrics(key, observation)}
+                        for key in ("watch_depth", "total_interactions_per_reach", "saves_per_1000_reach")
+                    },
                 },
                 "asset_provenance": {
                     "clip_resolution": resolution,
@@ -975,6 +936,8 @@ def _format_metric(metric_key: str, value: Any) -> str:
     number = _finite_number(value)
     if number is None:
         return "Unavailable"
+    if metric_key in {"saves_per_reach", "shares_per_view"}:
+        return moneyball._format_ranking_value(number, "percent_ratio")
     if metric_key in {"total_interactions_per_reach", "watch_depth"}:
         return f"{number * 100:.1f}%"
     if metric_key == "three_second_skip_rate":
@@ -983,6 +946,8 @@ def _format_metric(metric_key: str, value: Any) -> str:
         return f"{number:.1f}/1k"
     if metric_key == "views_per_reached_account":
         return f"{number:.2f}×"
+    if metric_key == "reach":
+        return f"{number:,.0f}"
     return f"{number:.3f}"
 
 
@@ -1039,13 +1004,14 @@ def render_winner_library_markdown(library: Mapping[str, Any]) -> str:
             f"{_mapping(coverage.get('published_hooks')).get('total', 0)}**."
         ),
         (
-            "- `total_interactions` includes saves, so interaction rate and save "
-            "rate are one intent/action family—not independent votes."
+            "- Save rate (saves/reach) and share rate (shares/views) form the "
+            "intent/action family; their denominators remain explicit."
         ),
         (
-            "- Watch depth, three-second skip, and views/reached are one related "
-            "attention/replay family. Aggregate membership is a summary, not a "
-            "sixth independent result."
+            "- Three-second skip and looping form the attention/replay family; "
+            "raw reach is the distribution family. The aggregate summarizes all "
+            "five metrics with equal weight. Watch depth and total interactions "
+            "remain supporting diagnostics."
         ),
         "",
         "## Winner index",
@@ -1081,7 +1047,7 @@ def render_winner_library_markdown(library: Mapping[str, Any]) -> str:
         snapshot = "; ".join(
             [
                 f"Reach {reach:g}" if reach is not None else "Reach Unavailable",
-                f"Watch {_format_metric('watch_depth', _mapping(all_metrics.get('watch_depth')).get('value'))}",
+                f"Looping {_format_metric('views_per_reached_account', _mapping(all_metrics.get('views_per_reached_account')).get('value'))}",
                 f"Skip {_format_metric('three_second_skip_rate', _mapping(all_metrics.get('three_second_skip_rate')).get('value'))}",
             ]
         )
@@ -1224,6 +1190,15 @@ def render_winner_library_markdown(library: Mapping[str, Any]) -> str:
                 f"{_format_metric(key, value.get('value'))} "
                 f"({_md(_raw_support_text(_mapping(value.get('supporting_metrics'))))})"
             )
+
+        diagnostics = _mapping(evidence.get("supporting_diagnostics_at_window"))
+        if diagnostics:
+            lines.extend(["", "Supporting diagnostics (excluded from ranking weights):", ""])
+            for key, label in (("watch_depth", "Watch depth"),
+                               ("total_interactions_per_reach", "Total interactions / reach"),
+                               ("saves_per_1000_reach", "Saves / 1,000 reach")):
+                value = _mapping(diagnostics.get(key))
+                lines.append(f"- **{label}:** {_format_metric(key, value.get('value'))}")
 
         opening = [_text(value) for value in _list(
             content.get("opening_japanese_script")

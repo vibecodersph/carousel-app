@@ -35,39 +35,11 @@ from fetch_tweet_data import load_env_file
 
 ROOT = Path(__file__).resolve().parent
 SCHEMA_VERSION = 1
-PROMPT_VERSION = "moneyball-semantic-v2-primary-hook-only"
+PROMPT_VERSION = "moneyball-semantic-v3-selected-five-primary-hook-only"
 
-CATEGORIES = (
-    "total_interactions_per_reach",
-    "watch_depth",
-    "three_second_skip_rate",
-    "saves_per_1000_reach",
-    "views_per_reached_account",
-    "aggregate_top_10",
-)
+CATEGORIES = tuple(item["key"] for item in moneyball.PERFORMANCE_RANKING_METRICS) + ("aggregate_top_10",)
 
 CATEGORY_DETAILS: dict[str, dict[str, str]] = {
-    "total_interactions_per_reach": {
-        "label": "Total interactions / reach",
-        "signal_family": "INTENT_ACTION",
-        "question": (
-            "Does the content create a concrete reason to react, discuss, "
-            "share, save, or otherwise interact?"
-        ),
-        "caveat": (
-            "Meta total_interactions includes correlated components such as "
-            "saves; it is not a pure high-intent measure."
-        ),
-    },
-    "watch_depth": {
-        "label": "Watch depth",
-        "signal_family": "ATTENTION_REPLAY",
-        "question": (
-            "Does the script sustain progression, escalate evidence, and "
-            "deliver the promised payoff without dead setup?"
-        ),
-        "caveat": "Duration materially affects watch depth.",
-    },
     "three_second_skip_rate": {
         "label": "3-second skip rate",
         "signal_family": "ATTENTION_REPLAY",
@@ -80,8 +52,8 @@ CATEGORY_DETAILS: dict[str, dict[str, str]] = {
             "Lower measured values are stronger."
         ),
     },
-    "saves_per_1000_reach": {
-        "label": "Saves / 1,000 reach",
+    "saves_per_reach": {
+        "label": "Saves / reach",
         "signal_family": "INTENT_ACTION",
         "question": (
             "Does the segment provide durable reference value: a method, "
@@ -93,7 +65,7 @@ CATEGORY_DETAILS: dict[str, dict[str, str]] = {
         ),
     },
     "views_per_reached_account": {
-        "label": "Views / reached account",
+        "label": "Looping",
         "signal_family": "ATTENTION_REPLAY",
         "question": (
             "Is there a credible replay trigger such as density, a visual "
@@ -103,6 +75,18 @@ CATEGORY_DETAILS: dict[str, dict[str, str]] = {
             "Views per reached account can be consistent with replay but does "
             "not prove that an individual viewer rewatched."
         ),
+    },
+    "shares_per_view": {
+        "label": "Shares / views",
+        "signal_family": "INTENT_ACTION",
+        "question": "Does the segment offer a specific useful, surprising, or socially relevant point worth sharing?",
+        "caveat": "Use measured shares divided by views even when reach is present; a share CTA alone is not evidence of value.",
+    },
+    "reach": {
+        "label": "Raw reach",
+        "signal_family": "DISTRIBUTION",
+        "question": "Does the content have a specific credible reason to reach a broader relevant audience, beyond a narrow existing niche?",
+        "caveat": "Observed raw reach measures distribution scale at the fixed window; it does not establish a causal mechanism or predict future reach.",
     },
     "aggregate_top_10": {
         "label": "Balanced aggregate Top 10",
@@ -178,11 +162,11 @@ class BlindAnalogue(StrictModel):
 
 class BlindCategoryComparison(StrictModel):
     category: Literal[
-        "total_interactions_per_reach",
-        "watch_depth",
         "three_second_skip_rate",
-        "saves_per_1000_reach",
         "views_per_reached_account",
+        "saves_per_reach",
+        "shares_per_view",
+        "reach",
         "aggregate_top_10",
     ]
     fit_hypothesis: Literal[
@@ -209,11 +193,11 @@ class BlindSemanticReview(StrictModel):
 
 class EvidenceInterpretation(StrictModel):
     category: Literal[
-        "total_interactions_per_reach",
-        "watch_depth",
         "three_second_skip_rate",
-        "saves_per_1000_reach",
         "views_per_reached_account",
+        "saves_per_reach",
+        "shares_per_view",
+        "reach",
         "aggregate_top_10",
     ]
     fit_after_metrics: Literal[
@@ -242,16 +226,16 @@ class VerifierAudit(StrictModel):
 class CrossCategorySynthesis(StrictModel):
     credible_categories: list[
         Literal[
-            "total_interactions_per_reach",
-            "watch_depth",
             "three_second_skip_rate",
-            "saves_per_1000_reach",
             "views_per_reached_account",
+            "saves_per_reach",
+            "shares_per_view",
+            "reach",
             "aggregate_top_10",
         ]
     ]
     independent_signal_families_supported: list[
-        Literal["ATTENTION_REPLAY", "INTENT_ACTION"]
+        Literal["ATTENTION_REPLAY", "INTENT_ACTION", "DISTRIBUTION"]
     ]
     strongest_mechanisms: list[str]
     important_differences_from_winners: list[str]
@@ -315,11 +299,11 @@ class FalseNegativeScreenItem(StrictModel):
     deep_review_rank: int | None = Field(ge=1, le=5)
     strongest_category_hypotheses: list[
         Literal[
-            "total_interactions_per_reach",
-            "watch_depth",
             "three_second_skip_rate",
-            "saves_per_1000_reach",
             "views_per_reached_account",
+            "saves_per_reach",
+            "shares_per_view",
+            "reach",
             "aggregate_top_10",
         ]
     ]
@@ -368,12 +352,12 @@ def _now_iso() -> str:
 def _format_metric(category: str, value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "unavailable"
-    if category in {"total_interactions_per_reach", "watch_depth"}:
-        return f"{value * 100:.2f}%"
+    if category in {"saves_per_reach", "shares_per_view"}:
+        return moneyball._format_ranking_value(value, "percent_ratio")
     if category == "three_second_skip_rate":
         return f"{value:.2f}%"
-    if category == "saves_per_1000_reach":
-        return f"{value:.2f}"
+    if category == "reach":
+        return f"{value:,.0f}"
     if category == "views_per_reached_account":
         return f"{value:.3f}×"
     if category == "aggregate_top_10":
@@ -956,7 +940,7 @@ Success criteria:
 
 Decision rules:
 - ADVANCE: central claims are supported, payoff is delivered, and evidence spans
-  both independent signal families or multiple distinct-source close analogues
+  multiple signal families or multiple distinct-source close analogues
 - ADVANCE_AS_TRIAL: the idea is strong and supported, but evidence is thin,
   single-family, novel, or materially different in duration/delivery
 - REVISE: valuable material exists, but the hook overclaims, context arrives too
@@ -968,9 +952,10 @@ Decision rules:
 Constraints:
 - Do not add new analogue IDs after metrics are revealed.
 - Exact metrics are observational evidence, not causal proof or prediction.
-- ATTENTION_REPLAY contains watch depth, 3s skip, and views/reached.
-- INTENT_ACTION contains interactions/reach and saves/reach.
-- Aggregate Top 10 is not a third family or a sixth vote.
+- ATTENTION_REPLAY contains 3s skip and looping (views/reach).
+- INTENT_ACTION contains saves/reach and shares/views; retain the exact denominators.
+- DISTRIBUTION contains raw reach.
+- Aggregate Top 10 is a summary of the five equal-weight metrics, not a fourth family or a sixth vote.
 - Confidence means confidence in editorial interpretation only.
 - Do not invent a candidate metric, expected lift, or winning probability.
 """
@@ -1505,7 +1490,7 @@ def _analogue_independence(
     independent_media = unique_media - same_source_media
     family_rows: dict[str, Any] = {}
     same_source_only_families: list[str] = []
-    for family in ("ATTENTION_REPLAY", "INTENT_ACTION"):
+    for family in ("ATTENTION_REPLAY", "INTENT_ACTION", "DISTRIBUTION"):
         rows = [
             row
             for row in placements
@@ -1598,7 +1583,7 @@ def _sanitize_metric_language(value: Any) -> str:
     )
     text = re.sub(
         r"\bwill maximize skip rate and watch depth potential\b",
-        "is intended to reduce 3-second skip rate while preserving watch depth",
+        "is intended to reduce 3-second skip rate",
         text,
         flags=re.IGNORECASE,
     )
@@ -2610,15 +2595,9 @@ def build_llm_candidate_evaluation(
                 "automatic schedule mutation",
             ],
             "signal_families": {
-                "ATTENTION_REPLAY": [
-                    "watch_depth",
-                    "three_second_skip_rate",
-                    "views_per_reached_account",
-                ],
-                "INTENT_ACTION": [
-                    "total_interactions_per_reach",
-                    "saves_per_1000_reach",
-                ],
+                "ATTENTION_REPLAY": ["three_second_skip_rate", "views_per_reached_account"],
+                "INTENT_ACTION": ["saves_per_reach", "shares_per_view"],
+                "DISTRIBUTION": ["reach"],
                 "aggregate_top_10": (
                     "correlated summary; never counted as an independent family"
                 ),
@@ -2952,7 +2931,7 @@ def render_llm_candidate_evaluation_markdown(
         "analogues and challenges the proposed match before assigning a "
         "decision.",
         "",
-        "The five metrics represent two related evidence families. The balanced "
+        "The five metrics represent attention/replay, intent/action, and distribution. The balanced "
         "aggregate is a summary, not a sixth independent vote. These are "
         "editorial test recommendations, not performance predictions.",
         "",

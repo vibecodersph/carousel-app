@@ -1,3 +1,4 @@
+import copy
 import csv
 import io
 import json
@@ -35,6 +36,11 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
             self.root / "out" / "reel_report.moneyball.facebook.csv"
         )
         self.audit_out = self.root / "out" / "moneyball_data_audit.md"
+        self.records_markdown_out = self.json_out.with_name("reel_report.moneyball.records.md")
+        self.records_json_out = self.json_out.with_name("reel_report.moneyball.records.json")
+        self.history_out = self.json_out.with_name("reel_report.moneyball.records.history.json")
+        self.manual_json_out = self.json_out.with_name("reel_report.moneyball.manual_follows.json")
+        self.manual_markdown_out = self.json_out.with_name("reel_report.moneyball.manual_follows.md")
 
         self.config.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "config" / "moneyball_analytics.json", self.config)
@@ -267,6 +273,11 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
             self.winner_json_out,
             self.csv_out,
             self.audit_out,
+            self.records_markdown_out,
+            self.records_json_out,
+            self.history_out,
+            self.manual_json_out,
+            self.manual_markdown_out,
         )
         for path in output_paths:
             with self.subTest(path=path.name):
@@ -278,6 +289,18 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
             self.winner_json_out.read_text(encoding="utf-8")
         )
         html_output = self.html_out.read_text(encoding="utf-8")
+        self.assertIn('id="instagram-account-records"', html_output)
+        records = json.loads(self.records_json_out.read_text(encoding="utf-8"))
+        self.assertEqual(records, report["account_records"])
+        self.assertEqual(records["status"], "BASELINE_ESTABLISHED")
+        historical = records["windows"]["24h"]["metric_rankings"]["reach"]
+        self.assertEqual([row["media_id"] for row in historical["rows"]], ["m-full"])
+        self.assertEqual(set(records["lifetime"]["metric_rankings"]), {"reach"})
+        lifetime_leader = records["lifetime"]["metric_rankings"]["reach"]["rows"][0]
+        self.assertEqual(lifetime_leader["media_id"], "m-late")
+        self.assertEqual(lifetime_leader["raw_metrics"]["views"], 900)
+        history = json.loads(self.history_out.read_text(encoding="utf-8"))
+        self.assertIn("m-full", history["winner_archive"])
         self.assertIn('data-testid="moneyball-dashboard"', html_output)
         self.assertIn('id="account-growth-kpis"', html_output)
         self.assertIn('id="attribution-warning"', html_output)
@@ -376,6 +399,109 @@ class RunMoneyballAnalyticsIntegrationTests(unittest.TestCase):
             with self.subTest(finite_output=path.name):
                 self.assertNotIn("NaN", text)
                 self.assertNotIn("Infinity", text)
+
+    def test_invalid_record_history_preserves_existing_outputs(self) -> None:
+        self._run()
+        before = self.json_out.read_bytes()
+        self.history_out.write_text("{broken", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Cannot safely read"):
+            self._run()
+        self.assertEqual(self.json_out.read_bytes(), before)
+        self.assertEqual(self.history_out.read_text(), "{broken")
+
+    def test_manual_follows_do_not_change_automatic_rankings_or_records(self) -> None:
+        self._run()
+        first = json.loads(self.json_out.read_text())
+        manual_path = self.annotations.parent / "aibrief_jp_manual_follow_conversion.json"
+        manual_path.write_text(json.dumps({
+            "schema_version": 1, "account": "aibrief_jp", "platform": "instagram",
+            "observations": [{
+                "creative_id": "manual", "creative": "Manual example",
+                "recorded_at": "2026-07-20", "observed_at": None,
+                "viewers": 1000, "follows": 900, "attribution_scope": "post_level",
+                "boost_status": "UNVERIFIED", "user_reported_rate_percent": "90",
+            }],
+        }), encoding="utf-8")
+        self._run()
+        updated = json.loads(self.json_out.read_text())
+        self.assertEqual(updated["performance_rankings"], first["performance_rankings"])
+        self.assertEqual(updated["account_records"], first["account_records"])
+        self.assertEqual(updated["manual_follow_conversion"]["rows"][0]["calculated_rate_percent"], 90)
+        self.assertIn('id="manual-follow-conversion"', self.html_out.read_text())
+        self.assertEqual(updated["manual_follow_conversion"], json.loads(self.manual_json_out.read_text()))
+
+    def test_manual_observations_join_actual_media_id_without_changing_api_or_record_history(self) -> None:
+        media_id = "12345678901234567"
+        permalink = "https://www.instagram.com/reel/ActualPublishedReel/"
+        with reel_ledger.connect(self.db) as connection:
+            connection.execute("UPDATE reels SET media_id=?, permalink=? WHERE media_id='m-full'", (media_id, permalink))
+            connection.execute("UPDATE insights SET media_id=? WHERE media_id='m-full'", (media_id,))
+        self._run()
+        baseline = json.loads(self.json_out.read_text())
+        history_before = self.history_out.read_bytes()
+        first = {
+            "creative_id": "unrelated-user-alias", "creative": "A title hint different from the ledger",
+            "recorded_at": "2026-07-18", "observed_at": None,
+            "viewers": 100, "follows": 10, "watch_seconds": None,
+            "attribution_scope": "post_level", "boost_status": "UNKNOWN",
+            "identity_status": "MATCHED", "media_id": media_id, "permalink": permalink,
+            "user_reported_rate_percent": "10.0",
+        }
+        latest = first | {"recorded_at": "2026-07-20", "viewers": "~1500", "follows": "≤950", "user_reported_rate_percent": "63.3"}
+        other_alias = first | {"creative_id": "second-alias", "creative": "Another supplied name"}
+        missing = first | {"creative_id": "future-post", "media_id": "99999999999999999",
+                           "permalink": "https://www.instagram.com/reel/FutureReel/"}
+        observations = [first, latest, other_alias, missing]
+        source = {"schema_version": 1, "account": "aibrief_jp", "platform": "instagram", "observations": observations}
+        manual_path = self.annotations.parent / "aibrief_jp_manual_follow_conversion.json"
+        manual_path.write_text(json.dumps(source), encoding="utf-8")
+        source_bytes = manual_path.read_bytes()
+        self._run()
+        updated = json.loads(self.json_out.read_text())
+        by_id = {post["identity"]["media_id"]: post for post in updated["posts"]}
+        attached = by_id[media_id]["manual_follow_conversion"]
+        self.assertEqual(attached["join_key"], "identity.media_id")
+        self.assertEqual(attached["observations"], observations[:3])
+        self.assertEqual(len(attached["latest_rows"]), 2)
+        supplied_latest = next(row for row in attached["latest_rows"] if row["creative_id"] == "unrelated-user-alias")
+        for key, value in latest.items():
+            self.assertEqual(supplied_latest[key], value)
+        self.assertNotIn("manual_follow_conversion", by_id["m-late"])
+        self.assertEqual(updated["manual_follow_conversion"]["observations"], observations)
+        self.assertEqual(updated["manual_follow_conversion"]["linkage"], {
+            "join_key": "identity.media_id", "linked_post_count": 1,
+            "linked_observation_count": 3, "linked_latest_row_count": 2,
+            "unmatched_observation_count": 1,
+            "unmatched_observations": [{"creative_id": "future-post", "media_id": "99999999999999999", "reason": "MEDIA_ID_NOT_IN_REPORT"}],
+        })
+        self.assertEqual(updated["performance_rankings"], baseline["performance_rankings"])
+        self.assertEqual(updated["account_records"], baseline["account_records"])
+        del by_id[media_id]["manual_follow_conversion"]
+        self.assertEqual(updated["posts"], baseline["posts"])
+        self.assertEqual(self.history_out.read_bytes(), history_before)
+        self.assertEqual(manual_path.read_bytes(), source_bytes)
+
+    def test_manual_linkage_validates_identity_and_never_uses_a_title_match(self) -> None:
+        identity = {"account": "aibrief_jp", "platform": "instagram", "media_id": "123",
+                    "permalink": "https://www.instagram.com/reel/Published/", "caption": "Exact supplied title"}
+        source = {"report_metadata": {"account": "aibrief_jp"}, "posts": [{"identity": identity}]}
+        row = {"creative_id": "manual", "creative": "Exact supplied title", "media_id": "123",
+               "permalink": "https://instagram.com/reel/Published", "identity_status": "MATCHED"}
+        manual = {"account": "aibrief_jp", "platform": "instagram", "observations": [row], "rows": [row]}
+        run_moneyball_analytics.link_manual_follow_conversion(source, manual)
+        self.assertEqual(source["posts"][0]["manual_follow_conversion"]["observations"], [row])
+        for change, message in (({"permalink": "https://www.instagram.com/reel/Wrong/"}, "permalink mismatch"),
+                                ({"account": "different"}, "account/platform mismatch")):
+            report_copy = {"report_metadata": {"account": "aibrief_jp"}, "posts": [{"identity": copy.deepcopy(identity)}]}
+            bad = manual | {"observations": [row | change], "rows": []}
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
+                run_moneyball_analytics.link_manual_follow_conversion(report_copy, bad)
+            self.assertNotIn("manual_follow_conversion", report_copy["posts"][0])
+        unmatched_source = {"report_metadata": {"account": "aibrief_jp"}, "posts": [{"identity": copy.deepcopy(identity)}]}
+        unresolved = manual | {"observations": [row | {"identity_status": "UNRESOLVED", "media_id": None}], "rows": []}
+        run_moneyball_analytics.link_manual_follow_conversion(unmatched_source, unresolved)
+        self.assertNotIn("manual_follow_conversion", unmatched_source["posts"][0])
+        self.assertEqual(unresolved["linkage"]["unmatched_observations"][0]["reason"], "IDENTITY_UNRESOLVED")
 
     def test_cli_writes_a_separate_facebook_csv_without_mixing_platform_rows(self) -> None:
         self._seed_facebook_ledger()

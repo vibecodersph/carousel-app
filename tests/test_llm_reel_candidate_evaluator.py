@@ -293,6 +293,36 @@ class NonVerbatimFakeAdapter(FakeAdapter):
 
 
 class LLMReelCandidateEvaluatorTests(unittest.TestCase):
+    def test_model_schema_and_prompt_use_selected_five_plus_summary(self) -> None:
+        expected = ("three_second_skip_rate", "views_per_reached_account", "saves_per_reach",
+                    "shares_per_view", "reach", "aggregate_top_10")
+        self.assertEqual(llm_eval.CATEGORIES, expected)
+        for schema in (llm_eval.BlindCategoryComparison, llm_eval.EvidenceInterpretation):
+            self.assertEqual(tuple(schema.model_json_schema()["properties"]["category"]["enum"]), expected)
+        families = llm_eval.CrossCategorySynthesis.model_json_schema()["properties"]["independent_signal_families_supported"]["items"]["enum"]
+        self.assertIn("DISTRIBUTION", families)
+        self.assertEqual(llm_eval.CATEGORY_DETAILS["reach"]["signal_family"], "DISTRIBUTION")
+        prompt = llm_eval._pass_b_instructions()
+        self.assertIn("shares/views", prompt)
+        self.assertIn("raw reach", prompt)
+        self.assertNotIn("interactions/reach", prompt)
+        self.assertNotIn("watch depth", prompt)
+        self.assertEqual(llm_eval._format_metric("shares_per_view", 0.025), "2.5%")
+        self.assertEqual(llm_eval._format_metric("shares_per_view", 1 / 32069), "0.0031%")
+        self.assertEqual(llm_eval._format_metric("saves_per_reach", 1 / 32069), "0.0031%")
+        self.assertEqual(llm_eval._format_metric("reach", 1200), "1,200")
+        self.assertIn("v3-selected-five", llm_eval.PROMPT_VERSION)
+
+    def test_distribution_source_independence_is_audited(self) -> None:
+        result = llm_eval._analogue_independence([{
+            "signal_family": "DISTRIBUTION", "analogues": [{
+                "media_id": "reach-holder", "source": {"video_id": "same-source"},
+                "same_source_as_candidate": True,
+            }],
+        }])
+        self.assertEqual(result["same_source_only_signal_families"], ["DISTRIBUTION"])
+        self.assertEqual(result["signal_families"]["DISTRIBUTION"]["unique_analogue_posts"], 1)
+
     def setUp(self) -> None:
         self.blind, self.assets, self.evidence = llm_eval.build_winner_context(
             winner_library()
@@ -561,7 +591,7 @@ class LLMReelCandidateEvaluatorTests(unittest.TestCase):
                 "distinctive_payoff_present": True,
                 "deep_review_priority": priority,
                 "deep_review_rank": rank,
-                "strongest_category_hypotheses": ["watch_depth"],
+                "strongest_category_hypotheses": ["views_per_reached_account"],
                 "reason": "Distinctive and supported.",
                 "required_revision": None,
             }

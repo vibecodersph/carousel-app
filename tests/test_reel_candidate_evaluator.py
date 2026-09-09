@@ -54,7 +54,7 @@ def winner(
             "signal_families": ["attention_replay"],
             "ranking_memberships": [
                 {
-                    "label": "Watch depth",
+                    "label": "Looping",
                     "rank": 1,
                     "value": 0.8,
                 }
@@ -63,27 +63,17 @@ def winner(
                 "rank": 2 if tier == "BALANCED_REFERENCE" else None,
             },
             "all_metrics_at_window": {
-                "total_interactions_per_reach": {
-                    "value": 0.02,
-                    "supporting_metrics": {
-                        "interactions": 4,
-                        "reach": 200,
-                        "denominator_type": "reach",
-                    },
+                "shares_per_view": {
+                    "value": 0.025,
+                    "supporting_metrics": {"shares": 6, "views": 240, "denominator_type": "views"},
                 },
-                "watch_depth": {
-                    "value": 0.8,
-                    "supporting_metrics": {
-                        "average_watch_time_seconds": 24,
-                        "duration_seconds": 30,
-                    },
-                },
+                "reach": {"value": 200, "supporting_metrics": {"reach": 200}},
                 "three_second_skip_rate": {
                     "value": 35,
                     "supporting_metrics": {"reels_skip_rate": 35},
                 },
-                "saves_per_1000_reach": {
-                    "value": 10,
+                "saves_per_reach": {
+                    "value": 0.01,
                     "supporting_metrics": {
                         "saves": 2,
                         "reach": 200,
@@ -145,6 +135,27 @@ def candidate_payload(*, transcript: str):
 
 
 class ReelCandidateEvaluatorTests(unittest.TestCase):
+    def test_analogue_metrics_use_selected_five_and_explicit_denominators(self):
+        reference = winner("example", script_asset_id="script", source_video_id="source",
+                           uploader="speaker", duration=30)
+        reference["winner_evidence"]["all_metrics_at_window"]["watch_depth"] = {"value": 99}
+        metrics = evaluator.metric_summary(reference)
+        self.assertEqual(tuple(metrics), ("three_second_skip_rate", "views_per_reached_account",
+                                         "saves_per_reach", "shares_per_view", "reach"))
+        self.assertEqual(evaluator._metric_evidence_text("shares_per_view", metrics["shares_per_view"]),
+                         "2.5% (6/240 views)")
+        self.assertEqual(evaluator._metric_evidence_text("saves_per_reach", metrics["saves_per_reach"]),
+                         "1.0% (2/200 reach)")
+        self.assertEqual(evaluator._metric_display("reach", 1200), "1,200")
+        self.assertEqual(evaluator._metric_display("shares_per_view", 1 / 32069), "0.0031%")
+        self.assertEqual(evaluator._metric_display("saves_per_reach", 1 / 32069), "0.0031%")
+
+    def test_distribution_analogues_have_a_separate_lane(self):
+        lane = evaluator.analogue_lane([{"signal_families": ["distribution"],
+                                        "comparison": {"relevant": True}}])
+        self.assertEqual(lane["recommended_lane"], "DISTRIBUTION")
+        self.assertEqual(lane["analogue_family_counts"]["distribution"], 1)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)

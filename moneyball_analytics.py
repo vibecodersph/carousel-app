@@ -49,49 +49,34 @@ COHORT_DIMENSIONS = (
 
 PERFORMANCE_RANKING_METRICS = (
     {
-        "key": "total_interactions_per_reach",
-        "metric": "engagement_rate_by_reach",
-        "label": "Total interactions / reach",
-        "short_label": "Interaction rate",
-        "direction": "higher",
-        "format": "percent_ratio",
-        "source": "Meta total_interactions ÷ reach",
-    },
-    {
-        "key": "watch_depth",
-        "metric": "watch_depth",
-        "label": "Watch depth",
-        "short_label": "Watch depth",
-        "direction": "higher",
-        "format": "percent_ratio",
-        "source": "average watch time ÷ Reel duration; uncapped",
-    },
-    {
-        "key": "three_second_skip_rate",
-        "metric": "reels_skip_rate",
-        "label": "3-second skip rate",
-        "short_label": "Low 3s skip",
-        "direction": "lower",
-        "format": "percent_direct",
+        "key": "three_second_skip_rate", "metric": "reels_skip_rate",
+        "label": "3-second skip rate", "short_label": "Low 3s skip",
+        "direction": "lower", "format": "percent_direct",
         "source": "direct Meta reels_skip_rate; lower is stronger",
     },
     {
-        "key": "saves_per_1000_reach",
-        "metric": "saves_per_1000_reach",
-        "label": "Saves / 1,000 reach",
-        "short_label": "Save rate",
-        "direction": "higher",
-        "format": "rate_per_1000",
-        "source": "saved ÷ reach × 1,000",
+        "key": "views_per_reached_account", "metric": "views_per_reached_account",
+        "label": "Looping", "short_label": "Looping",
+        "direction": "higher", "format": "ratio",
+        "source": "views ÷ reach; a replay proxy, not a direct completed-loop count",
     },
     {
-        "key": "views_per_reached_account",
-        "metric": "views_per_reached_account",
-        "label": "Views / reached account",
-        "short_label": "Views / reached",
-        "direction": "higher",
-        "format": "ratio",
-        "source": "views ÷ reach",
+        "key": "saves_per_reach", "metric": "saves_per_reach",
+        "label": "Saves / reach", "short_label": "Save rate",
+        "direction": "higher", "format": "percent_ratio",
+        "source": "saved ÷ reach; displayed as a percentage",
+    },
+    {
+        "key": "shares_per_view", "metric": "shares_per_view",
+        "label": "Shares / views", "short_label": "Share rate",
+        "direction": "higher", "format": "percent_ratio",
+        "source": "shares ÷ views; displayed as a percentage, even when reach is available",
+    },
+    {
+        "key": "reach", "metric": "reach",
+        "label": "Raw reach", "short_label": "Raw reach",
+        "direction": "higher", "format": "count",
+        "source": "Instagram reach: estimated unique accounts reached",
     },
 )
 
@@ -1157,6 +1142,17 @@ def compute_post_metrics(
     reach = numeric(raw_metrics.get("reach"))
     views = numeric(raw_metrics.get("views"))
     interactions = numeric(raw_metrics.get("interactions"))
+    # Selected ranking rates retain their exact denominator independently of
+    # the diagnostic per-1,000 rates and their legacy fallback convention.
+    for metric_name, numerator_name, denominator in (
+        ("saves_per_reach", "saves", reach),
+        ("shares_per_view", "shares", views),
+    ):
+        numerator = numeric(raw_metrics.get(numerator_name))
+        output[metric_name] = (
+            safe_divide(numerator, denominator)
+            if numerator is not None and numerator >= 0 else None
+        )
     output["interactions_per_1000_reach"] = (
         safe_divide(float(interactions) * 1000, reach)
         if interactions is not None and reach is not None
@@ -2620,12 +2616,20 @@ def _ranking_supporting_metrics(
         }
     if metric_key == "three_second_skip_rate":
         return {"reels_skip_rate": numeric(raw.get("reels_skip_rate"))}
-    if metric_key == "saves_per_1000_reach":
+    if metric_key in {"saves_per_reach", "saves_per_1000_reach"}:
         return {
             "saves": numeric(raw.get("saves")),
             "reach": numeric(raw.get("reach")),
             "denominator_type": "reach",
         }
+    if metric_key == "shares_per_view":
+        return {
+            "shares": numeric(raw.get("shares")),
+            "views": numeric(raw.get("views")),
+            "denominator_type": "views",
+        }
+    if metric_key == "reach":
+        return {"reach": numeric(raw.get("reach"))}
     if metric_key == "views_per_reached_account":
         return {
             "views": numeric(raw.get("views")),
@@ -2667,7 +2671,7 @@ def build_top_rankings(
         available: list[tuple[dict[str, Any], float]] = []
         for observation in observations:
             value = numeric(metric_value(observation, source_metric))
-            if value is None:
+            if value is None or value < 0 or (metric_key == "three_second_skip_rate" and value > 100):
                 continue
             available.append((observation, float(value)))
 
@@ -2897,8 +2901,9 @@ def build_top_rankings(
                 f"{strong_percentile_min:.0f}."
             ),
             "denominator_rule": (
-                "Reach-based metrics require measured Reel reach. View-denominator "
-                "fallbacks are excluded."
+                "Looping and save rate require measured positive reach; share rate "
+                "requires measured positive views even when reach is present. "
+                "Denominators are never substituted."
             ),
         },
         "metric_rankings": metric_rankings,
@@ -5404,12 +5409,12 @@ def build_facebook_analytics(
     elif reach_count:
         primary_metric = (
             "intent and engagement actions per 1,000 unique media viewers; "
-            "follower outcome unavailable"
+            "API fixed-window follower outcome unavailable"
         )
     else:
         primary_metric = (
             "Facebook Video views, with likes/comments per 1,000 views as "
-            "explicit view-denominator diagnostics; follower outcome unavailable"
+            "explicit view-denominator diagnostics; API fixed-window follower outcome unavailable"
         )
     return {
         "status": "AVAILABLE" if posts else "NO_PUBLISHED_POSTS",
@@ -5903,7 +5908,7 @@ def build_moneyball_report(
             if follower_coverage
             else (
                 "intent_actions_per_1000_reach "
-                "(leading indicator; follower outcome unavailable)"
+                "(leading indicator; API fixed-window follower outcome unavailable)"
             )
         )
     strongest_series = next(
@@ -6058,13 +6063,19 @@ def _format_ranking_value(value: Any, format_name: str) -> str:
     if number is None:
         return "Unavailable"
     if format_name == "percent_ratio":
-        return f"{float(number) * 100:,.1f}%"
+        percentage = float(number) * 100
+        if 0 < percentage < 0.00005:
+            return "<0.0001%"
+        formatted = f"{percentage:,.4f}".rstrip("0").rstrip(".")
+        return f"{formatted if '.' in formatted else formatted + '.0'}%"
     if format_name == "percent_direct":
         return f"{float(number):,.1f}%"
     if format_name == "rate_per_1000":
         return f"{float(number):,.2f}/1k"
     if format_name == "ratio":
         return f"{float(number):,.3f}×"
+    if format_name == "count":
+        return f"{float(number):,.0f}"
     return f"{float(number):,.2f}"
 
 
@@ -6082,7 +6093,7 @@ def performance_rankings_markdown_lines(
         "",
         f"Status: **{rankings.get('status', 'UNAVAILABLE')}**. Window: "
         f"**{window}**; fixed-window cohort: **{rankings.get('cohort_size', 0)}**. "
-        "Reach fallbacks are excluded.",
+        "Rate denominators are never substituted.",
     ]
     if str(rankings.get("status") or "") != "AVAILABLE":
         lines.extend(["", "| Metric | Coverage |", "|---|---:|"])
@@ -6700,6 +6711,25 @@ def render_moneyball_markdown(report: Mapping[str, Any]) -> str:
             )
         )
 
+    if isinstance(report.get("account_records"), Mapping):
+        from moneyball_records_render import render_account_records_markdown
+
+        records_markdown = render_account_records_markdown(report["account_records"])
+        # Nest the standalone recordbook under the canonical document title.
+        lines.extend(["", "\n".join(
+            "#" + line if line.startswith("#") else line
+            for line in records_markdown.splitlines()
+        )])
+
+    if isinstance(report.get("manual_follow_conversion"), Mapping):
+        from manual_follow_conversion import render_manual_follow_conversion_markdown
+
+        manual_markdown = render_manual_follow_conversion_markdown(report["manual_follow_conversion"])
+        lines.extend(["", "\n".join(
+            "#" + line if line.startswith("#") else line
+            for line in manual_markdown.splitlines()
+        )])
+
     lines.extend(["", "## C. Undervalued content", ""])
     hidden_gems = classifications.get("hidden_gems", [])
     if not hidden_gems:
@@ -7231,6 +7261,8 @@ CSV_COLUMNS = (
     "interactions_per_1000_unique_media_viewers",
     "engagement_rate_by_reach",
     "views_per_reached_account",
+    "saves_per_reach",
+    "shares_per_view",
     "shares_per_1000_reach",
     "shares_per_1000_views",
     "shares_per_1000_unique_media_viewers",
@@ -7404,13 +7436,15 @@ def _html_count_rate(
 
 def _html_ranking_value(value: Any, format_name: str) -> str:
     if format_name == "percent_ratio":
-        return _html_percent(value)
+        return _html_text(_format_ranking_value(value, format_name))
     if format_name == "percent_direct":
         return _html_percent(value, value_is_ratio=False)
     if format_name == "rate_per_1000":
         return f"{_html_metric(value, decimals=2)} /1k"
     if format_name == "ratio":
         return f"{_html_metric(value, decimals=3)}×"
+    if format_name == "count":
+        return _html_metric(value)
     return _html_metric(value, decimals=2)
 
 
@@ -8882,6 +8916,18 @@ def _publication_day_table(
 
 def render_moneyball_html(report: Mapping[str, Any]) -> str:
     """Render a deterministic, self-contained Moneyball dashboard."""
+    from moneyball_records_render import render_account_records_html
+
+    records_html = (
+        render_account_records_html(report["account_records"])
+        if isinstance(report.get("account_records"), Mapping)
+        else ""
+    )
+    manual_follow_html = ""
+    if isinstance(report.get("manual_follow_conversion"), Mapping):
+        from manual_follow_conversion import render_manual_follow_conversion_html
+
+        manual_follow_html = render_manual_follow_conversion_html(report["manual_follow_conversion"])
     metadata = report.get("report_metadata")
     metadata = metadata if isinstance(metadata, Mapping) else {}
     coverage = report.get("data_coverage")
@@ -9313,6 +9359,8 @@ def render_moneyball_html(report: Mapping[str, Any]) -> str:
         '<section class="panel span-6"><h2>Distribution vs intent</h2>'
         f"{_reach_intent_svg(posts)}</section>"
         f"{_performance_rankings_html(instagram_rankings, platform_label='Instagram')}"
+        f"{records_html}"
+        f"{manual_follow_html}"
         '<section id="per-reel-evidence" data-testid="per-reel-evidence" '
         'class="panel full"><h2>Per-Reel evidence table</h2>'
         '<p class="section-note">Latest lifetime snapshot for each Reel, with actual '

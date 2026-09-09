@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "account": "aibrief_jp",
+  "platform": "instagram",
+  "source": "User-supplied manual follow-conversion table",
+  "instructions": "Append observations for new snapshots; preserve older entries. Keep creative_id and resolved media_id stable for the same published Reel; separate repeat uploads and trials by their actual media IDs. recorded_at is the entry date; observed_at stays null until a measurement date is supplied. Preserve approximate/bounded counts as strings and reported rates as strings without a percent sign. Resolve identity using explicit user links or corroborated published-ledger evidence, preserving the match provenance. Attribution labels describe the supplied observation; distribution records the actual regular/trial Reel separately. Do not infer boost status, snapshot age, or measurement date.",
+  "observations": [
+    {
+      "creative_id": "tiananmen-ai",
+      "creative": "中国製AI 天安門",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 1541,
+      "follows": 73,
+      "user_reported_rate_percent": "4.74",
+      "watch_seconds": 22,
+      "attribution_scope": "post_level",
+      "boost_status": "UNVERIFIED",
+      "identity_status": "MATCHED",
+      "media_id": "18101878346254377",
+      "permalink": "https://www.instagram.com/reel/Dc5D2a-FVx0/",
+      "published_title": "中国製AIは天安門事件に回答、なのに米国AIは翻訳すら拒絶する皮肉",
+      "published_at": "2026-09-05T04:04:41+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "37868f7e990179216d8b4ab47f82b53bfa4aeced84b8a894746c8131051dfacd",
+        "evidence": "Only published Tiananmen title match; saved average watch 21.574s supports the supplied 22s.",
+        "excluded_media_ids": [],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "claude-code-author",
+      "creative": "claude-code-author(まだ書くな)",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 917,
+      "follows": 4,
+      "user_reported_rate_percent": "0.44",
+      "watch_seconds": 11,
+      "attribution_scope": "trial",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18160915084492034",
+      "permalink": "https://www.instagram.com/reel/DcIyMd8CWUY/",
+      "published_title": "Claude Code作者、8割は「まだ書くな」から",
+      "published_at": "2026-08-17T10:06:59+00:00",
+      "distribution": "trial",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "fc2c67427d419ebec17cad44e3db83cdde2a0da85fcf72f62d5e892ba5b7afb3",
+        "evidence": "Exact screenshot_title and origin experiment TRIAL-V1-0050-A19-b36d92b1 in config/aibrief_jp_trial_rotation.json; source clip explicitly says 80% plan mode and do not write code yet. Supplied trial label matches this published trial.",
+        "excluded_media_ids": [
+          "18087463721410055"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "jit-planning",
+      "creative": "JIT計画術",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 1619,
+      "follows": 7,
+      "user_reported_rate_percent": "0.432",
+      "watch_seconds": 13,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "17962706573965161",
+      "permalink": "https://www.instagram.com/reel/DbhiaSPimYO/",
+      "published_title": "Anthropicは計画書を全廃、スプレッドシート1枚で動くJIT計画術",
+      "published_at": "2026-08-02T04:18:41+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "fb0fe600b254d3b776406cb3c3c7af4dc1bb8094306d3e1e40add364d2a94daa",
+        "evidence": "Original JIT title and explicit identity in data/aibrief_jp_instagram_post_follows.md (August 4). Saved watch 13.522s supports supplied 13s; duplicate trials have much smaller audiences and 5.6s/7.4s watch.",
+        "excluded_media_ids": [
+          "18061658384591638",
+          "18068425862767723"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "keep-prototype",
+      "creative": "プロトタイプは捨てない",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 2337,
+      "follows": 9,
+      "user_reported_rate_percent": "0.385",
+      "watch_seconds": 14,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18120305164850530",
+      "permalink": "https://www.instagram.com/reel/DbuZIAADE2q/",
+      "published_title": "プロトタイプは捨てない。10日で製品化するAnthropicの常識",
+      "published_at": "2026-08-07T04:07:38+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "d3d93f6dab69ead5e759cbfc2b6b1c4a347876b210ce1efd288c6cf0a5e43ba3",
+        "evidence": "Exact original title. Saved watch 14.411s supports supplied 14s; duplicate trials have much smaller audiences and 9.151s/6.947s watch.",
+        "excluded_media_ids": [
+          "18557736304074864",
+          "17956320282220479"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "hoodie-prompt-clear",
+      "creative": "hoodie-prompt-clear",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 5500,
+      "follows": 18,
+      "user_reported_rate_percent": "0.33",
+      "watch_seconds": null,
+      "attribution_scope": "trial",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18113176888955742",
+      "permalink": "https://www.instagram.com/reel/DcVrM7IlYNj/",
+      "published_title": "Claude Codeは、指示を消すほど賢くなる",
+      "published_at": "2026-08-22T10:15:57+00:00",
+      "distribution": "trial",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "1395085fec65d52d86f983cd73891306c33c1f38b330c5ed8a9592784136b72e",
+        "evidence": "Published trial experiment TRIAL-V1-0082-A19-aa349900. Existing preview shows the speaker in a blue hoodie and the prompt-clearing hook; render-spec variant hash 1395085f matches the ledger. Source qyPCVqFUyDo clip002 describes SIMPLE=1 clearing prompts. Only one published trial for this source clip.",
+        "excluded_media_ids": [
+          "18115686520722932"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "reddit-five-answers",
+      "creative": "Reddit5件回答",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 3232,
+      "follows": 8,
+      "user_reported_rate_percent": "0.247",
+      "watch_seconds": 8,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "17928141609397085",
+      "permalink": "https://www.instagram.com/reel/DcUl4ucDCGL/",
+      "published_title": "Redditで5件回答するだけで自社サイトをAIに引用させる戦略",
+      "published_at": "2026-08-22T00:10:20+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "bdd3cac499496b758d8480a515883e253ad0672cc154afaaf3c9989adcc998db",
+        "evidence": "Exact original Reddit five-answer title. Saved reach 3182 and watch 8.101s support supplied viewers 3232/watch 8s; duplicate trial has reach109 and watch4.445s.",
+        "excluded_media_ids": [
+          "17862400590677713"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "applescript",
+      "creative": "AppleScript",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 3686,
+      "follows": 8,
+      "user_reported_rate_percent": "0.217",
+      "watch_seconds": 11,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18134810878718146",
+      "permalink": "https://www.instagram.com/reel/DbwjIOnDJGg/",
+      "published_title": "Claudeに再生中の曲を聞いたら自力でAppleScriptを書いた",
+      "published_at": "2026-08-08T00:13:26+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "8b270f78a2dbe12922f2ff730a042178ca05ba793cb5627b8fdc61aef6dc1880",
+        "evidence": "Exact original AppleScript caption/title. Saved reach3692 and watch11.193s support supplied viewers3686/watch11s. September4 trial has reach1733/watch9.931s and a different published title.",
+        "excluded_media_ids": [
+          "18036110906647056"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "ai-productivity-fourfold",
+      "creative": "AIで生産性4倍",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 4632,
+      "follows": 10,
+      "user_reported_rate_percent": "0.216",
+      "watch_seconds": 21,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18213073759347294",
+      "permalink": "https://www.instagram.com/reel/Dbzi2_Kjfn7/",
+      "published_title": "AIで生産性が4倍になった結果、夜通しコードを書き続けるエンジニア",
+      "published_at": "2026-08-09T04:08:51+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "f475b8d6e23ff13b427da7efbe593575e84d54756c01b7b6d72b64cca3f8c1dc",
+        "evidence": "Original title explicitly says productivity increased fourfold. Saved watch21.691s supports supplied21s; the September1 trial has a different title, watch16.292s and reach7697.",
+        "excluded_media_ids": [
+          "18015288554737204"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "netflix-black-box",
+      "creative": "Netflix ブラックボックス",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 10339,
+      "follows": 17,
+      "user_reported_rate_percent": "0.164",
+      "watch_seconds": 15,
+      "attribution_scope": "post_level",
+      "boost_status": "UNBOOSTED",
+      "identity_status": "MATCHED",
+      "media_id": "18097732301565842",
+      "permalink": "https://www.instagram.com/reel/DcS-PRejcLV/",
+      "published_title": "壊れても修正不可、Netflix技術トップが恐れるAIのブラックボックス",
+      "published_at": "2026-08-21T09:04:36+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "df9d3e47e277a63fce45f0664ce35ce5cf806a2261767813e3bc69ff5f868bd9",
+        "evidence": "Original title explicitly says Netflix and black box. Saved reach10442 and watch15.920s support supplied viewers10339/watch15s; the August30 trial has reach1730 and a different title.",
+        "excluded_media_ids": [
+          "18122170894874567"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "mit-new-test",
+      "creative": "MITの新試験",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": 28911,
+      "follows": 14,
+      "user_reported_rate_percent": "0.048",
+      "watch_seconds": 11,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "17943770034057030",
+      "permalink": "https://www.instagram.com/reel/DbfmSZflC71/",
+      "published_title": "MITは試験でAIを禁止せず、全員に配った",
+      "published_at": "2026-08-01T10:14:00+00:00",
+      "distribution": "trial",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "babd790dbce0151be380893e792f9f916251bc7f8562614d30e8880926024854",
+        "evidence": "August4 manual screenshot mapping in data/aibrief_jp_instagram_post_follows.md explicitly resolves the reused MIT caption to this August1 trial (then13 follows). Saved reach28853 and watch10.821s support supplied viewers28911/14 follows/11s. Preserve supplied post_level attribution separately from actual trial distribution.",
+        "excluded_media_ids": [
+          "17898111744542858",
+          "18139652014583406"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    },
+    {
+      "creative_id": "ai-2024-geometry",
+      "creative": "AIは2024年 幾何学",
+      "recorded_at": "2026-09-07",
+      "observed_at": null,
+      "viewers": "~20000",
+      "follows": "<9",
+      "user_reported_rate_percent": "<0.045",
+      "watch_seconds": null,
+      "attribution_scope": "post_level",
+      "boost_status": "UNKNOWN",
+      "identity_status": "MATCHED",
+      "media_id": "18186627556392542",
+      "permalink": "https://www.instagram.com/reel/DcZvz_9nGtM/",
+      "published_title": "AIは2024年、幾何学をわずか19秒で力任せに解き明かした",
+      "published_at": "2026-08-24T00:13:14+00:00",
+      "distribution": "regular",
+      "identity_match": {
+        "method": "SUPPLIED_TITLE_AND_LOCAL_PUBLISHED_LEDGER",
+        "confidence": "HIGH",
+        "matched_at": "2026-09-07",
+        "source": "state/reels.db:reels",
+        "content_hash": "2bca1c174cb75a66ace0f6c52cd86c08e8575d90154fa6e9b4f1e0aad4ace443",
+        "evidence": "Exact original AI-2024 geometry title. Saved reach20610 supports approximately20000 viewers; September5 trial uses a different title and has reach1198.",
+        "excluded_media_ids": [
+          "18202691419372414"
+        ],
+        "measurement_note": "Stored API audience/watch values corroborate identity only; they are different snapshots and do not replace the supplied manual measurements or establish observed_at."
+      }
+    }
+  ]
+}
