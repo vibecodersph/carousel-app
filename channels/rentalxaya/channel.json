@@ -1,0 +1,36 @@
+{
+  "id": "rentalxaya",
+  "account_name": "rentalxaya",
+  "brand_name": "Rental x Aya",
+  "handle": "@rentalxaya",
+  "language": {
+    "name": "English",
+    "audience": "Tokyo street-video viewers"
+  },
+  "publishing": {
+    "instagram_user_id": "17841463985817795",
+    "instagram_reels": {
+      "timezone": "Asia/Tokyo",
+      "slots": [
+        "05:00",
+        "17:00"
+      ],
+      "trial_slots": [
+        "11:00",
+        "23:00"
+      ],
+      "jitter_minutes": 0,
+      "trial_jitter_minutes": 0,
+      "trial_graduation_strategy": "MANUAL",
+      "skip_days": [],
+      "caption_context": "Aya in Tokyo.",
+      "caption_cta": "Follow for the next scene.",
+      "hashtags": [
+        "#Aya",
+        "#Tokyo",
+        "#Shibuya"
+      ],
+      "hashtag_limit": 3
+    }
+  }
+}
