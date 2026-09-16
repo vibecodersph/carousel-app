@@ -18,6 +18,7 @@ import moneyball_analytics as moneyball  # noqa: E402
 import reel_candidate_evaluator as evaluator  # noqa: E402
 import llm_reel_candidate_evaluator as llm_evaluator  # noqa: E402
 import scheduled_reel_evaluator as scheduled_evaluator  # noqa: E402
+import source_feedback  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -183,6 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=ROOT / "out" / "reel_report.moneyball.winner_library.json",
     )
     parser.add_argument(
+        "--source-feedback", type=Path, default=None,
+        help="Measured source successes/misses. Canonical runs load the companion source_feedback.json automatically.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=evaluator.DEFAULT_CONFIG_PATH,
@@ -315,6 +320,10 @@ def main(argv: list[str] | None = None) -> int:
     winner_path = args.winner_library.expanduser().resolve()
     config_path = args.config.expanduser().resolve()
     winner_library = _read_json_object(winner_path, "winner library")
+    feedback_path = args.source_feedback
+    if feedback_path is None and winner_path == ROOT / "out/reel_report.moneyball.winner_library.json":
+        feedback_path = ROOT / "out/reel_report.moneyball.source_feedback.json"
+    feedback_data = _read_json_object(feedback_path, "source feedback (run Moneyball first)") if feedback_path else None
     try:
         config = evaluator.load_config(config_path)
         if scheduled_mode:
@@ -500,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
+    source_appendix = source_feedback.attach_candidate_context(report, feedback_data) if feedback_data else ""
     json_text = (
         llm_evaluator.render_llm_candidate_evaluation_json(report)
         if analysis_mode == "llm"
@@ -515,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
             else evaluator.render_candidate_evaluation_markdown(report)
         )
     )
-    moneyball.atomic_write_text(args.markdown_out, markdown)
+    moneyball.atomic_write_text(args.markdown_out, markdown + source_appendix)
     if args.csv_out is not None:
         moneyball.atomic_write_text(
             args.csv_out,

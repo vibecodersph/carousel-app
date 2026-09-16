@@ -24,6 +24,9 @@ import moneyball_records as account_records  # noqa: E402
 import moneyball_records_render as records_render  # noqa: E402
 import manual_follow_conversion as manual_follows  # noqa: E402
 import verified_winner_library as winner_library  # noqa: E402
+import source_feedback  # noqa: E402
+import aibrief_learning_loop  # noqa: E402
+from scripts.source_recommendations import write_feedback  # noqa: E402
 
 
 def aware_datetime(value: str) -> datetime:
@@ -200,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Persistent record/former-winner history: state/moneyball_records/<channel>.history.json for canonical output, or beside a custom --json-out.",
     )
     parser.add_argument(
+        "--source-recommendations-dir", type=Path, default=None,
+        help="Immutable source recommendation batches; canonical runs use state/source_recommendations/<channel>.",
+    )
+    parser.add_argument(
         "--as-of",
         type=aware_datetime,
         default=None,
@@ -279,6 +286,22 @@ def _run(args: argparse.Namespace, history_path: Path) -> int:
     records_markdown = records_render.render_account_records_markdown(records)
     manual_json = json.dumps(manual, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
     manual_markdown = manual_follows.render_manual_follow_conversion_markdown(manual)
+    source_dir = args.source_recommendations_dir or args.json_out.parent / "source_recommendations" / args.channel
+    if args.source_recommendations_dir is None and args.json_out.expanduser().resolve() == ROOT / "out/reel_report.moneyball.json":
+        source_dir = ROOT / "state/source_recommendations" / args.channel
+    source_json_out = args.json_out.with_name(f"{args.json_out.stem}.source_feedback.json")
+    # The refresh runs inside the canonical history lock; the registry lock
+    # serializes it with recommendation recording. Invalid input aborts before
+    # replacing the canonical Moneyball bundle.
+    with record_history.record_history_lock(source_dir / "registry"):
+        if args.channel == "aibrief_jp" and args.db.expanduser().resolve() == ROOT / "state/reels.db":
+            aibrief_learning_loop.attach_exact_bindings(report)
+        source_result = source_feedback.build_feedback(report, source_feedback.read_batches(source_dir, args.channel))
+    report["source_feedback"] = {
+        "as_of": source_result["as_of"], "feedback_id": source_result["feedback_id"],
+        "json_path": str(source_json_out), "markdown_path": str(source_json_out.with_suffix(".md")),
+        "coverage": source_result["coverage"],
+    }
     # Compute/validate the new state before replacing outputs. Commit history last
     # so a failed render cannot consume a record notification.
     moneyball.write_moneyball_outputs(
@@ -302,6 +325,7 @@ def _run(args: argparse.Namespace, history_path: Path) -> int:
     moneyball.atomic_write_text(records_json_out, records_json)
     moneyball.atomic_write_text(manual_markdown_out, manual_markdown)
     moneyball.atomic_write_text(manual_json_out, manual_json)
+    write_feedback(report, source_dir, source_json_out, result=source_result)
     moneyball.atomic_write_text(history_path, history_json)
     facebook = report.get("platform_analytics", {}).get("facebook", {})
     facebook_coverage = facebook.get("data_coverage", {})
@@ -335,6 +359,7 @@ def _run(args: argparse.Namespace, history_path: Path) -> int:
     print(f"[moneyball] wrote {records_json_out}")
     print(f"[moneyball] wrote {manual_markdown_out}")
     print(f"[moneyball] wrote {manual_json_out}")
+    print(f"[moneyball] wrote {source_json_out} and .md")
     print(f"[moneyball] preserved record and winner history in {history_path}")
     return 0
 

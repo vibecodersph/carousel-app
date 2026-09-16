@@ -86,6 +86,9 @@ otherwise complete analytics refresh.
 Read:
 
 - `out/reel_report.moneyball.json`
+- `out/reel_report.moneyball.source_feedback.md` and `.json`, automatically
+  refreshed by the canonical command. Their `as_of` must match the canonical
+  JSON. Read `docs/SOURCE_RECOMMENDATIONS.md` for the source learning policy.
 - `out/reel_report.moneyball.winner_library.md`
 - `out/reel_report.moneyball.winner_library.json`
 - `out/reel_report.moneyball.records.md`
@@ -299,6 +302,40 @@ The report must contain:
 - Do not browse for creator folklore or universal Instagram benchmarks.
 
 ## Output contract
+
+### Source recommendation accountability
+
+Run `python scripts/aibrief_learning_loop.py health` and include any stalled
+production, missing bound-clip checkpoints or overdue loop-run alerts. The
+separate weekly standalone task owns demand-triggered sourcing and production via
+`ops/codex-aibrief-jp-continuous-loop.md`; do not start a competing production run.
+
+Every pulse must include a concise **Source feedback and recommendation misses**
+section grounded in the generated source-feedback JSON. State the feedback ID,
+source timestamp, tracked recommendation count, and historical unattributed
+coverage. Report eligible 7d REDUCE/PREFER source decisions with exact source
+links, distinct clip counts, matched evidence and relevant counterexamples.
+Keep 24h signals preliminary. Include mature prospective recommendation MISS
+and SUPPORTED outcomes against the metric originally expected; do not infer
+old recommendations or mark unpublished/immature sources as failures.
+
+Use these source priorities when writing the next learning portfolio. Reduce
+repeated weak source/topic combinations and preserve the bounded exploration
+allowance. A reduced source needs a concrete changed hypothesis for a retest;
+creative scores alone do not erase its observed misses. An uploader is not a
+speaker, and one weak source video does not establish a weak speaker.
+
+If the pulse recommends exact source videos, first record a prospective batch
+using `scripts/source_recommendations.py recommend` as documented in
+`docs/SOURCE_RECOMMENDATIONS.md`; cite the batch and only its selected entries.
+General content hypotheses need no invented source entries. This local record
+and feedback archive are authorized analytics artifacts, not queue changes or
+authorization to transmit unpublished material. Do not create another recurring
+task: this existing pulse performs the update.
+
+Before replacing the stable pulse report, also verify the feedback source
+timestamp matches the canonical JSON, the cited feedback ID exists in the
+preserved evidence archive, and any cited recommendation batch exists.
 
 Create the archive directory when needed:
 

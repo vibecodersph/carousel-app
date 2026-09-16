@@ -931,6 +931,11 @@ def make_manifest(
             "enabled": True,
             "graduation_strategy": trial_graduation_strategy or DEFAULT_TRIAL_GRADUATION_STRATEGY,
         }
+    if channel.id == "aibrief_jp" and media_path.is_file():
+        from aibrief_learning_loop import binding_for_media
+        learning = binding_for_media(media_path)
+        if learning:
+            manifest["source_recommendation_binding"] = learning
     return manifest
 
 

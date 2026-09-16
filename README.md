@@ -634,6 +634,26 @@ under
 queue. Fresh editorial conclusions require at least eight valid 24-hour Reels;
 slower allocation decisions remain grounded in 7-day maturity evidence.
 
+Moneyball also refreshes `out/reel_report.moneyball.source_feedback.md` and
+`.json`: source/uploader outcomes including underperformers, matched by post age,
+duration and regular/Trial distribution. Future source shortlists must consume
+this evidence and record their rationale and expected metric with
+`scripts/source_recommendations.py recommend`. Later refreshes join those
+immutable recommendations to published outcomes and audit misses. See
+[`docs/SOURCE_RECOMMENDATIONS.md`](docs/SOURCE_RECOMMENDATIONS.md) for the required
+sourcing workflow, exploration limits and historical backfill boundaries.
+
+The standalone AI Brief weekly learning task checks queue demand and learning
+health every Monday at 06:30 Asia/Tokyo. It replenishes when fewer than 14 days
+remain and aims for a 21-day buffer. It follows
+[`ops/codex-aibrief-jp-continuous-loop.md`](ops/codex-aibrief-jp-continuous-loop.md),
+and preserves existing scheduled content. Run
+`python scripts/aibrief_learning_loop.py health` for the current queue, unfinished
+production/handoffs and missing-result alerts. Its `plan` and `seal` commands
+bind each new clip to its recommendation, applied lesson and exact media hash;
+Moneyball audits those bindings after publication. Actual run events are kept
+separately from the automation configuration.
+
 Cadence is controlled by each channel's `publishing.instagram_reels.slots` in
 `channels/<id>/channel.json`. The LaunchAgent in
 `ops/com.carousel.reel-scheduler.plist` should stay on its 900-second check
