@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260913_single",
+  "entries": [
+    {
+      "parent_content_hash": "f9d1a09b93fea714aa4d7958050825b41f3adeea49825c64c42cb02c59965305",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0025-A19-f9d1a09b",
+      "scheduled_at": "2026-09-23T19:00:00+09:00",
+      "hook": "Claudeのデザイン責任者が管理職からICに戻った理由"
+    }
+  ]
+}

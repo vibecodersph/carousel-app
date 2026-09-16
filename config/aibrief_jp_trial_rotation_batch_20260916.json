@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260916_single",
+  "entries": [
+    {
+      "parent_content_hash": "e279c4d3325af03f8f2d5a41190469f7aa735c8cf26e851203e8a23861f55d76",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0028-A19-e279c4d3",
+      "scheduled_at": "2026-09-26T19:00:00+09:00",
+      "hook": "「シニア」の肩書が、悪い案を通してしまう"
+    }
+  ]
+}

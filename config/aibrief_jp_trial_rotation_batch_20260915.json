@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel_id": "aibrief_jp",
+  "pool_id": "aibrief-jp-photo-pool-2026-08-30",
+  "pool_path": "config/aibrief_jp_trial_rotation.json",
+  "db_path": "state/reels.db",
+  "output_root": "out/trial_reels/pool_rotation_20260915_single",
+  "entries": [
+    {
+      "parent_content_hash": "c65fd01cc84f45c6cfee55d8078460e7232234d7eaff44dcc49d84269e5eca1a",
+      "experiment_id": "TRIAL-POOL-AIBRIEF-JP-PHOTO-POOL-2026-08-30-19C2D3-0027-A19-c65fd01c",
+      "scheduled_at": "2026-09-25T19:00:00+09:00",
+      "hook": "AIに任せるほど、若手の成長階段が消える"
+    }
+  ]
+}
