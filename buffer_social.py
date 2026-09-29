@@ -31,7 +31,9 @@ COMMANDS
 
 MANIFEST is the same file the other publishers read:
   {"slides":[{"index":1,"type":"video","path":"C:/.../reel.mp4"}],
-   "tiktok_caption":"...", "x_text":"...", "caption":"fallback for any channel"}
+   "tiktok_caption":"...", "x_text":"...", "caption":"fallback for any channel",
+   "x_thread":["reply under the X post", "..."], "cover_ms":3000}
+  Keep one manifest per voice: X is Viron's personal account, TikTok is the Vibe Coders PH brand.
 
 GUARDS
 ------
@@ -192,7 +194,22 @@ def validate_caption(service: str, text: str) -> None:
         raise SystemExit("Caption contains an em or en dash; house rule says no dashes in copy")
 
 
-def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True, cover_ms: int | None = None) -> dict[str, Any]:
+def thread_for(service: str, manifest: dict[str, Any]) -> list[str]:
+    """Follow-up posts for an X thread (manifest key x_thread); other services have none."""
+    if service != "twitter":
+        return []
+    raw = manifest.get("x_thread")
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+        raise SystemExit("x_thread must be a list of non-empty strings, one per follow-up post")
+    out = [t.strip() for t in raw]
+    for t in out:
+        validate_caption("twitter", t)
+    return out
+
+
+def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True, cover_ms: int | None = None, thread: list[str] | None = None) -> dict[str, Any]:
     video: dict[str, Any] = {"url": video_url}
     if cover_ms is not None and channel["service"] in ("tiktok", "instagram", "pinterest"):
         video["metadata"] = {"thumbnailOffset": int(cover_ms)}   # cover frame; the first frame of our films is black (fade-in)
@@ -209,7 +226,10 @@ def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[s
     if channel["service"] == "tiktok":
         payload["metadata"] = {"tiktok": {"isAiGenerated": ai_generated}}
     elif channel["service"] == "twitter":
-        payload["metadata"] = {"twitter": {"isAiGenerated": ai_generated}}
+        meta: dict[str, Any] = {"isAiGenerated": ai_generated}
+        if thread:
+            meta["thread"] = [{"text": t, "assets": []} for t in thread]   # replies under the video post
+        payload["metadata"] = {"twitter": meta}
     return payload
 
 
@@ -311,12 +331,13 @@ def cmd_post(args: argparse.Namespace) -> int:
             continue
         text = caption_for(ch["service"], manifest, override)
         validate_caption(ch["service"], text)
+        thread = thread_for(ch["service"], manifest)
         target = datetime.fromisoformat(when["dueAt"].replace("Z", "+00:00")) if when["dueAt"] else datetime.now(timezone.utc)
         if when["kind"] in ("now", "scheduled") and args.gap_hours > 0:
             bad = gap_conflict(existing_post_times(buf, ch), target, args.gap_hours)
             if bad:
                 raise SystemExit(f"Gap guard: {ch['service']}:{ch['name']} already has a post at {bad}, within {args.gap_hours} h of {target.isoformat()}. Pick another time or --gap-hours 0.")
-        plans.append((ch, text))
+        plans.append((ch, text, thread))
     if not plans:
         return 0
 
@@ -331,11 +352,11 @@ def cmd_post(args: argparse.Namespace) -> int:
     video_url = videos[0].public_url
     cover_ms = args.cover_ms if args.cover_ms is not None else manifest.get("cover_ms")
 
-    for ch, text in plans:
-        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai, cover_ms=cover_ms)
-        print(f"[buffer] {ch['service']}:{ch['name']}  when={args.when}  chars={len(text)}  video={video_url}")
+    for ch, text, thread in plans:
+        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai, cover_ms=cover_ms, thread=thread)
+        print(f"[buffer] {ch['service']}:{ch['name']}  when={args.when}  chars={len(text)}  thread={len(thread)}  video={video_url}")
         if args.dry_run:
-            print(json.dumps(payload, indent=1, ensure_ascii=False)[:900])
+            print(json.dumps(payload, indent=1, ensure_ascii=False)[:3000])
             continue
         post = create_post(buf, payload)
         report["posts"].append({"channel": {"id": ch["id"], "service": ch["service"], "name": ch["name"]},

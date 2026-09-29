@@ -96,6 +96,24 @@ class PayloadTests(unittest.TestCase):
         x = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w, cover_ms=4600)
         self.assertNotIn("metadata", x["assets"][0]["video"])
 
+    def test_x_thread_becomes_replies_and_only_on_x(self):
+        w = bs.parse_when("now")
+        p = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w, thread=["one", "two"])
+        self.assertEqual(p["metadata"]["twitter"]["thread"], [{"text": "one", "assets": []}, {"text": "two", "assets": []}])
+        self.assertTrue(p["metadata"]["twitter"]["isAiGenerated"])
+        t = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", w, thread=["one"])
+        self.assertEqual(t["metadata"], {"tiktok": {"isAiGenerated": True}})
+        plain = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w)
+        self.assertNotIn("thread", plain["metadata"]["twitter"])
+
+    def test_thread_for_validates(self):
+        self.assertEqual(bs.thread_for("twitter", {"x_thread": [" a ", "b"]}), ["a", "b"])
+        self.assertEqual(bs.thread_for("tiktok", {"x_thread": ["a"]}), [])
+        self.assertEqual(bs.thread_for("twitter", {}), [])
+        for bad in ("just a string", [""], ["ok", "x" * 281], ["dash — here"]):
+            with self.assertRaises(SystemExit):
+                bs.thread_for("twitter", {"x_thread": bad})
+
     def test_draft_never_shares_now(self):
         p = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", bs.parse_when("draft"))
         self.assertTrue(p["saveToDraft"])
