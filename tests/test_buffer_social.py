@@ -89,6 +89,13 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(p["metadata"], {"twitter": {"isAiGenerated": False}})
         self.assertNotIn("dueAt", p)
 
+    def test_cover_offset_only_on_tiktok(self):
+        w = bs.parse_when("now")
+        p = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", w, cover_ms=4600)
+        self.assertEqual(p["assets"][0]["video"]["metadata"], {"thumbnailOffset": 4600})
+        x = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w, cover_ms=4600)
+        self.assertNotIn("metadata", x["assets"][0]["video"])
+
     def test_draft_never_shares_now(self):
         p = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", bs.parse_when("draft"))
         self.assertTrue(p["saveToDraft"])
@@ -123,6 +130,27 @@ class PostFlowTests(unittest.TestCase):
             args = bs.build_parser().parse_args(["post", str(manifest), "--channel", "tiktok:vibecoders", "--when", "draft", "--dry-run"])
             with patch.object(bs, "Buffer", FakeBuf), patch.object(bs, "create_post", side_effect=AssertionError("must not create")):
                 self.assertEqual(bs.cmd_post(args), 0)  # already in report: skipped, nothing created
+
+    def test_drafts_and_cancelled_posts_do_not_block_a_real_post(self):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = Path(d) / "manifest.json"
+            video = Path(d) / "v.mp4"
+            video.write_bytes(b"x")
+            manifest.write_text(json.dumps({"slides": [{"index": 1, "type": "video", "path": str(video)}], "tiktok_caption": "hi #a"}))
+            (Path(d) / bs.REPORT_NAME).write_text(json.dumps({"posts": [
+                {"channel": {"id": "c1", "service": "tiktok", "name": "x"}, "post_id": "p1", "when": "draft"},
+                {"channel": {"id": "c1", "service": "tiktok", "name": "x"}, "post_id": "p2", "when": "now", "cancelled": "deleted"}]}))
+
+            class FakeBuf:
+                def __init__(self, *_):
+                    pass
+
+                def channels(self):
+                    return CHANNELS
+
+            args = bs.build_parser().parse_args(["post", str(manifest), "--channel", "tiktok:vibecoders", "--when", "draft", "--dry-run"])
+            with patch.object(bs, "Buffer", FakeBuf), patch.object(bs, "create_post", side_effect=AssertionError("dry run")):
+                self.assertEqual(bs.cmd_post(args), 0)  # not skipped: reaches the payload print without creating
 
     def test_publish_flag_required_for_scheduled(self):
         with tempfile.TemporaryDirectory() as d:

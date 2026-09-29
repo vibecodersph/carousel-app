@@ -192,14 +192,17 @@ def validate_caption(service: str, text: str) -> None:
         raise SystemExit("Caption contains an em or en dash; house rule says no dashes in copy")
 
 
-def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True) -> dict[str, Any]:
+def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True, cover_ms: int | None = None) -> dict[str, Any]:
+    video: dict[str, Any] = {"url": video_url}
+    if cover_ms is not None and channel["service"] in ("tiktok", "instagram", "pinterest"):
+        video["metadata"] = {"thumbnailOffset": int(cover_ms)}   # cover frame; the first frame of our films is black (fade-in)
     payload: dict[str, Any] = {
         "text": text,
         "channelId": channel["id"],
         "schedulingType": "automatic",
         "mode": when["mode"],
         "saveToDraft": when["saveToDraft"],
-        "assets": [{"video": {"url": video_url}}],
+        "assets": [{"video": video}],
     }
     if when["dueAt"]:
         payload["dueAt"] = when["dueAt"]
@@ -298,7 +301,7 @@ def cmd_post(args: argparse.Namespace) -> int:
     buf = Buffer(env_value(KEY_NAME))
     channels = buf.channels()
     chosen = [resolve_channel(channels, s) for s in args.channel]
-    done_ids = {p["channel"]["id"] for p in report["posts"]}
+    done_ids = {p["channel"]["id"] for p in report["posts"] if not p.get("cancelled") and p.get("when") != "draft"}
     override = Path(args.caption_file).read_text(encoding="utf-8") if args.caption_file else None
 
     plans = []
@@ -317,17 +320,19 @@ def cmd_post(args: argparse.Namespace) -> int:
     if not plans:
         return 0
 
-    items = ig.build_media_items(manifest, manifest_path, media_base_url="", overrides={}, dry_run=args.dry_run)
+    base = ig.env_value("R2_PUBLIC_BASE_URL", "INSTAGRAM_MEDIA_BASE_URL", "IG_MEDIA_BASE_URL").strip()
+    items = ig.build_media_items(manifest, manifest_path, media_base_url=base, overrides={}, dry_run=args.dry_run)
     videos = [i for i in items if i.kind == "video"]
     if len(videos) != 1:
         raise SystemExit("The manifest must contain exactly one video slide for a TikTok or X post.")
     if not args.dry_run:
-        ns = SimpleNamespace(r2_bucket="", r2_key_prefix=None, r2_public_base_url=ig.env_value("R2_PUBLIC_BASE_URL"))
-        ig.upload_media_to_r2(videos, ig.r2_config(ns, manifest_path, ns.r2_public_base_url), timeout=300)
+        ns = SimpleNamespace(r2_bucket="", r2_key_prefix=None, r2_public_base_url=base)
+        ig.upload_media_to_r2(videos, ig.r2_config(ns, manifest_path, base), timeout=300)
     video_url = videos[0].public_url
+    cover_ms = args.cover_ms if args.cover_ms is not None else manifest.get("cover_ms")
 
     for ch, text in plans:
-        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai)
+        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai, cover_ms=cover_ms)
         print(f"[buffer] {ch['service']}:{ch['name']}  when={args.when}  chars={len(text)}  video={video_url}")
         if args.dry_run:
             print(json.dumps(payload, indent=1, ensure_ascii=False)[:900])
@@ -348,6 +353,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     report = load_report(path)
     buf = Buffer(env_value(KEY_NAME))
     for p in report["posts"]:
+        if p.get("cancelled"):
+            continue
         try:
             now = fetch_post(buf, p["post_id"])
         except SystemExit as e:
@@ -387,6 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--when", required=True)
     p.add_argument("--caption-file")
     p.add_argument("--gap-hours", type=float, default=2.0)
+    p.add_argument("--cover-ms", type=int, help="cover frame in milliseconds (TikTok); manifest key cover_ms is the default")
     p.add_argument("--not-ai", action="store_true", help="do not set the AI-generated label")
     p.add_argument("--force", action="store_true")
     p.add_argument("--publish", action="store_true")
