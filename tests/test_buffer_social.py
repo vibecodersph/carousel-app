@@ -99,7 +99,11 @@ class PayloadTests(unittest.TestCase):
     def test_x_thread_becomes_replies_and_only_on_x(self):
         w = bs.parse_when("now")
         p = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w, thread=["one", "two"])
-        self.assertEqual(p["metadata"]["twitter"]["thread"], [{"text": "one", "assets": []}, {"text": "two", "assets": []}])
+        video = [{"video": {"url": "https://pub.example/v.mp4"}}]
+        # Buffer publishes what `thread` holds: the root post (same text, with the video) first, then the replies
+        self.assertEqual(p["metadata"]["twitter"]["thread"], [{"text": "hi", "assets": video}, {"text": "one", "assets": []}, {"text": "two", "assets": []}])
+        self.assertEqual(p["text"], p["metadata"]["twitter"]["thread"][0]["text"])
+        self.assertEqual(p["assets"], video)
         self.assertTrue(p["metadata"]["twitter"]["isAiGenerated"])
         t = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", w, thread=["one"])
         self.assertEqual(t["metadata"], {"tiktok": {"isAiGenerated": True}})
@@ -113,6 +117,19 @@ class PayloadTests(unittest.TestCase):
         for bad in ("just a string", [""], ["ok", "x" * 281], ["dash — here"]):
             with self.assertRaises(SystemExit):
                 bs.thread_for("twitter", {"x_thread": bad})
+
+    def test_post_problem_catches_a_dropped_video_or_thread(self):
+        w = bs.parse_when("draft")
+        plain = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", w)
+        self.assertIsNone(bs.post_problem(plain, {"assets": [{"id": None, "source": "u"}]}))
+        self.assertIn("0 of 1 assets", bs.post_problem(plain, {"assets": []}))
+        x = bs.build_input(CHANNELS[2], "hi", "https://pub.example/v.mp4", w, thread=["one"])
+        ok = {"assets": [{"source": "u"}], "metadata": {"thread": [{"text": "hi", "assets": [{"source": "u"}]}, {"text": "one", "assets": []}]}}
+        self.assertIsNone(bs.post_problem(x, ok))
+        no_video_on_root = {"assets": [{"source": "u"}], "metadata": {"thread": [{"text": "hi", "assets": []}, {"text": "one", "assets": []}]}}
+        self.assertIn("thread post 1", bs.post_problem(x, no_video_on_root))
+        short_thread = {"assets": [{"source": "u"}], "metadata": {"thread": [{"text": "hi", "assets": [{"source": "u"}]}]}}
+        self.assertIn("1 of 2 thread posts", bs.post_problem(x, short_thread))
 
     def test_draft_never_shares_now(self):
         p = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", bs.parse_when("draft"))

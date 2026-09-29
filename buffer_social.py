@@ -228,7 +228,9 @@ def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[s
     elif channel["service"] == "twitter":
         meta: dict[str, Any] = {"isAiGenerated": ai_generated}
         if thread:
-            meta["thread"] = [{"text": t, "assets": []} for t in thread]   # replies under the video post
+            # Buffer publishes exactly what `thread` holds, so the root post (same text, carrying the
+            # video) comes first and the replies follow. Listing only the replies drops the video.
+            meta["thread"] = [{"text": text, "assets": payload["assets"]}] + [{"text": t, "assets": []} for t in thread]
         payload["metadata"] = {"twitter": meta}
     return payload
 
@@ -268,15 +270,34 @@ def existing_post_times(buf: Buffer, channel: dict[str, Any]) -> list[str]:
 
 def create_post(buf: Buffer, payload: dict[str, Any]) -> dict[str, Any]:
     q = """mutation($i: CreatePostInput!){ createPost(input:$i){
-      ... on PostActionSuccess { post { id status dueAt text assets { id source } } }
+      ... on PostActionSuccess { post { id status dueAt text assets { id source }
+        metadata { ... on TwitterPostMetadata { thread { text assets { id source } } } } } }
       ... on MutationError { message } } }"""
     res = buf.q(q, {"i": payload})["createPost"]
     if "post" not in res:
         raise SystemExit(f"Buffer refused the post: {res.get('message')}")
     post = res["post"]
-    if len(post.get("assets") or []) != len(payload["assets"]):
-        raise SystemExit(f"Buffer kept {len(post.get('assets') or [])} of {len(payload['assets'])} assets on post {post['id']}; check it in Buffer.")
+    problem = post_problem(payload, post)
+    if problem:
+        # never leave a defective post scheduled (an X post that lost its video would go out as text only)
+        gone = delete_post(buf, post["id"])
+        raise SystemExit(f"{problem} Post {post['id']} was created and then {gone}.")
     return post
+
+
+def post_problem(payload: dict[str, Any], post: dict[str, Any]) -> str | None:
+    """Compare what Buffer stored with what we sent: assets on the post and, for X, the whole thread."""
+    if len(post.get("assets") or []) != len(payload["assets"]):
+        return f"Buffer kept {len(post.get('assets') or [])} of {len(payload['assets'])} assets."
+    sent = ((payload.get("metadata") or {}).get("twitter") or {}).get("thread")
+    if sent:
+        got = (post.get("metadata") or {}).get("thread") or []
+        if len(got) != len(sent):
+            return f"Buffer kept {len(got)} of {len(sent)} thread posts."
+        for i, (s, g) in enumerate(zip(sent, got)):
+            if len(g.get("assets") or []) != len(s["assets"]):
+                return f"Buffer kept {len(g.get('assets') or [])} of {len(s['assets'])} assets on thread post {i + 1}."
+    return None
 
 
 def fetch_post(buf: Buffer, post_id: str) -> dict[str, Any]:
