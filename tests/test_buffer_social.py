@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -135,6 +137,145 @@ class PayloadTests(unittest.TestCase):
         p = bs.build_input(CHANNELS[0], "hi", "https://pub.example/v.mp4", bs.parse_when("draft"))
         self.assertTrue(p["saveToDraft"])
         self.assertEqual(p["mode"], "addToQueue")
+
+
+class YoutubeTextTests(unittest.TestCase):
+    CAPTION = "Who started the Delano grape strike? Most people say Cesar Chavez.\n\nSecond paragraph.\n\n#Tag"
+    COMMENT = "Sources\n- one https://a.example\n- two https://b.example"
+
+    def test_title_is_the_hook_question(self):
+        self.assertEqual(bs.youtube_title(self.CAPTION), "Who started the Delano grape strike?")
+
+    def test_title_falls_back_to_the_first_line_without_a_question(self):
+        self.assertEqual(bs.youtube_title("No question here. Still first line.\n\nMore? yes"), "No question here. Still first line.")
+
+    def test_title_is_cut_at_a_word_boundary_within_100(self):
+        t = bs.youtube_title(("word " * 40) + "end?")
+        self.assertLessEqual(len(t), 100)
+        self.assertTrue(t.endswith("word"))
+        self.assertEqual(len(bs.youtube_title("x" * 150 + "?")), 100)
+
+    def test_empty_title_and_description_refuse(self):
+        for bad in ("", "  \n "):
+            with self.assertRaises(SystemExit):
+                bs.youtube_title(bad)
+        with self.assertRaises(SystemExit):
+            bs.validate_youtube("", "d")
+        with self.assertRaises(SystemExit):
+            bs.validate_youtube("t" * 101, "d")
+        with self.assertRaises(SystemExit):
+            bs.validate_youtube("t", "d" * 5001)
+        with self.assertRaises(SystemExit):
+            bs.validate_youtube("t", "")
+        bs.validate_youtube("t" * 100, "d" * 5000)
+
+    def test_description_is_caption_blank_line_sources(self):
+        self.assertEqual(bs.youtube_description(self.CAPTION, self.COMMENT), self.CAPTION + "\n\n" + self.COMMENT)
+
+    def test_long_sources_are_trimmed_at_a_line_boundary_and_the_caption_stays_whole(self):
+        comment = "Sources\n" + "\n".join(f"- line {i} " + "y" * 100 for i in range(80))
+        d = bs.youtube_description(self.CAPTION, comment)
+        self.assertLessEqual(len(d), 5000)
+        self.assertTrue(d.startswith(self.CAPTION + "\n\n"))
+        self.assertTrue(d.endswith("y" * 100))
+        self.assertTrue(comment.startswith(d[len(self.CAPTION) + 2:]))
+
+    def test_texts_read_the_two_approved_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "caption.txt").write_text(self.CAPTION + "\n", encoding="utf-8")
+            (Path(d) / "first-comment.txt").write_text(self.COMMENT + "\n", encoding="utf-8")
+            title, desc = bs.youtube_texts(Path(d))
+            self.assertEqual(title, "Who started the Delano grape strike?")
+            self.assertEqual(desc, self.CAPTION + "\n\n" + self.COMMENT)
+            (Path(d) / "first-comment.txt").unlink()
+            with self.assertRaises(SystemExit):
+                bs.youtube_texts(Path(d))
+
+
+class YoutubePayloadTests(unittest.TestCase):
+    YT = {"id": "c9", "service": "youtube", "name": "VibeCodersPH", "displayName": "VCPH", "type": "profile", "timezone": "Asia/Manila", "isDisconnected": False, "isLocked": False, "organizationId": "o1"}
+
+    def test_youtube_payload_carries_title_metadata_and_description_as_text(self):
+        p = bs.build_input(self.YT, "the description", "https://pub.example/v.mp4", bs.parse_when("now"), cover_ms=3000, title="The title?")
+        self.assertEqual(p["text"], "the description")
+        self.assertEqual(p["metadata"], {"youtube": {"title": "The title?", "categoryId": "27", "privacy": "public", "madeForKids": False,
+                                                     "notifySubscribers": False, "embeddable": True, "isAiGenerated": True}})
+        self.assertEqual(p["assets"], [{"video": {"url": "https://pub.example/v.mp4"}}])
+        self.assertEqual(p["mode"], "shareNow")
+
+    def test_not_ai_and_missing_title(self):
+        p = bs.build_input(self.YT, "d", "https://pub.example/v.mp4", bs.parse_when("draft"), ai_generated=False, title="T?")
+        self.assertFalse(p["metadata"]["youtube"]["isAiGenerated"])
+        with self.assertRaises(SystemExit):
+            bs.build_input(self.YT, "d", "https://pub.example/v.mp4", bs.parse_when("now"))
+
+    def test_made_for_kids_and_title_override(self):
+        p = bs.build_input(self.YT, "d", "https://pub.example/v.mp4", bs.parse_when("now"), title="T?", made_for_kids=True)
+        self.assertTrue(p["metadata"]["youtube"]["madeForKids"])
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "caption.txt").write_text("Derived question? More.\n", encoding="utf-8")
+            (Path(d) / "first-comment.txt").write_text("Sources\n", encoding="utf-8")
+            self.assertEqual(bs.youtube_texts(Path(d))[0], "Derived question?")
+            self.assertEqual(bs.youtube_texts(Path(d), "Approved by hand")[0], "Approved by hand")
+            with self.assertRaises(SystemExit):
+                bs.youtube_texts(Path(d), "t" * 101)
+
+    def test_dry_run_post_reads_the_manifest_keys_the_autopublisher_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            pub = Path(d) / "publish"
+            (pub / "youtube").mkdir(parents=True)
+            video = pub / "v.mp4"
+            video.write_bytes(b"x")
+            manifest = pub / "youtube" / "manifest.json"
+            manifest.write_text(json.dumps({"slides": [{"index": 1, "type": "video", "path": str(video)}], "youtube_title": "Saan galing ang bagyo?",
+                                            "youtube_description": "the description", "youtube_made_for_kids": True}))
+
+            class FakeBuf:
+                def __init__(self, *_):
+                    pass
+
+                def channels(self):
+                    return CHANNELS + [YoutubePayloadTests.YT]
+
+            args = bs.build_parser().parse_args(["post", str(manifest), "--channel", "c9", "--when", "now", "--gap-hours", "0", "--dry-run"])
+            out = io.StringIO()
+            with patch.object(bs, "Buffer", FakeBuf), patch.object(bs, "create_post", side_effect=AssertionError("dry run")), redirect_stdout(out):
+                self.assertEqual(bs.cmd_post(args), 0)
+            self.assertIn('"title": "Saan galing ang bagyo?"', out.getvalue())
+            self.assertIn('"madeForKids": true', out.getvalue())
+            self.assertIn('"text": "the description"', out.getvalue())
+            self.assertFalse((manifest.parent / bs.REPORT_NAME).exists())          # the report sits beside the manifest, and a dry run writes nothing
+
+    def test_a_youtube_post_passes_the_readback_check_when_the_video_is_kept(self):
+        p = bs.build_input(self.YT, "d", "https://pub.example/v.mp4", bs.parse_when("now"), title="T?")
+        self.assertIsNone(bs.post_problem(p, {"assets": [{"id": None, "source": "u"}]}))
+        self.assertIn("0 of 1 assets", bs.post_problem(p, {"assets": []}))
+
+    def test_dry_run_post_uses_the_episode_files_and_never_creates(self):
+        with tempfile.TemporaryDirectory() as d:
+            pub = Path(d) / "publish"
+            (pub / "social").mkdir(parents=True)
+            video = pub / "v.mp4"
+            video.write_bytes(b"x")
+            (pub / "caption.txt").write_text("Why is it so?\n\nBecause.\n", encoding="utf-8")
+            (pub / "first-comment.txt").write_text("Sources\n- s\n", encoding="utf-8")
+            manifest = pub / "social" / "manifest.json"
+            manifest.write_text(json.dumps({"slides": [{"index": 1, "type": "video", "path": str(video)}], "tiktok_caption": "tt #a"}))
+
+            class FakeBuf:
+                def __init__(self, *_):
+                    pass
+
+                def channels(self):
+                    return CHANNELS + [YoutubePayloadTests.YT]
+
+            args = bs.build_parser().parse_args(["post", str(manifest), "--channel", "youtube:vibecoders", "--when", "now", "--gap-hours", "0", "--dry-run"])
+            out = io.StringIO()
+            with patch.object(bs, "Buffer", FakeBuf), patch.object(bs, "create_post", side_effect=AssertionError("dry run")), redirect_stdout(out):
+                self.assertEqual(bs.cmd_post(args), 0)
+            self.assertIn('"title": "Why is it so?"', out.getvalue())
+            self.assertIn("Because.\\n\\nSources", out.getvalue())
+            self.assertIn('"privacy": "public"', out.getvalue())
 
 
 class GapTests(unittest.TestCase):

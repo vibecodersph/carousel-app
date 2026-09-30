@@ -20,6 +20,10 @@ COMMANDS
   python buffer_social.py post MANIFEST --channel tiktok:vibecodersph --when 2026-10-01T19:00+08:00 --publish
   python buffer_social.py post MANIFEST --channel tiktok:caisie --channel x --when draft
   python buffer_social.py post MANIFEST --channel x --when now --publish --dry-run
+  python buffer_social.py post episodes/05-x/publish/youtube/manifest.json --channel youtube --when now --publish
+      YouTube Short: the manifest's vertical video. Title and description are the manifest's youtube_title and
+      youtube_description (youtube_made_for_kids optional); without them they are built from the approved
+      publish/caption.txt and publish/first-comment.txt two directories above the manifest, see youtube_texts.
 
       --channel  SERVICE[:NAME-PART] or a Buffer channel id. Repeat for several channels.
       --when     an ISO time with offset (scheduled), `now`, `queue` (Buffer's own schedule) or
@@ -41,7 +45,8 @@ GUARDS
   is skipped unless --force.
 * Two-hour gap per channel (--gap-hours to change, 0 to switch off) checked against the posts
   Buffer already holds for that channel, for `now` and explicit times.
-* TikTok caption at most 2,200 characters and 5 hashtags (Buffer's limits); X text at most 280.
+* TikTok caption at most 2,200 characters and 5 hashtags (Buffer's limits); X text at most 280; YouTube title 1 to 100
+  and description 1 to 5,000 characters.
 * The API key never prints. It is read from BUFFER_SOCIAL_API_KEY in carousel-app/.env or the
   hermes .env. (BUFFER_API_KEY belongs to a different, older Buffer account and is not used.)
 """
@@ -63,6 +68,8 @@ ROOT = Path(__file__).resolve().parent
 API_URL = "https://api.buffer.com"
 KEY_NAME = "BUFFER_SOCIAL_API_KEY"
 TIKTOK_MAX_CHARS, TIKTOK_MAX_TAGS, X_MAX_CHARS = 2200, 5, 280
+YOUTUBE_TITLE_MAX, YOUTUBE_DESC_MAX = 100, 5000
+YOUTUBE_META = {"categoryId": "27", "privacy": "public", "madeForKids": False, "notifySubscribers": False, "embeddable": True}   # 27 = Education
 REPORT_NAME = "buffer_social.json"
 ENV_FILES = (ROOT / ".env", Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / ".env")
 
@@ -194,6 +201,59 @@ def validate_caption(service: str, text: str) -> None:
         raise SystemExit("Caption contains an em or en dash; house rule says no dashes in copy")
 
 
+def youtube_title(caption: str) -> str:
+    """The hook question: the first line up to and including its first "?" (the first line when it has none), cut at a word boundary to 100."""
+    lines = [ln.strip() for ln in caption.strip().splitlines() if ln.strip()]
+    if not lines:
+        raise SystemExit("YouTube title: the caption is empty")
+    first = lines[0]
+    q = first.find("?")
+    title = first[:q + 1] if q >= 0 else first
+    if len(title) > YOUTUBE_TITLE_MAX:
+        cut = title[:YOUTUBE_TITLE_MAX]
+        if title[YOUTUBE_TITLE_MAX] != " " and " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        title = cut.rstrip()
+    return title
+
+
+def youtube_description(caption: str, comment: str) -> str:
+    """The whole caption, a blank line, then the sources (first comment); over 5,000 the caption stays whole and the sources lose whole lines from the end."""
+    caption, comment = caption.strip(), comment.strip()
+    if not comment:
+        return caption
+    room = YOUTUBE_DESC_MAX - len(caption) - 2
+    keep: list[str] = []
+    used = 0
+    for ln in comment.splitlines():
+        used += len(ln) + (1 if keep else 0)
+        if used > room:
+            break
+        keep.append(ln)
+    return (caption + "\n\n" + "\n".join(keep).rstrip()) if keep else caption
+
+
+def validate_youtube(title: str, description: str) -> None:
+    if not 1 <= len(title.strip()) <= YOUTUBE_TITLE_MAX:
+        raise SystemExit(f"YouTube title is {len(title.strip())} characters; it must be 1 to {YOUTUBE_TITLE_MAX}")
+    if not 1 <= len(description.strip()) <= YOUTUBE_DESC_MAX:
+        raise SystemExit(f"YouTube description is {len(description.strip())} characters; it must be 1 to {YOUTUBE_DESC_MAX}")
+
+
+def youtube_texts(publish_dir: Path, title_override: str | None = None) -> tuple[str, str]:
+    """(title, description) for the episode's YouTube Short, built only from the two files Viron approved:
+    <publish_dir>/caption.txt and <publish_dir>/first-comment.txt (a title he approved by hand may override the derived one).
+    This is the one place the derivation lives."""
+    try:
+        caption = (publish_dir / "caption.txt").read_text(encoding="utf-8")
+        comment = (publish_dir / "first-comment.txt").read_text(encoding="utf-8")
+    except OSError as e:
+        raise SystemExit(f"YouTube needs the approved caption.txt and first-comment.txt in {publish_dir}: {e}") from None
+    title, description = (title_override or "").strip() or youtube_title(caption), youtube_description(caption, comment)
+    validate_youtube(title, description)
+    return title, description
+
+
 def thread_for(service: str, manifest: dict[str, Any]) -> list[str]:
     """Follow-up posts for an X thread (manifest key x_thread); other services have none."""
     if service != "twitter":
@@ -209,7 +269,7 @@ def thread_for(service: str, manifest: dict[str, Any]) -> list[str]:
     return out
 
 
-def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True, cover_ms: int | None = None, thread: list[str] | None = None) -> dict[str, Any]:
+def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[str, Any], *, ai_generated: bool = True, cover_ms: int | None = None, thread: list[str] | None = None, title: str | None = None, made_for_kids: bool = False) -> dict[str, Any]:
     video: dict[str, Any] = {"url": video_url}
     if cover_ms is not None and channel["service"] in ("tiktok", "instagram", "pinterest"):
         video["metadata"] = {"thumbnailOffset": int(cover_ms)}   # cover frame; the first frame of our films is black (fade-in)
@@ -232,6 +292,10 @@ def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[s
             # video) comes first and the replies follow. Listing only the replies drops the video.
             meta["thread"] = [{"text": text, "assets": payload["assets"]}] + [{"text": t, "assets": []} for t in thread]
         payload["metadata"] = {"twitter": meta}
+    elif channel["service"] == "youtube":
+        if not title:
+            raise SystemExit("A YouTube post needs a title (youtube_texts builds it from the approved caption)")
+        payload["metadata"] = {"youtube": {"title": title, **{**YOUTUBE_META, "madeForKids": bool(made_for_kids)}, "isAiGenerated": ai_generated}}   # the description is `text`
     return payload
 
 
@@ -350,15 +414,23 @@ def cmd_post(args: argparse.Namespace) -> int:
         if ch["id"] in done_ids and not args.force:
             print(f"[buffer] {ch['service']}:{ch['name']} already posted for this manifest (see {REPORT_NAME}); skipping (use --force to repeat)")
             continue
-        text = caption_for(ch["service"], manifest, override)
-        validate_caption(ch["service"], text)
+        title = None
+        if ch["service"] == "youtube":
+            if manifest.get("youtube_title") and manifest.get("youtube_description"):     # written by the autopublisher from the approved files
+                title, text = str(manifest["youtube_title"]).strip(), str(manifest["youtube_description"]).strip()
+                validate_youtube(title, text)
+            else:
+                title, text = youtube_texts(manifest_path.parent.parent)                  # <episode>/publish/youtube/manifest.json -> <episode>/publish
+        else:
+            text = caption_for(ch["service"], manifest, override)
+            validate_caption(ch["service"], text)
         thread = thread_for(ch["service"], manifest)
         target = datetime.fromisoformat(when["dueAt"].replace("Z", "+00:00")) if when["dueAt"] else datetime.now(timezone.utc)
         if when["kind"] in ("now", "scheduled") and args.gap_hours > 0:
             bad = gap_conflict(existing_post_times(buf, ch), target, args.gap_hours)
             if bad:
                 raise SystemExit(f"Gap guard: {ch['service']}:{ch['name']} already has a post at {bad}, within {args.gap_hours} h of {target.isoformat()}. Pick another time or --gap-hours 0.")
-        plans.append((ch, text, thread))
+        plans.append((ch, text, thread, title))
     if not plans:
         return 0
 
@@ -366,15 +438,16 @@ def cmd_post(args: argparse.Namespace) -> int:
     items = ig.build_media_items(manifest, manifest_path, media_base_url=base, overrides={}, dry_run=args.dry_run)
     videos = [i for i in items if i.kind == "video"]
     if len(videos) != 1:
-        raise SystemExit("The manifest must contain exactly one video slide for a TikTok or X post.")
+        raise SystemExit("The manifest must contain exactly one video slide for a TikTok, X or YouTube post.")
     if not args.dry_run:
         ns = SimpleNamespace(r2_bucket="", r2_key_prefix=None, r2_public_base_url=base)
         ig.upload_media_to_r2(videos, ig.r2_config(ns, manifest_path, base), timeout=300)
     video_url = videos[0].public_url
     cover_ms = args.cover_ms if args.cover_ms is not None else manifest.get("cover_ms")
 
-    for ch, text, thread in plans:
-        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai, cover_ms=cover_ms, thread=thread)
+    for ch, text, thread, title in plans:
+        payload = build_input(ch, text, video_url, when, ai_generated=not args.not_ai, cover_ms=cover_ms, thread=thread, title=title,
+                              made_for_kids=bool(manifest.get("youtube_made_for_kids")))
         print(f"[buffer] {ch['service']}:{ch['name']}  when={args.when}  chars={len(text)}  thread={len(thread)}  video={video_url}")
         if args.dry_run:
             print(json.dumps(payload, indent=1, ensure_ascii=False)[:3000])
