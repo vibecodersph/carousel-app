@@ -217,9 +217,19 @@ def youtube_title(caption: str) -> str:
     return title
 
 
+YOUTUBE_WORDING = (("in the first comment", "below"), ("Nasa comments ang sources", "Nasa baba ang sources"))
+
+
+def youtube_wording(text: str) -> str:
+    """The captions say the sources are in the first comment; on YouTube they sit right below in the description, so only those words change."""
+    for old, new in YOUTUBE_WORDING:
+        text = text.replace(old, new)
+    return text
+
+
 def youtube_description(caption: str, comment: str) -> str:
     """The whole caption, a blank line, then the sources (first comment); over 5,000 the caption stays whole and the sources lose whole lines from the end."""
-    caption, comment = caption.strip(), comment.strip()
+    caption, comment = youtube_wording(caption.strip()), comment.strip()
     if not comment:
         return caption
     room = YOUTUBE_DESC_MAX - len(caption) - 2

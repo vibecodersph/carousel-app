@@ -172,6 +172,14 @@ class YoutubeTextTests(unittest.TestCase):
     def test_description_is_caption_blank_line_sources(self):
         self.assertEqual(bs.youtube_description(self.CAPTION, self.COMMENT), self.CAPTION + "\n\n" + self.COMMENT)
 
+    def test_wording_points_at_the_description_not_a_first_comment(self):
+        self.assertEqual(bs.youtube_wording("Sources in the first comment. Made with AI."), "Sources below. Made with AI.")
+        self.assertEqual(bs.youtube_wording("Every claim is sourced in the first comment."), "Every claim is sourced below.")
+        self.assertEqual(bs.youtube_wording("Nasa comments ang sources. Ingat!"), "Nasa baba ang sources. Ingat!")
+        self.assertEqual(bs.youtube_wording("Nothing to change here."), "Nothing to change here.")
+        d = bs.youtube_description("Q? Sources in the first comment. #a", "Sources\n- x")
+        self.assertEqual(d, "Q? Sources below. #a\n\nSources\n- x")
+
     def test_long_sources_are_trimmed_at_a_line_boundary_and_the_caption_stays_whole(self):
         comment = "Sources\n" + "\n".join(f"- line {i} " + "y" * 100 for i in range(80))
         d = bs.youtube_description(self.CAPTION, comment)
