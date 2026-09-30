@@ -51,6 +51,10 @@ VIDEO_SUFFIXES = {".mp4", ".mov"}
 FINISHED_STATUS_CODES = {"FINISHED", "PUBLISHED"}
 WAIT_STATUS_CODES = {"EXPIRED", "ERROR"}
 VCPH_CAROUSEL_SIZE = (1080, 1440)
+# Trial Reels (a reel shown to non-followers first): Graph API trial_params.graduation_strategy takes these two.
+# Instagram's rule: a public professional account needs at least 200 followers.
+TRIAL_STRATEGIES = ("MANUAL", "SS_PERFORMANCE")
+TRIAL_MIN_FOLLOWERS = 200
 
 
 @dataclass
@@ -405,12 +409,75 @@ def read_caption(args: argparse.Namespace, manifest: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def trial_params_json(strategy: str) -> str:
+    return json.dumps({"graduation_strategy": strategy})
+
+
+def resolve_trial(cli_value: str | None, manifest: dict[str, Any]) -> str | None:
+    """The --trial flag wins; else the manifest's `trial` key; else None (a normal post)."""
+    value = cli_value or manifest.get("trial")
+    if not value:
+        return None
+    value = str(value).strip().upper()
+    if value not in TRIAL_STRATEGIES:
+        raise SystemExit(f"trial must be one of {', '.join(TRIAL_STRATEGIES)}, got: {value}")
+    return value
+
+
+def require_trial_reel(items: list[MediaItem], single_video_media_type: str) -> None:
+    """Trial Reels exist only for a single video published as REELS."""
+    if len(items) != 1 or items[0].kind != "video" or single_video_media_type != "REELS":
+        raise SystemExit(
+            "Trial Reels need a single video published with media_type REELS "
+            "(pass --single-video-media-type REELS, one video slide); "
+            "carousels, images and VIDEO posts cannot be trials."
+        )
+
+
+def follower_gate(followers: int | None, *, force: bool) -> None:
+    """Refuse a trial under Instagram's follower minimum, before anything is written."""
+    if force:
+        return
+    if followers is None:
+        raise SystemExit(
+            "Could not read followers_count, so the Trial Reel follower check cannot run. "
+            "Pass --trial-force to skip it."
+        )
+    if followers < TRIAL_MIN_FOLLOWERS:
+        raise SystemExit(
+            f"Refusing Trial Reel: this account has {followers} followers. Instagram requires a public "
+            f"professional account with at least {TRIAL_MIN_FOLLOWERS} followers for Trial Reels. "
+            "Pass --trial-force to send the request anyway (Instagram will likely refuse it)."
+        )
+
+
+def fetch_followers(
+    instagram_user_id: str,
+    *,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> int | None:
+    response = graph_request(
+        instagram_user_id,
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={"fields": "followers_count"},
+        method="GET",
+        timeout=30,
+    )
+    value = response.get("followers_count")
+    return int(value) if isinstance(value, (int, float)) else None
+
+
 def media_create_params(
     item: MediaItem,
     *,
     caption: str,
     carousel_item: bool,
     single_video_media_type: str,
+    trial: str | None = None,
 ) -> dict[str, str]:
     params: dict[str, str] = {}
     if item.kind == "image":
@@ -424,6 +491,8 @@ def media_create_params(
         params["is_carousel_item"] = "true"
     elif caption:
         params["caption"] = caption
+    if trial and not carousel_item:
+        params["trial_params"] = trial_params_json(trial)
     return params
 
 
@@ -462,6 +531,11 @@ def graph_request(
             payload = {"error": {"message": body[:500]}}
         error = payload.get("error") if isinstance(payload, dict) else None
         message = error.get("message") if isinstance(error, dict) else body[:500]
+        if isinstance(error, dict) and error.get("error_user_msg"):
+            # The generic message hides the cause (Trial Reels: "Application does not have permission" means
+            # "Trial Reel Not Enough Followers"); Instagram's own user message says which.
+            title = str(error.get("error_user_title") or "").strip()
+            message = f"{message} | {title + ': ' if title else ''}{error['error_user_msg']}"
         raise SystemExit(f"Instagram Graph API error {exc.code}: {message}") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Instagram Graph API request failed: {exc}") from exc
@@ -578,7 +652,31 @@ def fetch_permalink(
     )
 
 
-def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: str) -> list[dict[str, Any]]:
+def fetch_trial_status(
+    media_id: str,
+    *,
+    access_token: str,
+    graph_version: str,
+    graph_api_root: str,
+) -> dict[str, Any]:
+    return graph_request(
+        media_id,
+        access_token=access_token,
+        graph_version=graph_version,
+        graph_api_root=graph_api_root,
+        params={"fields": "is_trial,trial_status"},
+        method="GET",
+        timeout=30,
+    )
+
+
+def api_steps(
+    items: list[MediaItem],
+    caption: str,
+    *,
+    single_video_media_type: str,
+    trial: str | None = None,
+) -> list[dict[str, Any]]:
     if len(items) == 1:
         return [
             {
@@ -588,6 +686,7 @@ def api_steps(items: list[MediaItem], caption: str, *, single_video_media_type: 
                     caption=caption,
                     carousel_item=False,
                     single_video_media_type=single_video_media_type,
+                    trial=trial,
                 ),
             },
             {"action": "publish_media_container", "creation_id": "<container_id>"},
@@ -629,6 +728,7 @@ def publish_to_instagram(
     wait_timeout: int,
     wait_interval: int,
     single_video_media_type: str,
+    trial: str | None = None,
 ) -> dict[str, Any]:
     child_ids: list[str] = []
     item_results: list[dict[str, Any]] = []
@@ -640,15 +740,21 @@ def publish_to_instagram(
             caption=caption,
             carousel_item=is_carousel,
             single_video_media_type=single_video_media_type,
+            trial=trial,
         )
         print(f"[instagram] creating {'carousel item' if is_carousel else 'media'} container for slide {item.index}")
-        container_id = create_container(
-            instagram_user_id,
-            params,
-            access_token=access_token,
-            graph_version=graph_version,
-            graph_api_root=graph_api_root,
-        )
+        try:
+            container_id = create_container(
+                instagram_user_id,
+                params,
+                access_token=access_token,
+                graph_version=graph_version,
+                graph_api_root=graph_api_root,
+            )
+        except SystemExit as exc:
+            if not trial:
+                raise
+            raise SystemExit(f"Instagram refused the Trial Reel ({trial}). {exc}") from exc
         status: dict[str, Any] = {}
         if item.kind == "video":
             status = wait_for_container(
@@ -706,6 +812,21 @@ def publish_to_instagram(
             )
         except SystemExit as exc:
             print(f"[instagram] published, but permalink lookup failed: {exc}")
+        if trial:
+            try:
+                trial_info = fetch_trial_status(
+                    media_id,
+                    access_token=access_token,
+                    graph_version=graph_version,
+                    graph_api_root=graph_api_root,
+                )
+                permalink = {**permalink, **trial_info}
+                print(
+                    f"[instagram] trial read-back: is_trial={trial_info.get('is_trial')} "
+                    f"trial_status={trial_info.get('trial_status')}"
+                )
+            except SystemExit as exc:
+                print(f"[instagram] published, but trial read-back failed: {exc}")
     return {
         "child_containers": item_results,
         "publish_container_id": publish_container_id,
@@ -728,8 +849,9 @@ def build_report(
     single_video_media_type: str,
     uploads: list[dict[str, Any]] | None = None,
     result: dict[str, Any] | None = None,
+    trial: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    report = {
         "created_at": utc_now(),
         "dry_run": dry_run,
         "manifest_path": str(manifest_path),
@@ -741,9 +863,12 @@ def build_report(
         "caption": caption,
         "media": [asdict(item) for item in items],
         "uploads": uploads or [],
-        "api_steps": api_steps(items, caption, single_video_media_type=single_video_media_type),
+        "api_steps": api_steps(items, caption, single_video_media_type=single_video_media_type, trial=trial),
         "result": result or {},
     }
+    if trial:
+        report["trial"] = trial
+    return report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -807,6 +932,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=env_value("INSTAGRAM_SINGLE_VIDEO_MEDIA_TYPE") or "VIDEO",
         help="media_type for a one-item video publish",
     )
+    parser.add_argument(
+        "--trial",
+        choices=TRIAL_STRATEGIES,
+        help=(
+            "Publish as an Instagram Trial Reel (shown to non-followers first): graduation_strategy "
+            "MANUAL or SS_PERFORMANCE. Reels only, and the account needs "
+            f"{TRIAL_MIN_FOLLOWERS}+ followers. The manifest key `trial` does the same."
+        ),
+    )
+    parser.add_argument(
+        "--trial-force",
+        action="store_true",
+        help=f"Send the trial request even when followers_count is under {TRIAL_MIN_FOLLOWERS}",
+    )
     parser.add_argument("--wait-timeout", type=int, default=600)
     parser.add_argument("--wait-interval", type=int, default=10)
     parser.add_argument(
@@ -839,6 +978,7 @@ def main() -> int:
 
     graph_version = normalize_graph_version(args.graph_api_version)
     graph_root = args.graph_api_root.rstrip("/")
+    trial = resolve_trial(args.trial, manifest)
     media_base_url = args.media_base_url.strip()
     if args.upload_r2 and not media_base_url:
         media_base_url = args.r2_public_base_url.strip()
@@ -850,6 +990,21 @@ def main() -> int:
         dry_run=args.dry_run,
         require_3x4=args.require_3x4,
     )
+    if trial:
+        require_trial_reel(media_items, args.single_video_media_type)
+        if not args.dry_run:
+            if not args.instagram_user_id or not args.access_token:
+                raise SystemExit("INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN are required to publish")
+            # The gate runs before the R2 upload and before any Instagram write.
+            follower_gate(
+                fetch_followers(
+                    args.instagram_user_id,
+                    access_token=args.access_token,
+                    graph_version=graph_version,
+                    graph_api_root=graph_root,
+                ),
+                force=args.trial_force,
+            )
     uploads: list[dict[str, Any]] = []
     if args.upload_r2:
         uploads = upload_media_to_r2(
@@ -894,6 +1049,7 @@ def main() -> int:
             wait_timeout=args.wait_timeout,
             wait_interval=args.wait_interval,
             single_video_media_type=args.single_video_media_type,
+            trial=trial,
         )
 
     report = build_report(
@@ -908,6 +1064,7 @@ def main() -> int:
         single_video_media_type=args.single_video_media_type,
         uploads=uploads,
         result=result,
+        trial=trial,
     )
     write_json(report_path, report)
     print(f"[instagram] wrote report -> {report_path}")
