@@ -295,6 +295,9 @@ def build_input(channel: dict[str, Any], text: str, video_url: str, when: dict[s
         payload["dueAt"] = when["dueAt"]
     if channel["service"] == "tiktok":
         payload["metadata"] = {"tiktok": {"isAiGenerated": ai_generated}}
+    elif channel["service"] == "instagram":
+        # a video is a Reel that also shows on the grid; type and shouldShareToFeed are required by the schema
+        payload["metadata"] = {"instagram": {"type": "reel", "shouldShareToFeed": True, "isAiGenerated": ai_generated}}
     elif channel["service"] == "twitter":
         meta: dict[str, Any] = {"isAiGenerated": ai_generated}
         if thread:
