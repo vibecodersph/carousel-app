@@ -170,15 +170,15 @@ def rupload_video(video_id: str, page_token: str, path: Path) -> None:
         raise SystemExit(f"rupload did not report success: {body}")
 
 
-def publish_reel(page_id: str, page_token: str, video_path: Path, caption: str) -> str:
-    """Three-phase Facebook Reels publish: start -> binary upload -> finish."""
+def publish_reel(page_id: str, page_token: str, video_path: Path, caption: str, schedule_ts: int | None = None) -> str:
+    """Three-phase Facebook Reels publish: start -> binary upload -> finish. schedule_ts: unix time to publish at (SCHEDULED)."""
     start = graph_post(f"{page_id}/video_reels", page_token, {"upload_phase": "start"})
     video_id = str(start["video_id"])
     print(f"[facebook] reel container {video_id}; uploading {video_path.name} ...")
     rupload_video(video_id, page_token, video_path)
     graph_post(f"{page_id}/video_reels", page_token,
-               {"video_id": video_id, "upload_phase": "finish",
-                "video_state": "PUBLISHED", "description": caption})
+               {"video_id": video_id, "upload_phase": "finish", "description": caption,
+                **({"video_state": "SCHEDULED", "scheduled_publish_time": str(schedule_ts)} if schedule_ts else {"video_state": "PUBLISHED"})})
     # poll processing status briefly
     import time as _time
     for _ in range(30):
@@ -199,6 +199,8 @@ def main() -> None:
     parser.add_argument("--caption-file", default=None)
     parser.add_argument("--reel", action="store_true",
                         help="publish a single video as a Facebook Reel (/video_reels) instead of a feed video")
+    parser.add_argument("--schedule", default=None,
+                        help="with --reel: ISO time with offset (e.g. 2026-10-15T19:30:00+08:00); the reel is uploaded now and published by Facebook at that time (at least 10 minutes ahead)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--publish", action="store_true",
                         help="actually post (otherwise the script refuses unless --dry-run)")
@@ -257,7 +259,14 @@ def main() -> None:
     if kinds == {"video"}:
         _, video_path = items[0]
         if args.reel:
-            video_id = publish_reel(page_id, page_token, video_path, caption)
+            ts = None
+            if args.schedule:
+                from datetime import datetime as _dt
+                ts = int(_dt.fromisoformat(args.schedule).timestamp())
+                if ts - _dt.now().timestamp() < 600:
+                    raise SystemExit("--schedule must be at least 10 minutes ahead")
+                report["scheduled_for"] = args.schedule
+            video_id = publish_reel(page_id, page_token, video_path, caption, ts)
             print(f"[facebook] REEL id: {video_id}")
             report["items"].append({"kind": "reel", "id": video_id})
         else:
